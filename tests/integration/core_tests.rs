@@ -1,4 +1,5 @@
 use super::*;
+use base64::Engine;
 use hmac::Mac;
 use sha2::{Digest, Sha256};
 
@@ -2500,6 +2501,42 @@ async fn test_get_object_range_preserves_headers() {
     assert!(resp.headers().contains_key("etag"));
     assert!(resp.headers().contains_key("last-modified"));
     assert!(resp.headers().contains_key("content-type"));
+}
+
+#[tokio::test]
+async fn test_get_object_range_preserves_checksum_header() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/range-checksum-bucket", base_url), vec![]).await;
+
+    let body = b"hello checksum range";
+    let crc = crc32fast::hash(body);
+    let crc_b64 = base64::engine::general_purpose::STANDARD.encode(crc.to_be_bytes());
+
+    let put = s3_request_with_headers(
+        "PUT",
+        &format!("{}/range-checksum-bucket/file.txt", base_url),
+        body.to_vec(),
+        vec![("x-amz-checksum-crc32", &crc_b64)],
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+
+    let resp = s3_request_with_headers(
+        "GET",
+        &format!("{}/range-checksum-bucket/file.txt", base_url),
+        vec![],
+        vec![("range", "bytes=0-4")],
+    )
+    .await;
+
+    assert_eq!(resp.status(), 206);
+    assert_eq!(
+        resp.headers()
+            .get("x-amz-checksum-crc32")
+            .and_then(|v| v.to_str().ok()),
+        Some(crc_b64.as_str())
+    );
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), b"hello");
 }
 
 #[tokio::test]

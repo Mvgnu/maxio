@@ -121,6 +121,7 @@ run_domain() {
         core_tests::test_multipart_complete_rejects_non_ascending_part_order \
         core_tests::test_multipart_complete_rejects_malformed_xml \
         core_tests::test_get_object_range_first_bytes \
+        core_tests::test_get_object_range_preserves_checksum_header \
         core_tests::test_bucket_versioning_enable_and_suspend \
         core_tests::test_bucket_versioning_invalid_status_rejected \
         core_tests::test_bucket_versioning_suspend_preserves_existing_versions \
