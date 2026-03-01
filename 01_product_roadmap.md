@@ -152,6 +152,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now executes runtime and console response-helper unit suites in domain-local cycles (`server::tests`, `api::console::response::tests`) instead of only catching them in full-suite runs.
   - Domain check runner now also executes console auth-helper unit suites (`api::console::auth::tests`) in console domain-local cycles.
   - Domain check runner now also executes console storage-helper unit suites (`api::console::storage::tests`) in console domain-local cycles.
+  - Domain check runner now also executes console invalid-key list regressions (`console_tests::test_console_list_objects_returns_bad_request_for_invalid_prefix`, `console_tests::test_console_list_versions_returns_bad_request_for_invalid_key`) in console domain-local cycles.
   - Domain check runner now also executes console presign missing-bucket/missing-object regressions (`console_tests::test_console_presign_returns_not_found_for_missing_bucket`, `console_tests::test_console_presign_returns_not_found_for_missing_object`) in console domain-local cycles.
   - Domain check runner now also executes console presign key-encoding regression (`console_tests::test_console_presign_encodes_object_keys_with_spaces_and_utf8`) in console domain-local cycles.
   - Domain check runner now also executes S3 bucket validation/service helper unit suites (`api::bucket::validation::tests`, `api::bucket::service::tests`) in S3 domain-local cycles.
@@ -210,6 +211,7 @@ From CLAUDE phased roadmap (additional context):
   - Console presign endpoint now also returns explicit `404` semantics for missing buckets (`Bucket not found`) and missing objects (`Object not found`), with dedicated regression coverage.
   - Console presign endpoint now has dedicated regression coverage for percent-encoded object-key signing/URL generation (spaces + UTF-8 segments).
   - Console object/version/lifecycle handlers now share a centralized storage-error helper module for consistent bucket/version `404` semantics and internal error shaping.
+  - Console object/version list paths now map invalid key/prefix inputs to explicit `400` responses (instead of generic `500`/silent empty responses), with dedicated regression coverage.
   - Console object/version download handlers now use panic-free response construction for streamed responses, with safe fallback headers for malformed metadata values.
   - Integration coverage now asserts console object and version download header/body contracts.
   - Integration coverage now locks console JSON contract shapes for bucket/object success payloads and auth/protected-route error payloads.

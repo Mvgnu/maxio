@@ -161,6 +161,8 @@ run_domain() {
         console_tests::test_console_lifecycle_rejects_invalid_rules \
         console_tests::test_console_versioning_endpoints_return_not_found_for_missing_bucket \
         console_tests::test_console_list_versions_returns_not_found_for_missing_bucket \
+        console_tests::test_console_list_objects_returns_bad_request_for_invalid_prefix \
+        console_tests::test_console_list_versions_returns_bad_request_for_invalid_key \
         console_tests::test_console_delete_version_returns_not_found_for_missing_version \
         console_tests::test_console_create_folder_returns_not_found_for_missing_bucket \
         console_tests::test_console_delete_object_returns_not_found_for_missing_bucket \

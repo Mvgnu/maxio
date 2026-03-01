@@ -28,6 +28,9 @@ pub(super) async fn list_objects(
 
     let prefix = params.prefix.unwrap_or_default();
     let delimiter = params.delimiter.unwrap_or_else(|| "/".to_string());
+    if let Some(resp) = storage::validate_list_prefix(&prefix) {
+        return resp;
+    }
 
     let all_objects = match state.storage.list_objects(&bucket, &prefix).await {
         Ok(objects) => objects,
@@ -135,6 +138,9 @@ pub(super) async fn download_object(
         Ok(r) => r,
         Err(crate::storage::StorageError::NotFound(_)) => {
             return response::error(StatusCode::NOT_FOUND, "Object not found");
+        }
+        Err(crate::storage::StorageError::InvalidKey(message)) => {
+            return storage::invalid_key(message);
         }
         Err(err) => return storage::internal_err(err),
     };

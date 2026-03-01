@@ -50,6 +50,9 @@ pub(super) async fn list_versions(
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
     }
+    if let Some(resp) = storage::validate_list_prefix(&params.key) {
+        return resp;
+    }
 
     let all = match state
         .storage
@@ -108,6 +111,7 @@ pub(super) async fn download_version(
         Err(StorageError::VersionNotFound(_) | StorageError::NotFound(_)) => {
             return storage::version_not_found();
         }
+        Err(StorageError::InvalidKey(message)) => return storage::invalid_key(message),
         Err(err) => return storage::internal_err(err),
     };
 
