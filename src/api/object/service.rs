@@ -3,7 +3,16 @@ use futures::TryStreamExt;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
 use crate::error::S3Error;
+use crate::server::AppState;
 use crate::storage::{ChecksumAlgorithm, ObjectMeta};
+
+pub(super) async fn ensure_bucket_exists(state: &AppState, bucket: &str) -> Result<(), S3Error> {
+    match state.storage.head_bucket(bucket).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(S3Error::no_such_bucket(bucket)),
+        Err(err) => Err(S3Error::internal(err)),
+    }
+}
 
 /// Extract checksum algorithm and optional expected value from request headers.
 pub(crate) fn extract_checksum(headers: &HeaderMap) -> Option<(ChecksumAlgorithm, Option<String>)> {

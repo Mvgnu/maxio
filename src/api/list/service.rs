@@ -366,7 +366,12 @@ mod tests {
         let filtered = filter_versions_after(&versions, Some("a.txt"), Some("v2"));
         let filtered_ids: Vec<_> = filtered
             .iter()
-            .map(|version| (version.key.as_str(), version.version_id.as_deref().unwrap_or("null")))
+            .map(|version| {
+                (
+                    version.key.as_str(),
+                    version.version_id.as_deref().unwrap_or("null"),
+                )
+            })
             .collect();
         assert_eq!(
             filtered_ids,
@@ -385,7 +390,12 @@ mod tests {
         let filtered = filter_versions_after(&versions, Some("a.txt"), None);
         let filtered_ids: Vec<_> = filtered
             .iter()
-            .map(|version| (version.key.as_str(), version.version_id.as_deref().unwrap_or("null")))
+            .map(|version| {
+                (
+                    version.key.as_str(),
+                    version.version_id.as_deref().unwrap_or("null"),
+                )
+            })
             .collect();
         assert_eq!(filtered_ids, vec![("b.txt", "b1")]);
     }
@@ -402,9 +412,6 @@ mod tests {
 
         assert_eq!(page.len(), 2);
         assert!(is_truncated);
-        assert_eq!(
-            next_markers,
-            Some(("a.txt".to_string(), "v2".to_string()))
-        );
+        assert_eq!(next_markers, Some(("a.txt".to_string(), "v2".to_string())));
     }
 }

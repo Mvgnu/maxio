@@ -188,10 +188,16 @@ fn apply_cors_headers(response_headers: &mut HeaderMap, request_headers: &Header
 fn merge_vary_headers(response_headers: &mut HeaderMap, values: &[&str]) {
     let mut combined = Vec::<String>::new();
 
-    if let Some(existing) = response_headers.get(header::VARY).and_then(|v| v.to_str().ok()) {
+    if let Some(existing) = response_headers
+        .get(header::VARY)
+        .and_then(|v| v.to_str().ok())
+    {
         for part in existing.split(',') {
             let token = part.trim();
-            if !token.is_empty() && !combined.iter().any(|entry| entry.eq_ignore_ascii_case(token))
+            if !token.is_empty()
+                && !combined
+                    .iter()
+                    .any(|entry| entry.eq_ignore_ascii_case(token))
             {
                 combined.push(token.to_string());
             }
@@ -251,7 +257,10 @@ mod tests {
     #[test]
     fn merge_vary_headers_deduplicates_and_preserves_existing_values() {
         let mut headers = HeaderMap::new();
-        headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding, Origin"));
+        headers.insert(
+            header::VARY,
+            HeaderValue::from_static("Accept-Encoding, Origin"),
+        );
 
         merge_vary_headers(
             &mut headers,

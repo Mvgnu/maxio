@@ -212,7 +212,10 @@ pub struct ListVersionsResult {
     pub version_id_marker: String,
     #[serde(rename = "NextKeyMarker", skip_serializing_if = "Option::is_none")]
     pub next_key_marker: Option<String>,
-    #[serde(rename = "NextVersionIdMarker", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "NextVersionIdMarker",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_version_id_marker: Option<String>,
     #[serde(rename = "MaxKeys")]
     pub max_keys: i32,

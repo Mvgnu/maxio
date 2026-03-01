@@ -18,6 +18,7 @@ use parsing::{parse_copy_source, parse_delete_objects_request, parse_range, to_h
 use service::{DeleteObjectsOutcome, add_checksum_header, build_delete_objects_response_xml};
 
 use super::multipart;
+use service::ensure_bucket_exists;
 pub(crate) use service::{body_to_reader, extract_checksum};
 
 pub async fn put_object(
@@ -42,11 +43,7 @@ pub async fn put_object(
         .await;
     }
 
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
-        Err(e) => return Err(S3Error::internal(e)),
-    }
+    ensure_bucket_exists(&state, &bucket).await?;
 
     let content_type = headers
         .get("content-type")
@@ -116,12 +113,9 @@ async fn copy_object(
 
     let (src_bucket, src_key) = parse_copy_source(copy_source)?;
 
-    // Validate destination bucket
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
-        Err(e) => return Err(S3Error::internal(e)),
-    }
+    // Validate source and destination bucket existence.
+    ensure_bucket_exists(&state, &src_bucket).await?;
+    ensure_bucket_exists(&state, &bucket).await?;
 
     // Get source object
     let (reader, src_meta) = state
@@ -199,6 +193,8 @@ pub async fn get_object(
     if params.contains_key("uploadId") {
         return multipart::list_parts(State(state), Path((bucket, key)), Query(params)).await;
     }
+
+    ensure_bucket_exists(&state, &bucket).await?;
 
     let range_header = headers.get("range").and_then(|v| v.to_str().ok());
 
@@ -296,6 +292,8 @@ pub async fn head_object(
     Path((bucket, key)): Path<(String, String)>,
     Query(params): Query<HashMap<String, String>>,
 ) -> Result<Response<Body>, S3Error> {
+    ensure_bucket_exists(&state, &bucket).await?;
+
     let meta = if let Some(version_id) = params.get("versionId") {
         state
             .storage
@@ -345,11 +343,7 @@ pub async fn delete_object(
 
     // Permanent version deletion
     if let Some(version_id) = params.get("versionId") {
-        match state.storage.head_bucket(&bucket).await {
-            Ok(true) => {}
-            Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
-            Err(e) => return Err(S3Error::internal(e)),
-        }
+        ensure_bucket_exists(&state, &bucket).await?;
 
         let deleted_meta = state
             .storage
@@ -368,11 +362,7 @@ pub async fn delete_object(
         return builder.body(Body::empty()).map_err(S3Error::internal);
     }
 
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
-        Err(e) => return Err(S3Error::internal(e)),
-    }
+    ensure_bucket_exists(&state, &bucket).await?;
 
     let result = state
         .storage
@@ -423,11 +413,7 @@ pub async fn delete_objects(
     Path(bucket): Path<String>,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
-        Err(e) => return Err(S3Error::internal(e)),
-    }
+    ensure_bucket_exists(&state, &bucket).await?;
 
     let bytes = axum::body::to_bytes(body, DELETE_BODY_MAX)
         .await

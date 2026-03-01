@@ -1,7 +1,7 @@
 use axum::{
+    Json,
     body::Body,
     http::{HeaderValue, StatusCode, header},
-    Json,
     response::{IntoResponse, Response},
 };
 
@@ -17,7 +17,12 @@ pub(super) fn error(status: StatusCode, message: impl Into<String>) -> Response 
     json(status, serde_json::json!({ "error": message.into() }))
 }
 
-pub(super) fn download(body: Body, content_type: &str, content_length: u64, filename: &str) -> Response {
+pub(super) fn download(
+    body: Body,
+    content_type: &str,
+    content_length: u64,
+    filename: &str,
+) -> Response {
     let mut response = Response::new(body);
     *response.status_mut() = StatusCode::OK;
 

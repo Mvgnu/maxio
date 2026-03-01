@@ -202,7 +202,10 @@ async fn test_cors_preflight_includes_vary_origin_and_request_id() {
         )
         .header("origin", origin)
         .header("access-control-request-method", "GET")
-        .header("access-control-request-headers", "x-amz-date,x-amz-content-sha256")
+        .header(
+            "access-control-request-headers",
+            "x-amz-date,x-amz-content-sha256",
+        )
         .send()
         .await
         .unwrap();

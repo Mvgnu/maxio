@@ -310,8 +310,8 @@ pub fn generate_presigned_url(
     if signing_key.is_empty() {
         return Err("Failed to derive signing key");
     }
-    let signature = hmac_sha256_hex(&signing_key, string_to_sign.as_bytes())
-        .ok_or("Failed to sign request")?;
+    let signature =
+        hmac_sha256_hex(&signing_key, string_to_sign.as_bytes()).ok_or("Failed to sign request")?;
 
     Ok(format!(
         "{}://{}{}?{}&X-Amz-Signature={}",
@@ -574,7 +574,8 @@ mod tests {
             "X-Amz-SignedHeaders=host%3Bx-amz-date&",
             "X-Amz-Signature=deadbeef",
         );
-        let (parsed, timestamp, expires) = parse_presigned_query(query).expect("query should parse");
+        let (parsed, timestamp, expires) =
+            parse_presigned_query(query).expect("query should parse");
         assert_eq!(parsed.access_key, "minioadmin");
         assert_eq!(parsed.date, "20260301");
         assert_eq!(parsed.region, "us-east-1");

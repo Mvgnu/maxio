@@ -832,7 +832,10 @@ async fn test_console_download_object_returns_expected_headers_and_body() {
     assert_eq!(create_bucket.status(), 200);
 
     let upload = client()
-        .put(format!("{}/api/buckets/{}/upload/{}", base_url, bucket, key))
+        .put(format!(
+            "{}/api/buckets/{}/upload/{}",
+            base_url, bucket, key
+        ))
         .header("cookie", &cookie)
         .header("content-type", "text/plain")
         .body(payload.clone())
@@ -842,7 +845,10 @@ async fn test_console_download_object_returns_expected_headers_and_body() {
     assert_eq!(upload.status(), 200);
 
     let download = client()
-        .get(format!("{}/api/buckets/{}/download/{}", base_url, bucket, key))
+        .get(format!(
+            "{}/api/buckets/{}/download/{}",
+            base_url, bucket, key
+        ))
         .header("cookie", &cookie)
         .send()
         .await
@@ -1007,10 +1013,7 @@ async fn test_console_versions_list_remains_available_after_versioning_suspend()
     assert_eq!(suspend_versioning.status(), 200);
 
     let versioning_state = client()
-        .get(format!(
-            "{}/api/buckets/{}/versioning",
-            base_url, bucket
-        ))
+        .get(format!("{}/api/buckets/{}/versioning", base_url, bucket))
         .header("cookie", &cookie)
         .send()
         .await
@@ -1044,7 +1047,10 @@ async fn test_console_versioning_endpoints_return_not_found_for_missing_bucket()
     let http = client();
 
     let get_resp = http
-        .get(format!("{}/api/buckets/missing-bucket/versioning", base_url))
+        .get(format!(
+            "{}/api/buckets/missing-bucket/versioning",
+            base_url
+        ))
         .header("cookie", &cookie)
         .send()
         .await
@@ -1052,7 +1058,10 @@ async fn test_console_versioning_endpoints_return_not_found_for_missing_bucket()
     assert_eq!(get_resp.status(), 404);
 
     let put_resp = http
-        .put(format!("{}/api/buckets/missing-bucket/versioning", base_url))
+        .put(format!(
+            "{}/api/buckets/missing-bucket/versioning",
+            base_url
+        ))
         .header("cookie", &cookie)
         .header("content-type", "application/json")
         .json(&serde_json::json!({ "enabled": true }))

@@ -78,10 +78,7 @@ fn finalize_checksum(
     }
 }
 
-fn version_id_from_meta<'a>(
-    meta: &'a ObjectMeta,
-    context: &str,
-) -> Result<&'a str, StorageError> {
+fn version_id_from_meta<'a>(meta: &'a ObjectMeta, context: &str) -> Result<&'a str, StorageError> {
     meta.version_id.as_deref().ok_or_else(|| {
         StorageError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
@@ -294,9 +291,11 @@ mod lifecycle_tests {
             )
             .await;
         assert!(matches!(result, Err(StorageError::NotFound(ref b)) if b == "missing"));
-        assert!(!fs::try_exists(storage.buckets_dir.join("missing"))
-            .await
-            .unwrap());
+        assert!(
+            !fs::try_exists(storage.buckets_dir.join("missing"))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -316,14 +315,16 @@ mod lifecycle_tests {
             )
             .await;
         assert!(matches!(result, Err(StorageError::NotFound(ref b)) if b == "missing"));
-        assert!(!fs::try_exists(storage.buckets_dir.join("missing"))
-            .await
-            .unwrap());
+        assert!(
+            !fs::try_exists(storage.buckets_dir.join("missing"))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
     async fn create_multipart_upload_missing_bucket_returns_not_found_and_does_not_create_bucket_dir()
-    {
+     {
         let tmp = TempDir::new().unwrap();
         let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
             .await
@@ -333,9 +334,11 @@ mod lifecycle_tests {
             .create_multipart_upload("missing", "multipart.txt", "text/plain", None)
             .await;
         assert!(matches!(result, Err(StorageError::NotFound(ref b)) if b == "missing"));
-        assert!(!fs::try_exists(storage.buckets_dir.join("missing"))
-            .await
-            .unwrap());
+        assert!(
+            !fs::try_exists(storage.buckets_dir.join("missing"))
+                .await
+                .unwrap()
+        );
     }
 
     #[tokio::test]
@@ -480,7 +483,9 @@ mod lifecycle_tests {
         assert!(matches!(result, Err(StorageError::Io(_))));
 
         assert!(
-            !fs::try_exists(storage.ec_dir("lifecycle", key)).await.unwrap(),
+            !fs::try_exists(storage.ec_dir("lifecycle", key))
+                .await
+                .unwrap(),
             "chunk directory should be removed on metadata write failure"
         );
     }
@@ -584,7 +589,9 @@ mod lifecycle_tests {
         assert!(matches!(result, Err(StorageError::Io(_))));
 
         assert!(
-            !fs::try_exists(storage.ec_dir("lifecycle", key)).await.unwrap(),
+            !fs::try_exists(storage.ec_dir("lifecycle", key))
+                .await
+                .unwrap(),
             "chunk directory should be removed when metadata write fails"
         );
         assert!(
@@ -626,7 +633,8 @@ mod versioning_tests {
             checksum_value: None,
         };
 
-        let err = version_id_from_meta(&meta, "testing").expect_err("should reject missing version");
+        let err =
+            version_id_from_meta(&meta, "testing").expect_err("should reject missing version");
         match err {
             StorageError::Io(io_err) => assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidData),
             other => panic!("unexpected error: {other:?}"),
@@ -683,10 +691,8 @@ mod versioning_tests {
 
         let latest_meta_path =
             storage.version_meta_path("versioned", "docs/readme.txt", &latest_version_id);
-        let mut latest_json: serde_json::Value = serde_json::from_str(
-            &fs::read_to_string(&latest_meta_path).await.unwrap(),
-        )
-        .unwrap();
+        let mut latest_json: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&latest_meta_path).await.unwrap()).unwrap();
         latest_json
             .as_object_mut()
             .expect("metadata should be object")
@@ -728,6 +734,32 @@ impl FilesystemStorage {
 
     // --- Bucket operations ---
 
+    fn bucket_meta_path(&self, bucket: &str) -> PathBuf {
+        self.buckets_dir.join(bucket).join(".bucket.json")
+    }
+
+    async fn read_bucket_meta(&self, bucket: &str) -> Result<BucketMeta, StorageError> {
+        let data = fs::read_to_string(self.bucket_meta_path(bucket))
+            .await
+            .map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    StorageError::NotFound(bucket.to_string())
+                } else {
+                    StorageError::Io(e)
+                }
+            })?;
+        Ok(serde_json::from_str(&data)?)
+    }
+
+    async fn write_bucket_meta(&self, bucket: &str, meta: &BucketMeta) -> Result<(), StorageError> {
+        fs::write(
+            self.bucket_meta_path(bucket),
+            serde_json::to_string_pretty(meta)?,
+        )
+        .await?;
+        Ok(())
+    }
+
     pub async fn create_bucket(&self, meta: &BucketMeta) -> Result<bool, StorageError> {
         let bucket_dir = self.buckets_dir.join(&meta.name);
         match fs::create_dir(&bucket_dir).await {
@@ -747,7 +779,7 @@ impl FilesystemStorage {
     }
 
     pub async fn head_bucket(&self, name: &str) -> Result<bool, StorageError> {
-        Ok(fs::try_exists(self.buckets_dir.join(name).join(".bucket.json")).await?)
+        Ok(fs::try_exists(self.bucket_meta_path(name)).await?)
     }
 
     pub async fn delete_bucket(&self, name: &str) -> Result<bool, StorageError> {
@@ -781,11 +813,7 @@ impl FilesystemStorage {
                     region: String::new(),
                     versioning: false,
                 };
-                let _ = fs::write(
-                    bucket_dir.join(".bucket.json"),
-                    serde_json::to_string_pretty(&meta).unwrap_or_default(),
-                )
-                .await;
+                let _ = self.write_bucket_meta(name, &meta).await;
                 Err(StorageError::BucketNotEmpty)
             }
             Err(e) => Err(e.into()),
@@ -824,9 +852,7 @@ impl FilesystemStorage {
         &self,
         bucket: &str,
     ) -> Result<Vec<LifecycleRule>, StorageError> {
-        if !self.head_bucket(bucket).await? {
-            return Err(StorageError::NotFound(bucket.to_string()));
-        }
+        self.ensure_bucket_exists(bucket).await?;
 
         let path = self.lifecycle_path(bucket);
         let data = match fs::read_to_string(&path).await {
@@ -844,9 +870,7 @@ impl FilesystemStorage {
         bucket: &str,
         rules: &[LifecycleRule],
     ) -> Result<(), StorageError> {
-        if !self.head_bucket(bucket).await? {
-            return Err(StorageError::NotFound(bucket.to_string()));
-        }
+        self.ensure_bucket_exists(bucket).await?;
         lifecycle::validate_rules(rules).map_err(StorageError::InvalidKey)?;
 
         let path = self.lifecycle_path(bucket);
@@ -1009,7 +1033,7 @@ impl FilesystemStorage {
                     let _ = fs::remove_file(&obj_path).await;
                     return Err(err);
                 }
-        };
+            };
 
         let now = chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -1687,7 +1711,7 @@ impl FilesystemStorage {
                     let _ = fs::remove_file(&part_path).await;
                     return Err(err);
                 }
-        };
+            };
 
         let etag = format!("\"{}\"", hex::encode(hasher.finalize()));
         let meta = PartMeta {
@@ -2078,32 +2102,37 @@ impl FilesystemStorage {
         layout::version_meta_path(&self.buckets_dir, bucket, key, version_id)
     }
 
-    pub async fn is_versioned(&self, bucket: &str) -> Result<bool, StorageError> {
-        let meta_path = self.buckets_dir.join(bucket).join(".bucket.json");
-        let data = fs::read_to_string(&meta_path).await.map_err(|e| {
+    fn version_ec_dir(&self, bucket: &str, key: &str, version_id: &str) -> PathBuf {
+        self.versions_dir(bucket, key)
+            .join(format!("{}.ec", version_id))
+    }
+
+    async fn read_version_meta(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+    ) -> Result<ObjectMeta, StorageError> {
+        let ver_meta_path = self.version_meta_path(bucket, key, version_id);
+        let data = fs::read_to_string(&ver_meta_path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                StorageError::NotFound(bucket.to_string())
+                StorageError::VersionNotFound(version_id.to_string())
             } else {
                 StorageError::Io(e)
             }
         })?;
-        let meta: BucketMeta = serde_json::from_str(&data)?;
+        Ok(serde_json::from_str(&data)?)
+    }
+
+    pub async fn is_versioned(&self, bucket: &str) -> Result<bool, StorageError> {
+        let meta = self.read_bucket_meta(bucket).await?;
         Ok(meta.versioning)
     }
 
     pub async fn set_versioning(&self, bucket: &str, enabled: bool) -> Result<(), StorageError> {
-        let meta_path = self.buckets_dir.join(bucket).join(".bucket.json");
-        let data = fs::read_to_string(&meta_path).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StorageError::NotFound(bucket.to_string())
-            } else {
-                StorageError::Io(e)
-            }
-        })?;
-        let mut meta: BucketMeta = serde_json::from_str(&data)?;
+        let mut meta = self.read_bucket_meta(bucket).await?;
         meta.versioning = enabled;
-        fs::write(&meta_path, serde_json::to_string_pretty(&meta)?).await?;
-        Ok(())
+        self.write_bucket_meta(bucket, &meta).await
     }
 
     /// Write a new version to the `.versions/` directory and update the current (top-level) files.
@@ -2241,7 +2270,7 @@ impl FilesystemStorage {
         // Restore latest non-delete-marker version as current.
         let vid = version_id_from_meta(&latest_meta, "restoring current version")?;
         let obj_meta_path = self.meta_path(bucket, key);
-        let ver_ec = ver_dir.join(format!("{}.ec", vid));
+        let ver_ec = self.version_ec_dir(bucket, key, vid);
         if fs::try_exists(&ver_ec).await? {
             let dst_ec = self.ec_dir(bucket, key);
             if let Some(parent) = dst_ec.parent() {
@@ -2276,24 +2305,14 @@ impl FilesystemStorage {
         version_id: &str,
     ) -> Result<(ByteStream, ObjectMeta), StorageError> {
         validation::validate_key(key)?;
-        let ver_meta_path = self.version_meta_path(bucket, key, version_id);
-        let data = fs::read_to_string(&ver_meta_path).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StorageError::VersionNotFound(version_id.to_string())
-            } else {
-                StorageError::Io(e)
-            }
-        })?;
-        let meta: ObjectMeta = serde_json::from_str(&data)?;
+        let meta = self.read_version_meta(bucket, key, version_id).await?;
 
         if meta.is_delete_marker {
             return Err(StorageError::NotFound(key.to_string()));
         }
 
         // Check for chunked version
-        let ver_ec_dir = self
-            .versions_dir(bucket, key)
-            .join(format!("{}.ec", version_id));
+        let ver_ec_dir = self.version_ec_dir(bucket, key, version_id);
         if fs::try_exists(&ver_ec_dir).await? {
             let manifest_path = ver_ec_dir.join("manifest.json");
             let manifest_data = fs::read_to_string(&manifest_path).await.map_err(|e| {
@@ -2326,15 +2345,7 @@ impl FilesystemStorage {
         version_id: &str,
     ) -> Result<ObjectMeta, StorageError> {
         validation::validate_key(key)?;
-        let ver_meta_path = self.version_meta_path(bucket, key, version_id);
-        let data = fs::read_to_string(&ver_meta_path).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StorageError::VersionNotFound(version_id.to_string())
-            } else {
-                StorageError::Io(e)
-            }
-        })?;
-        let meta: ObjectMeta = serde_json::from_str(&data)?;
+        let meta = self.read_version_meta(bucket, key, version_id).await?;
         if meta.is_delete_marker {
             return Err(StorageError::NotFound(key.to_string()));
         }
@@ -2348,23 +2359,14 @@ impl FilesystemStorage {
         version_id: &str,
     ) -> Result<ObjectMeta, StorageError> {
         validation::validate_key(key)?;
+        let meta = self.read_version_meta(bucket, key, version_id).await?;
         let ver_meta_path = self.version_meta_path(bucket, key, version_id);
-        let data = fs::read_to_string(&ver_meta_path).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StorageError::VersionNotFound(version_id.to_string())
-            } else {
-                StorageError::Io(e)
-            }
-        })?;
-        let meta: ObjectMeta = serde_json::from_str(&data)?;
 
         // Remove version files
         let _ = fs::remove_file(&ver_meta_path).await;
         let ver_data_path = self.version_data_path(bucket, key, version_id);
         let _ = fs::remove_file(&ver_data_path).await;
-        let ver_ec_dir = self
-            .versions_dir(bucket, key)
-            .join(format!("{}.ec", version_id));
+        let ver_ec_dir = self.version_ec_dir(bucket, key, version_id);
         let _ = fs::remove_dir_all(&ver_ec_dir).await;
 
         // Clean up empty versions dir

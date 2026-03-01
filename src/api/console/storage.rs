@@ -57,8 +57,9 @@ mod tests {
 
     #[test]
     fn map_bucket_storage_err_maps_other_errors_to_500() {
-        let status =
-            response_status(map_bucket_storage_err(StorageError::InvalidKey("bad".to_string())));
+        let status = response_status(map_bucket_storage_err(StorageError::InvalidKey(
+            "bad".to_string(),
+        )));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 
@@ -72,8 +73,9 @@ mod tests {
 
     #[test]
     fn map_version_delete_err_maps_other_errors_to_500() {
-        let status =
-            response_status(map_version_delete_err(StorageError::InvalidKey("bad".to_string())));
+        let status = response_status(map_version_delete_err(StorageError::InvalidKey(
+            "bad".to_string(),
+        )));
         assert_eq!(status, StatusCode::INTERNAL_SERVER_ERROR);
     }
 }

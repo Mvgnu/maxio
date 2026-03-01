@@ -699,6 +699,34 @@ async fn test_head_object() {
 }
 
 #[tokio::test]
+async fn test_get_object_missing_bucket_returns_no_such_bucket() {
+    let (base_url, _tmp) = start_server().await;
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/missing-bucket/file.txt", base_url),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>NoSuchBucket</Code>"));
+}
+
+#[tokio::test]
+async fn test_head_object_missing_bucket_returns_no_such_bucket() {
+    let (base_url, _tmp) = start_server().await;
+
+    let resp = s3_request(
+        "HEAD",
+        &format!("{}/missing-bucket/file.txt", base_url),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
 async fn test_delete_object() {
     let (base_url, _tmp) = start_server().await;
 
@@ -722,7 +750,12 @@ async fn test_delete_object() {
 async fn test_delete_object_missing_bucket_returns_no_such_bucket() {
     let (base_url, _tmp) = start_server().await;
 
-    let resp = s3_request("DELETE", &format!("{}/missing-bucket/file.txt", base_url), vec![]).await;
+    let resp = s3_request(
+        "DELETE",
+        &format!("{}/missing-bucket/file.txt", base_url),
+        vec![],
+    )
+    .await;
     assert_eq!(resp.status(), 404);
     let body = resp.text().await.unwrap();
     assert!(body.contains("<Code>NoSuchBucket</Code>"));

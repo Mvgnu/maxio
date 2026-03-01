@@ -90,6 +90,10 @@ From CLAUDE phased roadmap (additional context):
     - `DELETE /{bucket}/{key}?versionId=...`
     - `POST /{bucket}?delete`
   - Integration coverage now locks missing-bucket delete semantics for all three paths above.
+  - S3 object read endpoints now return explicit `NoSuchBucket` for missing-bucket paths across:
+    - `GET /{bucket}/{key}`
+    - `HEAD /{bucket}/{key}`
+  - Integration coverage now locks missing-bucket read semantics for both object paths above.
   - `GET ?versions` now supports marker-based pagination semantics (`max-keys`, `key-marker`, `version-id-marker`).
   - Version-list XML responses now emit `NextKeyMarker` and `NextVersionIdMarker` when truncated.
   - Console API now has regression coverage ensuring object version history remains listable after bucket versioning is suspended.
@@ -121,6 +125,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now also executes console storage-helper unit suites (`api::console::storage::tests`) in console domain-local cycles.
   - Domain check runner now also executes S3 bucket validation/service helper unit suites (`api::bucket::validation::tests`, `api::bucket::service::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes S3 list-handler unit suites (`api::list::tests`) in S3 domain-local cycles.
+  - Domain check runner now also executes missing-bucket object-read regressions (`core_tests::test_get_object_missing_bucket_returns_no_such_bucket`, `core_tests::test_head_object_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
   - Web console hash-route parsing/building is now centralized in a shared helper module (`ui/src/lib/navigation.ts`) with focused unit coverage (`ui/src/lib/navigation.test.ts`).
@@ -151,6 +156,7 @@ From CLAUDE phased roadmap (additional context):
   - Storage object write/delete/multipart-init paths now enforce explicit bucket existence and reject missing-bucket mutations without implicitly creating bucket directory trees.
   - Storage listing paths (`list_objects`, `list_object_versions`, `list_multipart_uploads`) now also enforce explicit missing-bucket `NotFound` semantics instead of implicit empty/IO-derived behavior.
   - Storage version-restore/version-read and recursive folder-marker traversal paths now propagate filesystem probe errors instead of silently coercing failed probes to "not found".
+  - Storage bucket metadata and version metadata/path handling are now centralized through shared internal helpers in `filesystem.rs`, reducing duplicated bucket/versioning logic while preserving behavior.
 - Console readiness advanced:
   - Session/login/logout/rate-limit behavior now has dedicated integration coverage.
   - Console API handlers are split by concern (auth/buckets/objects/presign/versions) with `console.rs` as router entrypoint.
