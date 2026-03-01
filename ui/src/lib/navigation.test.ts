@@ -38,6 +38,14 @@ describe("navigation route helpers", () => {
     });
   });
 
+  it("does not throw on malformed encoded bucket names", () => {
+    expect(parseHashRoute("#/bucket%ZZ/path")).toEqual({
+      bucket: "bucket%ZZ",
+      view: "objects",
+      prefix: "path",
+    });
+  });
+
   it("builds hash routes from view state", () => {
     expect(buildHashRoute("metrics", null, "")).toBe("/metrics");
     expect(buildHashRoute("objects", null, "")).toBe("/");

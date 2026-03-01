@@ -6,6 +6,14 @@ export interface ParsedRoute {
   prefix: string;
 }
 
+function safeDecodeComponent(component: string): string {
+  try {
+    return decodeURIComponent(component);
+  } catch {
+    return component;
+  }
+}
+
 export function parseHashRoute(hash: string): ParsedRoute {
   const normalized = hash.startsWith("#") ? hash.slice(1) : hash;
   const route = normalized || "/";
@@ -19,7 +27,7 @@ export function parseHashRoute(hash: string): ParsedRoute {
   }
 
   const parts = route.slice(1).split("/");
-  const bucket = decodeURIComponent(parts[0] ?? "");
+  const bucket = safeDecodeComponent(parts[0] ?? "");
   const rest = parts.slice(1).join("/");
 
   if (rest === "settings") {
