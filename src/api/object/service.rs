@@ -157,8 +157,10 @@ pub(crate) async fn body_to_reader(
     );
 
     if is_aws_chunked {
+        let framing_err = || S3Error::invalid_argument("invalid aws-chunked payload framing");
         let mut buf_reader = tokio::io::BufReader::new(raw_reader);
         let mut decoded = Vec::new();
+        let mut saw_final_chunk = false;
         loop {
             let mut line = String::new();
             let n = buf_reader
@@ -170,19 +172,28 @@ pub(crate) async fn body_to_reader(
             }
             let line = line.trim_end_matches(['\r', '\n']);
             let size_str = line.split(';').next().unwrap_or("0");
-            let chunk_size = usize::from_str_radix(size_str.trim(), 16)
-                .map_err(|_| S3Error::internal("invalid chunk size"))?;
+            let chunk_size = usize::from_str_radix(size_str.trim(), 16).map_err(|_| framing_err())?;
             if chunk_size == 0 {
+                saw_final_chunk = true;
                 break;
             }
             let mut chunk = vec![0u8; chunk_size];
             buf_reader
                 .read_exact(&mut chunk)
                 .await
-                .map_err(S3Error::internal)?;
+                .map_err(|_| framing_err())?;
             decoded.extend_from_slice(&chunk);
             let mut crlf = [0u8; 2];
-            let _ = buf_reader.read_exact(&mut crlf).await;
+            buf_reader
+                .read_exact(&mut crlf)
+                .await
+                .map_err(|_| framing_err())?;
+            if crlf != *b"\r\n" {
+                return Err(framing_err());
+            }
+        }
+        if !saw_final_chunk {
+            return Err(framing_err());
         }
         Ok(Box::pin(std::io::Cursor::new(decoded)))
     } else {
@@ -271,6 +282,34 @@ mod tests {
         let mut actual = Vec::new();
         reader.read_to_end(&mut actual).await.unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn body_to_reader_rejects_chunked_payload_without_final_chunk() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-amz-content-sha256",
+            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse().unwrap(),
+        );
+        let encoded = b"5;chunk-signature=a\r\nhello\r\n";
+        let err = body_to_reader(&headers, Body::from(encoded.as_slice()))
+            .await
+            .expect_err("payload without final chunk should fail");
+        assert_eq!(err.code.as_str(), "InvalidArgument");
+    }
+
+    #[tokio::test]
+    async fn body_to_reader_rejects_chunked_payload_with_invalid_size() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-amz-content-sha256",
+            "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse().unwrap(),
+        );
+        let encoded = b"zz;chunk-signature=a\r\nhello\r\n0;chunk-signature=b\r\n\r\n";
+        let err = body_to_reader(&headers, Body::from(encoded.as_slice()))
+            .await
+            .expect_err("payload with invalid chunk size should fail");
+        assert_eq!(err.code.as_str(), "InvalidArgument");
     }
 
     #[test]

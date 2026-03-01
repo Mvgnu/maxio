@@ -100,6 +100,7 @@ From CLAUDE phased roadmap (additional context):
     - `HEAD /{bucket}/{key}`
   - Integration coverage now locks missing-bucket read semantics for both object paths above.
   - S3 list and versions-list endpoints now map invalid `prefix` query values to explicit `InvalidArgument` (instead of generic internal errors).
+  - S3 list and versions-list now enforce prefix validation at query/service boundary (`validate_prefix`) before storage traversal.
   - Integration coverage now locks invalid-prefix list semantics for both `GET ?list-type=2` and `GET ?versions` paths.
   - CopyObject now returns explicit `NoSuchBucket` when either source or destination bucket is missing.
   - Integration coverage now locks missing-bucket CopyObject semantics for both source and destination bucket paths.
@@ -116,6 +117,7 @@ From CLAUDE phased roadmap (additional context):
   - Web console versioning UX now reflects non-destructive suspend semantics and keeps version-history access reachable while suspended.
   - DeleteObjects request parsing now supports `<Quiet>true</Quiet>` and routes through a dedicated typed parser (`object/parsing`).
   - DeleteObjects response XML shaping is now centralized in `object/service` for deterministic request-order output and clearer handler boundaries.
+  - AWS chunked upload decode now enforces strict framing semantics and rejects malformed/truncated chunked payloads with explicit `InvalidArgument` responses.
   - Integration tests cover enable/suspend and invalid-status rejection.
 - Verification platform advanced:
   - Integration tests are now split into domain modules.
@@ -128,8 +130,10 @@ From CLAUDE phased roadmap (additional context):
   - Extracted bucket/object/auth parser/validation helpers now have direct unit-test coverage.
   - S3 error code/status mapping and XML error response contract behavior now have focused unit-test coverage (`error::tests`).
   - S3 listing pagination/token/delimiter/version shaping helpers are now covered by focused list-service unit tests (`api::list::service::tests`).
+  - S3 list-service unit coverage now also includes dedicated prefix-validation behavior (`validate_prefix`) for deterministic query-boundary rejection semantics.
   - S3 object checksum extraction/response-header mapping and streaming-body decoding helpers are now covered by focused object-service unit tests (`api::object::service::tests`).
   - S3 object-service unit coverage now also includes delete-path error-mapping helpers (`map_delete_storage_err`, `map_delete_objects_err`) for invalid-key and missing-bucket edge handling.
+  - S3 object-service unit coverage now also includes malformed/truncated AWS chunked-framing regressions for strict decode-path validation.
   - S3 multipart transport response helpers are now covered by focused unit tests (`api::multipart::tests`) and use panic-free response construction.
   - S3 bucket/list/object transport handlers now also use fallible panic-free response construction (`map_err`) instead of `Response::builder(...).unwrap()`.
   - S3 object/multipart mutation error mapping now preserves explicit `NoSuchBucket` semantics for storage-layer missing-bucket paths (instead of collapsing to generic internal errors).
