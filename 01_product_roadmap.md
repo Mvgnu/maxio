@@ -126,6 +126,7 @@ From CLAUDE phased roadmap (additional context):
   - Shared integration helpers are now isolated in `tests/integration/helpers.rs`.
   - CORS origin-reflection behavior on successful authenticated S3 responses now has regression coverage.
   - Domain runtime verification now explicitly executes the successful-response CORS origin-reflection regression.
+  - Domain runtime verification now also executes origin-less preflight regression coverage for wildcard/no-credentials CORS behavior.
   - Storage key/upload-id validation rules now have explicit unit-test coverage.
   - Erasure/degraded-read chunk verification now runs through async shard reads in `VerifiedChunkReader` (no synchronous shard reads in stream path).
   - Extracted bucket/object/auth parser/validation helpers now have direct unit-test coverage.
