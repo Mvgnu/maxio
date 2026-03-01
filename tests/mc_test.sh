@@ -79,7 +79,7 @@ assert_file_not_exists() {
     fi
 }
 
-echo "=== Maxio mc integration tests ==="
+echo "=== MaxIO mc integration tests ==="
 echo "Server: localhost:$PORT"
 echo "Data dir: $DATA_DIR"
 echo ""
@@ -165,6 +165,23 @@ assert_eq "list shows folder prefix" "true" "$(echo "$OUTPUT" | grep -q "my-fold
 assert "download from folder" mc cp "$ALIAS/$BUCKET/my-folder/sub.txt" "$TMPDIR/folder-sub.txt"
 assert_eq "folder object content matches" "hello maxio" "$(cat "$TMPDIR/folder-sub.txt")"
 assert "delete folder object" mc rm "$ALIAS/$BUCKET/my-folder/sub.txt"
+
+# --- Lifecycle configuration (mc ilm) ---
+if mc ilm --help > /dev/null 2>&1; then
+    assert "add lifecycle rule via mc ilm" \
+        mc ilm rule add "$ALIAS/$BUCKET" --id expire-logs --prefix logs/ --expire-days 7
+    assert_file_exists "lifecycle config exists on disk" "$DATA_DIR/buckets/$BUCKET/.lifecycle.json"
+
+    OUTPUT=$(mc ilm rule ls "$ALIAS/$BUCKET" 2>&1)
+    assert_eq "mc ilm list contains rule id" "true" "$(echo "$OUTPUT" | grep -q "expire-logs" && echo true || echo false)"
+    assert_eq "mc ilm list contains prefix" "true" "$(echo "$OUTPUT" | grep -q "logs/" && echo true || echo false)"
+
+    assert "remove lifecycle rule via mc ilm" \
+        mc ilm rule rm "$ALIAS/$BUCKET" --id expire-logs
+    assert_file_not_exists "lifecycle config removed from disk" "$DATA_DIR/buckets/$BUCKET/.lifecycle.json"
+else
+    green "INFO: lifecycle tests skipped (mc ilm command unavailable)"
+fi
 
 # --- Delete operations ---
 assert "delete object" mc rm "$ALIAS/$BUCKET/test.txt"

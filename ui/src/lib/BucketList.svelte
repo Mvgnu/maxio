@@ -8,6 +8,7 @@
   import Trash2 from 'lucide-svelte/icons/trash-2'
   import Settings from 'lucide-svelte/icons/settings'
   import { toast } from '$lib/toast'
+  import { createBucketApi, deleteBucketApi, listBucketsApi } from '$lib/api'
 
   interface Props {
     onSelect: (bucket: string) => void
@@ -36,12 +37,11 @@
     loading = true
     error = null
     try {
-      const res = await fetch('/api/buckets')
-      if (res.ok) {
-        const data = await res.json()
-        buckets = data.buckets
+      const result = await listBucketsApi()
+      if (result.ok) {
+        buckets = result.data.buckets
       } else {
-        error = `Failed to load buckets (${res.status})`
+        error = result.error || `Failed to load buckets (${result.status})`
       }
     } catch (err) {
       console.error('fetchBuckets failed:', err)
@@ -56,19 +56,14 @@
     creating = true
     try {
       const name = newBucketName.trim()
-      const res = await fetch('/api/buckets', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name }),
-      })
-      if (res.ok) {
+      const result = await createBucketApi(name)
+      if (result.ok) {
         toast.success(`Bucket "${name}" created`)
         newBucketName = ''
         showCreate = false
         await fetchBuckets()
       } else {
-        const data = await res.json()
-        toast.error(data.error || `Failed to create bucket (${res.status})`)
+        toast.error(result.error || `Failed to create bucket (${result.status})`)
       }
     } catch (err) {
       console.error('createBucket failed:', err)
@@ -82,13 +77,12 @@
     e.stopPropagation()
     if (!confirm(`Delete bucket "${name}"? This cannot be undone.`)) return
     try {
-      const res = await fetch(`/api/buckets/${encodeURIComponent(name)}`, { method: 'DELETE' })
-      if (res.ok) {
+      const result = await deleteBucketApi(name)
+      if (result.ok) {
         toast.success(`Bucket "${name}" deleted`)
         await fetchBuckets()
       } else {
-        const data = await res.json()
-        toast.error(data.error || `Failed to delete bucket (${res.status})`)
+        toast.error(result.error || `Failed to delete bucket (${result.status})`)
       }
     } catch (err) {
       console.error('deleteBucket failed:', err)

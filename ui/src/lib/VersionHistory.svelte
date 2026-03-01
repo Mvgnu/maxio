@@ -6,6 +6,7 @@
   import Trash2 from 'lucide-svelte/icons/trash-2'
   import Tag from 'lucide-svelte/icons/tag'
   import Loader2 from 'lucide-svelte/icons/loader-2'
+  import { deleteVersionApi, listVersionsApi } from '$lib/api'
 
   interface Props {
     bucket: string
@@ -31,12 +32,11 @@
     loading = true
     error = null
     try {
-      const res = await fetch(`/api/buckets/${encodeURIComponent(bucket)}/versions?key=${encodeURIComponent(objectKey)}`)
-      if (res.ok) {
-        const data = await res.json()
-        versions = data.versions
+      const result = await listVersionsApi(bucket, objectKey)
+      if (result.ok) {
+        versions = result.data.versions
       } else {
-        error = 'Failed to load versions'
+        error = result.error || 'Failed to load versions'
       }
     } catch (err) {
       console.error('fetchVersions failed:', err)
@@ -49,16 +49,12 @@
   async function deleteVersion(versionId: string) {
     if (!confirm('Permanently delete this version? This cannot be undone.')) return
     try {
-      const res = await fetch(
-        `/api/buckets/${encodeURIComponent(bucket)}/versions/${encodeURIComponent(versionId)}/objects/${encodeURIComponent(objectKey)}`,
-        { method: 'DELETE' }
-      )
-      if (res.ok) {
+      const result = await deleteVersionApi(bucket, versionId, objectKey)
+      if (result.ok) {
         await fetchVersions()
         onVersionDeleted?.()
       } else {
-        const data = await res.json()
-        error = data.error || 'Failed to delete version'
+        error = result.error || 'Failed to delete version'
       }
     } catch (err) {
       console.error('deleteVersion failed:', err)

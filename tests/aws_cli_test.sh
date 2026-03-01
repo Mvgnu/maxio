@@ -84,7 +84,7 @@ assert_file_not_exists() {
     fi
 }
 
-echo "=== Maxio AWS CLI integration tests ==="
+echo "=== MaxIO AWS CLI integration tests ==="
 echo "Server: localhost:$PORT"
 echo "Data dir: $DATA_DIR"
 echo ""
@@ -231,6 +231,37 @@ assert_eq "head folder marker has zero size" "true" "$(echo "$OUTPUT" | grep -q 
 
 assert "delete folder marker" $AWS s3api delete-object --bucket "$BUCKET" --key "empty-folder/"
 assert_fail "head deleted folder marker" $AWS s3api head-object --bucket "$BUCKET" --key "empty-folder/"
+
+# --- Lifecycle configuration ---
+LIFECYCLE_JSON="$TMPDIR/lifecycle.json"
+cat > "$LIFECYCLE_JSON" <<EOF
+{
+  "Rules": [
+    {
+      "ID": "expire-logs",
+      "Status": "Enabled",
+      "Filter": { "Prefix": "logs/" },
+      "Expiration": { "Days": 7 }
+    }
+  ]
+}
+EOF
+assert "put bucket lifecycle configuration" \
+    $AWS s3api put-bucket-lifecycle-configuration \
+    --bucket "$BUCKET" \
+    --lifecycle-configuration "file://$LIFECYCLE_JSON"
+assert_file_exists "lifecycle config exists on disk" "$DATA_DIR/buckets/$BUCKET/.lifecycle.json"
+
+OUTPUT=$($AWS s3api get-bucket-lifecycle-configuration --bucket "$BUCKET" 2>&1)
+assert_eq "get lifecycle has rule id" "true" "$(echo "$OUTPUT" | grep -q '"ID": "expire-logs"' && echo true || echo false)"
+assert_eq "get lifecycle has prefix" "true" "$(echo "$OUTPUT" | grep -q '"Prefix": "logs/"' && echo true || echo false)"
+assert_eq "get lifecycle has expiration days" "true" "$(echo "$OUTPUT" | grep -q '"Days": 7' && echo true || echo false)"
+
+assert "delete bucket lifecycle configuration" $AWS s3api delete-bucket-lifecycle --bucket "$BUCKET"
+assert_file_not_exists "lifecycle config removed from disk" "$DATA_DIR/buckets/$BUCKET/.lifecycle.json"
+
+assert_fail "get lifecycle after delete returns not found" \
+    $AWS s3api get-bucket-lifecycle-configuration --bucket "$BUCKET"
 
 # --- Checksum tests ---
 echo "checksum test data" > "$TMPDIR/checksum.txt"

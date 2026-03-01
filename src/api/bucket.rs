@@ -1,3 +1,5 @@
+mod validation;
+
 use std::collections::HashMap;
 
 use axum::{
@@ -11,6 +13,9 @@ use crate::error::S3Error;
 use crate::server::AppState;
 use crate::storage::{BucketMeta, StorageError};
 use crate::xml::{response::to_xml, types::*};
+use validation::{
+    parse_lifecycle_rules, parse_versioning_status, serialize_lifecycle_rules, validate_bucket_name,
+};
 
 pub async fn list_buckets(State(state): State<AppState>) -> Result<Response<Body>, S3Error> {
     let buckets = state
@@ -110,6 +115,17 @@ pub async fn delete_bucket(
     }
 }
 
+pub async fn handle_bucket_delete(
+    State(state): State<AppState>,
+    Path(bucket): Path<String>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Result<Response<Body>, S3Error> {
+    if params.contains_key("lifecycle") {
+        return delete_bucket_lifecycle(State(state), Path(bucket)).await;
+    }
+    delete_bucket(State(state), Path(bucket)).await
+}
+
 pub async fn handle_bucket_put(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
@@ -118,6 +134,9 @@ pub async fn handle_bucket_put(
 ) -> Result<Response<Body>, S3Error> {
     if params.contains_key("versioning") {
         return put_bucket_versioning(State(state), Path(bucket), body).await;
+    }
+    if params.contains_key("lifecycle") {
+        return put_bucket_lifecycle(State(state), Path(bucket), body).await;
     }
     create_bucket(State(state), Path(bucket)).await
 }
@@ -137,15 +156,7 @@ async fn put_bucket_versioning(
         .await
         .map_err(|e| S3Error::internal(e))?;
     let body_str = String::from_utf8_lossy(&body_bytes);
-
-    // Parse <VersioningConfiguration><Status>Enabled|Suspended</Status></VersioningConfiguration>
-    let enabled = if body_str.contains("<Status>Enabled</Status>") {
-        true
-    } else if body_str.contains("<Status>Suspended</Status>") {
-        false
-    } else {
-        false
-    };
+    let enabled = parse_versioning_status(&body_str)?;
 
     state
         .storage
@@ -155,6 +166,65 @@ async fn put_bucket_versioning(
 
     Ok(Response::builder()
         .status(StatusCode::OK)
+        .body(Body::empty())
+        .unwrap())
+}
+
+async fn put_bucket_lifecycle(
+    State(state): State<AppState>,
+    Path(bucket): Path<String>,
+    body: Body,
+) -> Result<Response<Body>, S3Error> {
+    match state.storage.head_bucket(&bucket).await {
+        Ok(true) => {}
+        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
+        Err(e) => return Err(S3Error::internal(e)),
+    }
+
+    let body_bytes = axum::body::to_bytes(body, 1024 * 256)
+        .await
+        .map_err(S3Error::internal)?;
+    let body_str = String::from_utf8_lossy(&body_bytes);
+    let rules = parse_lifecycle_rules(&body_str)?;
+
+    state
+        .storage
+        .set_lifecycle_rules(&bucket, &rules)
+        .await
+        .map_err(|e| match e {
+            StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
+            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
+            other => S3Error::internal(other),
+        })?;
+
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .body(Body::empty())
+        .unwrap())
+}
+
+async fn delete_bucket_lifecycle(
+    State(state): State<AppState>,
+    Path(bucket): Path<String>,
+) -> Result<Response<Body>, S3Error> {
+    match state.storage.head_bucket(&bucket).await {
+        Ok(true) => {}
+        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
+        Err(e) => return Err(S3Error::internal(e)),
+    }
+
+    state
+        .storage
+        .set_lifecycle_rules(&bucket, &[])
+        .await
+        .map_err(|e| match e {
+            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
+            StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
+            other => S3Error::internal(other),
+        })?;
+
+    Ok(Response::builder()
+        .status(StatusCode::NO_CONTENT)
         .body(Body::empty())
         .unwrap())
 }
@@ -185,20 +255,28 @@ pub async fn get_bucket_versioning(
         .unwrap())
 }
 
-fn validate_bucket_name(name: &str) -> Result<(), S3Error> {
-    if name.len() < 3 || name.len() > 63 {
-        return Err(S3Error::invalid_bucket_name(name));
+pub async fn get_bucket_lifecycle(
+    state: AppState,
+    bucket: String,
+) -> Result<Response<Body>, S3Error> {
+    let rules = state
+        .storage
+        .get_lifecycle_rules(&bucket)
+        .await
+        .map_err(|e| match e {
+            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
+            other => S3Error::internal(other),
+        })?;
+
+    if rules.is_empty() {
+        return Err(S3Error::no_such_lifecycle_configuration(&bucket));
     }
-    if !name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '.')
-    {
-        return Err(S3Error::invalid_bucket_name(name));
-    }
-    if !name.as_bytes()[0].is_ascii_alphanumeric()
-        || !name.as_bytes()[name.len() - 1].is_ascii_alphanumeric()
-    {
-        return Err(S3Error::invalid_bucket_name(name));
-    }
-    Ok(())
+
+    let result = serialize_lifecycle_rules(rules);
+    let xml = to_xml(&result).map_err(S3Error::internal)?;
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .header("content-type", "application/xml")
+        .body(Body::from(xml))
+        .unwrap())
 }

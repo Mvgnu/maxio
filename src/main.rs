@@ -10,8 +10,10 @@ mod xml;
 use clap::Parser;
 use config::Config;
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::time::Duration;
 use tracing_subscriber::EnvFilter;
+
+const LIFECYCLE_SWEEP_INTERVAL_SECS: u64 = 300;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -23,18 +25,12 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
 
-    let storage = storage::filesystem::FilesystemStorage::new(
-        &config.data_dir,
-        config.erasure_coding,
-        config.chunk_size,
-        config.parity_shards,
-    ).await?;
+    let state = server::AppState::from_config(config.clone()).await?;
+    let node_id = state.node_id.as_ref().clone();
+    let cluster_peer_count = state.cluster_peers.len();
+    let distributed_mode = cluster_peer_count > 0;
 
-    let state = server::AppState {
-        storage: Arc::new(storage),
-        config: Arc::new(config.clone()),
-        login_rate_limiter: Arc::new(api::console::LoginRateLimiter::new()),
-    };
+    spawn_lifecycle_worker(state.clone());
 
     let app = server::build_router(state);
 
@@ -49,22 +45,51 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("MaxIO v{} listening on {}", env!("MAXIO_VERSION"), addr);
     tracing::info!("Access Key: {}", config.access_key);
     tracing::info!("Secret Key: [REDACTED]");
+    tracing::info!(
+        "Configured credentials: {}",
+        1 + config.additional_credentials.len()
+    );
+    tracing::info!("Node ID:    {}", node_id);
+    tracing::info!(
+        "Mode:       {} ({} peer{})",
+        if distributed_mode {
+            "distributed"
+        } else {
+            "standalone"
+        },
+        cluster_peer_count,
+        if cluster_peer_count == 1 { "" } else { "s" }
+    );
     tracing::info!("Data dir:   {}", config.data_dir);
     tracing::info!("Region:     {}", config.region);
     if config.erasure_coding {
-        tracing::info!("Erasure coding: enabled (chunk size: {}MB)", config.chunk_size / (1024 * 1024));
+        tracing::info!(
+            "Erasure coding: enabled (chunk size: {}MB)",
+            config.chunk_size / (1024 * 1024)
+        );
         if config.parity_shards > 0 {
-            tracing::info!("Parity shards: {} (can tolerate {} lost/corrupt chunks per object)", config.parity_shards, config.parity_shards);
+            tracing::info!(
+                "Parity shards: {} (can tolerate {} lost/corrupt chunks per object)",
+                config.parity_shards,
+                config.parity_shards
+            );
         }
     } else if config.parity_shards > 0 {
         tracing::warn!("--parity-shards ignored: requires --erasure-coding to be enabled");
     }
-    let display_host = if config.address == "0.0.0.0" { "localhost" } else { &config.address };
+    let display_host = if config.address == "0.0.0.0" {
+        "localhost"
+    } else {
+        &config.address
+    };
     tracing::info!("Web UI:     http://{}:{}/ui/", display_host, config.port);
 
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await?;
 
     Ok(())
 }
@@ -74,4 +99,46 @@ async fn shutdown_signal() {
         .await
         .expect("failed to install CTRL+C signal handler");
     tracing::info!("Shutdown signal received, draining connections...");
+}
+
+fn spawn_lifecycle_worker(state: server::AppState) {
+    tokio::spawn(async move {
+        let mut interval =
+            tokio::time::interval(Duration::from_secs(LIFECYCLE_SWEEP_INTERVAL_SECS));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+        loop {
+            interval.tick().await;
+            if let Err(err) = run_lifecycle_sweep(&state).await {
+                tracing::warn!("Lifecycle sweep failed: {}", err);
+            }
+        }
+    });
+}
+
+async fn run_lifecycle_sweep(state: &server::AppState) -> Result<(), storage::StorageError> {
+    let buckets = state.storage.list_buckets().await?;
+    let now = chrono::Utc::now();
+
+    for bucket in buckets {
+        match state.storage.apply_lifecycle_once(&bucket.name, now).await {
+            Ok(deleted) => {
+                if !deleted.is_empty() {
+                    tracing::info!(
+                        "Lifecycle sweep deleted {} object(s) in bucket {}",
+                        deleted.len(),
+                        bucket.name
+                    );
+                }
+            }
+            Err(storage::StorageError::NotFound(_)) => {
+                // Bucket removed concurrently.
+            }
+            Err(err) => {
+                tracing::warn!("Lifecycle sweep error for bucket {}: {}", bucket.name, err);
+            }
+        }
+    }
+
+    Ok(())
 }

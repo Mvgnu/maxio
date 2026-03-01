@@ -19,9 +19,11 @@ MaxIO is a lightweight, single-binary S3-compatible object storage server writte
 - **Single Binary** — Frontend assets are compiled into the binary via `rust-embed`. Nothing extra to deploy
 - **Pure Filesystem Storage** — No database. Buckets are directories, objects are files, metadata in `.meta.json` sidecars
 - **AWS Signature V4** — Compatible with `mc`, AWS CLI, and any S3 SDK
+- **Multi-Credential Auth** — Supports primary plus additional `access:secret` credential pairs for S3 and console login
 - **Web Console** — Built-in UI at `/ui/` for browsing, uploading, and managing objects
 - **S3 API Coverage** — ListBuckets, CreateBucket, HeadBucket, DeleteBucket, GetBucketLocation, ListObjectsV1/V2, PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects (batch), CopyObject, Multipart Upload
 - **Range Requests** — HTTP 206 Partial Content support via `Range` header on GetObject
+- **Runtime Observability** — Prometheus metrics at `/metrics` and health status at `/healthz`
 - **Checksum Verification** — CRC32, CRC32C, SHA-1, and SHA-256 checksums on upload with automatic validation and persistent storage
 - **Erasure Coding** — Optional chunked storage with per-chunk SHA-256 integrity verification and Reed-Solomon parity for automatic recovery from corrupted or missing data
 
@@ -99,7 +101,10 @@ Open `http://localhost:9000/ui/` in your browser. Default credentials: `minioadm
 | `MAXIO_DATA_DIR` | `--data-dir` | `./data` | Storage directory |
 | `MAXIO_ACCESS_KEY` | `--access-key` | `minioadmin` | Access key (aliases: `MINIO_ROOT_USER`, `MINIO_ACCESS_KEY`) |
 | `MAXIO_SECRET_KEY` | `--secret-key` | `minioadmin` | Secret key (aliases: `MINIO_ROOT_PASSWORD`, `MINIO_SECRET_KEY`) |
+| `MAXIO_ADDITIONAL_CREDENTIALS` | `--additional-credentials` | _empty_ | Comma-separated `access:secret` pairs for additional S3/console users |
 | `MAXIO_REGION` | `--region` | `us-east-1` | S3 region (aliases: `MINIO_REGION_NAME`, `MINIO_REGION`) |
+| `MAXIO_NODE_ID` | `--node-id` | `HOSTNAME` or `maxio-node` | Stable node identifier for distributed-mode bootstrap wiring |
+| `MAXIO_CLUSTER_PEERS` | `--cluster-peers` | _empty_ | Comma-separated `host:port` peer list for distributed bootstrap wiring |
 | `MAXIO_ERASURE_CODING` | `--erasure-coding` | `false` | Enable erasure coding with per-chunk integrity checksums |
 | `MAXIO_CHUNK_SIZE` | `--chunk-size` | `10485760` (10MB) | Chunk size in bytes for erasure coding |
 | `MAXIO_PARITY_SHARDS` | `--parity-shards` | `0` | Number of parity shards per object (requires `--erasure-coding`, 0 = no parity) |
@@ -135,14 +140,35 @@ aws --endpoint-url http://localhost:9000 s3 rb s3://my-bucket
 ## Roadmap
 
 - ~~Multipart upload~~, ~~presigned URLs~~, ~~CopyObject~~
-- CORS, ~~Range headers~~
-- Versioning, lifecycle rules
+- ~~CORS~~, ~~Range headers~~
+- Versioning, ~~lifecycle rules~~, ~~metrics~~
 - Multi-user support
-- Distributed mode, ~~erasure coding~~, replication
+- Distributed mode (bootstrap hooks in place), ~~erasure coding~~, replication
 
 ## Contributing
 
 See [CLAUDE.md](CLAUDE.md) for the full development workflow, architecture details, and testing instructions.
+
+### Domain Verification
+
+Run domain-scoped checks with:
+
+```bash
+./scripts/domain_check.sh <domain>
+```
+
+Example:
+
+```bash
+./scripts/domain_check.sh s3_auth_sigv4
+./scripts/domain_check.sh web_console_ui
+```
+
+Run all domain checks:
+
+```bash
+./scripts/domain_check.sh all
+```
 
 ## Core Maintainer
 

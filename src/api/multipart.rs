@@ -13,6 +13,9 @@ use crate::storage::{ChecksumAlgorithm, StorageError};
 use crate::xml::{response::to_xml, types::*};
 
 use super::object::{body_to_reader, extract_checksum};
+use parsing::{parse_complete_parts, parse_part_number};
+
+mod parsing;
 
 const COMPLETE_BODY_MAX: usize = 1024 * 1024;
 
@@ -66,8 +69,8 @@ pub async fn upload_part(
     let part_number = params
         .get("partNumber")
         .ok_or_else(|| S3Error::invalid_argument("missing partNumber"))?
-        .parse::<u32>()
-        .map_err(|_| S3Error::invalid_part("invalid part number"))?;
+        .as_str();
+    let part_number = parse_part_number(part_number)?;
 
     let checksum = extract_checksum(&headers);
     let reader = body_to_reader(&headers, body).await?;
@@ -233,7 +236,9 @@ fn map_storage_err(err: StorageError) -> S3Error {
     match err {
         StorageError::ChecksumMismatch(_) => S3Error::bad_checksum("x-amz-checksum"),
         StorageError::UploadNotFound(upload_id) => S3Error::no_such_upload(&upload_id),
-        StorageError::InvalidKey(msg) if msg.contains("part too small") => S3Error::entity_too_small(),
+        StorageError::InvalidKey(msg) if msg.contains("part too small") => {
+            S3Error::entity_too_small()
+        }
         StorageError::InvalidKey(msg)
             if msg.contains("part")
                 || msg.contains("etag")
@@ -245,63 +250,4 @@ fn map_storage_err(err: StorageError) -> S3Error {
         StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
         _ => S3Error::internal(err),
     }
-}
-
-fn parse_complete_parts(xml: &str) -> Result<Vec<(u32, String)>, S3Error> {
-    let mut reader = quick_xml::Reader::from_str(xml);
-    reader.config_mut().trim_text(true);
-
-    let mut parts = Vec::new();
-    let mut in_part = false;
-    let mut in_part_number = false;
-    let mut in_etag = false;
-    let mut part_number: Option<u32> = None;
-    let mut etag: Option<String> = None;
-
-    loop {
-        match reader.read_event() {
-            Ok(quick_xml::events::Event::Start(e)) => match e.name().as_ref() {
-                b"Part" => {
-                    in_part = true;
-                    part_number = None;
-                    etag = None;
-                }
-                b"PartNumber" if in_part => in_part_number = true,
-                b"ETag" if in_part => in_etag = true,
-                _ => {}
-            },
-            Ok(quick_xml::events::Event::Text(e)) => {
-                if in_part_number {
-                    let value = e.unescape().map_err(|_| S3Error::malformed_xml())?.into_owned();
-                    part_number = Some(value.parse::<u32>().map_err(|_| S3Error::invalid_part("invalid part number"))?);
-                    in_part_number = false;
-                } else if in_etag {
-                    let value = e.unescape().map_err(|_| S3Error::malformed_xml())?.into_owned();
-                    let normalized = if value.starts_with('"') && value.ends_with('"') {
-                        value
-                    } else {
-                        format!("\"{}\"", value)
-                    };
-                    etag = Some(normalized);
-                    in_etag = false;
-                }
-            }
-            Ok(quick_xml::events::Event::End(e)) => match e.name().as_ref() {
-                b"PartNumber" => in_part_number = false,
-                b"ETag" => in_etag = false,
-                b"Part" => {
-                    let n = part_number.ok_or_else(S3Error::malformed_xml)?;
-                    let tag = etag.clone().ok_or_else(S3Error::malformed_xml)?;
-                    parts.push((n, tag));
-                    in_part = false;
-                }
-                _ => {}
-            },
-            Ok(quick_xml::events::Event::Eof) => break,
-            Err(_) => return Err(S3Error::malformed_xml()),
-            _ => {}
-        }
-    }
-
-    Ok(parts)
 }

@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
 #[serde(rename = "ListAllMyBucketsResult")]
@@ -50,7 +50,10 @@ pub struct ListBucketResult {
     pub common_prefixes: Vec<CommonPrefix>,
     #[serde(rename = "ContinuationToken", skip_serializing_if = "Option::is_none")]
     pub continuation_token: Option<String>,
-    #[serde(rename = "NextContinuationToken", skip_serializing_if = "Option::is_none")]
+    #[serde(
+        rename = "NextContinuationToken",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub next_continuation_token: Option<String>,
     #[serde(rename = "Delimiter", skip_serializing_if = "Option::is_none")]
     pub delimiter: Option<String>,
@@ -245,4 +248,37 @@ pub struct DeleteMarkerEntry {
     pub is_latest: bool,
     #[serde(rename = "LastModified")]
     pub last_modified: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename = "LifecycleConfiguration")]
+pub struct LifecycleConfiguration {
+    #[serde(rename = "Rule", default)]
+    pub rules: Vec<LifecycleRule>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct LifecycleRule {
+    #[serde(rename = "ID", skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(rename = "Status")]
+    pub status: String,
+    #[serde(rename = "Filter", skip_serializing_if = "Option::is_none")]
+    pub filter: Option<LifecycleFilter>,
+    #[serde(rename = "Prefix", skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+    #[serde(rename = "Expiration")]
+    pub expiration: LifecycleExpiration,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct LifecycleFilter {
+    #[serde(rename = "Prefix", skip_serializing_if = "Option::is_none")]
+    pub prefix: Option<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub struct LifecycleExpiration {
+    #[serde(rename = "Days")]
+    pub days: u32,
 }

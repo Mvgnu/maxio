@@ -1,4 +1,6 @@
-use std::collections::{BTreeSet, HashMap};
+mod service;
+
+use std::collections::HashMap;
 
 use axum::{
     body::Body,
@@ -7,11 +9,10 @@ use axum::{
 };
 use http::StatusCode;
 
+use super::multipart;
 use crate::error::S3Error;
 use crate::server::AppState;
-use crate::storage::ObjectMeta;
 use crate::xml::{response::to_xml, types::*};
-use super::multipart;
 
 pub async fn handle_bucket_get(
     State(state): State<AppState>,
@@ -32,6 +33,10 @@ pub async fn handle_bucket_get(
 
     if params.contains_key("versioning") {
         return super::bucket::get_bucket_versioning(state, bucket).await;
+    }
+
+    if params.contains_key("lifecycle") {
+        return super::bucket::get_bucket_lifecycle(state, bucket).await;
     }
 
     if params.contains_key("versions") {
@@ -65,70 +70,38 @@ async fn list_objects_v2(
     bucket: String,
     params: HashMap<String, String>,
 ) -> Result<Response<Body>, S3Error> {
-    let prefix = params.get("prefix").cloned().unwrap_or_default();
-    let delimiter = params.get("delimiter").cloned();
-    let max_keys: usize = params
-        .get("max-keys")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1000)
-        .min(1000);
-    let start_after = params.get("start-after").cloned();
-    let continuation_token = params.get("continuation-token").cloned();
-
-    let effective_start = continuation_token
-        .as_ref()
-        .and_then(|t| {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD
-                .decode(t)
-                .ok()
-                .and_then(|b| String::from_utf8(b).ok())
-        })
-        .or(start_after.clone());
+    let query = service::ListV2Query::from_params(&params);
 
     let all_objects = state
         .storage
-        .list_objects(&bucket, &prefix)
+        .list_objects(&bucket, &query.prefix)
         .await
         .map_err(|e| S3Error::internal(e))?;
 
-    let filtered: Vec<&ObjectMeta> = all_objects
-        .iter()
-        .filter(|o| {
-            if let Some(ref start) = effective_start {
-                o.key.as_str() > start.as_str()
-            } else {
-                true
-            }
-        })
-        .collect();
-
-    let is_truncated = filtered.len() > max_keys;
-    let page: Vec<&ObjectMeta> = filtered.into_iter().take(max_keys).collect();
-
-    let (contents, common_prefixes) = split_by_delimiter(&page, &prefix, &delimiter);
+    let filtered = service::filter_objects_after(&all_objects, query.effective_start.as_deref());
+    let (page, is_truncated) = service::paginate_objects(filtered, query.max_keys);
+    let (contents, common_prefixes) =
+        service::split_by_delimiter(&page, &query.prefix, query.delimiter.as_deref());
 
     let next_token = if is_truncated {
-        page.last().map(|o| {
-            use base64::Engine;
-            base64::engine::general_purpose::STANDARD.encode(&o.key)
-        })
+        page.last()
+            .map(|meta| service::encode_continuation_token(&meta.key))
     } else {
         None
     };
 
     let result = ListBucketResult {
         name: bucket,
-        prefix,
+        prefix: query.prefix,
         key_count: contents.len() as i32 + common_prefixes.len() as i32,
-        max_keys: max_keys as i32,
+        max_keys: query.max_keys as i32,
         is_truncated,
         contents,
         common_prefixes,
-        continuation_token,
+        continuation_token: query.continuation_token,
         next_continuation_token: next_token,
-        delimiter,
-        start_after,
+        delimiter: query.delimiter,
+        start_after: query.start_after,
     };
 
     let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
@@ -145,53 +118,35 @@ async fn list_objects_v1(
     bucket: String,
     params: HashMap<String, String>,
 ) -> Result<Response<Body>, S3Error> {
-    let prefix = params.get("prefix").cloned().unwrap_or_default();
-    let delimiter = params.get("delimiter").cloned();
-    let max_keys: usize = params
-        .get("max-keys")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1000)
-        .min(1000);
-    let marker = params.get("marker").cloned();
+    let query = service::ListV1Query::from_params(&params);
 
     let all_objects = state
         .storage
-        .list_objects(&bucket, &prefix)
+        .list_objects(&bucket, &query.prefix)
         .await
         .map_err(|e| S3Error::internal(e))?;
 
-    let filtered: Vec<&ObjectMeta> = all_objects
-        .iter()
-        .filter(|o| {
-            if let Some(ref m) = marker {
-                o.key.as_str() > m.as_str()
-            } else {
-                true
-            }
-        })
-        .collect();
-
-    let is_truncated = filtered.len() > max_keys;
-    let page: Vec<&ObjectMeta> = filtered.into_iter().take(max_keys).collect();
-
-    let (contents, common_prefixes) = split_by_delimiter(&page, &prefix, &delimiter);
+    let filtered = service::filter_objects_after(&all_objects, query.marker.as_deref());
+    let (page, is_truncated) = service::paginate_objects(filtered, query.max_keys);
+    let (contents, common_prefixes) =
+        service::split_by_delimiter(&page, &query.prefix, query.delimiter.as_deref());
 
     let next_marker = if is_truncated {
-        page.last().map(|o| o.key.clone())
+        page.last().map(|meta| meta.key.clone())
     } else {
         None
     };
 
     let result = ListBucketResultV1 {
         name: bucket,
-        prefix,
-        marker: marker.unwrap_or_default(),
+        prefix: query.prefix,
+        marker: query.marker.unwrap_or_default(),
         next_marker,
-        max_keys: max_keys as i32,
+        max_keys: query.max_keys as i32,
         is_truncated,
         contents,
         common_prefixes,
-        delimiter,
+        delimiter: query.delimiter,
     };
 
     let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
@@ -201,53 +156,6 @@ async fn list_objects_v1(
         .header("content-type", "application/xml")
         .body(Body::from(xml))
         .unwrap())
-}
-
-fn split_by_delimiter(
-    page: &[&ObjectMeta],
-    prefix: &str,
-    delimiter: &Option<String>,
-) -> (Vec<ObjectEntry>, Vec<CommonPrefix>) {
-    if let Some(delim) = delimiter {
-        let mut contents = Vec::new();
-        let mut prefix_set = BTreeSet::new();
-
-        for obj in page {
-            let suffix = &obj.key[prefix.len()..];
-            if let Some(pos) = suffix.find(delim.as_str()) {
-                let common = format!("{}{}", prefix, &suffix[..pos + delim.len()]);
-                prefix_set.insert(common);
-            } else {
-                contents.push(ObjectEntry {
-                    key: obj.key.clone(),
-                    last_modified: obj.last_modified.clone(),
-                    etag: obj.etag.clone(),
-                    size: obj.size,
-                    storage_class: "STANDARD".to_string(),
-                });
-            }
-        }
-
-        let cp: Vec<CommonPrefix> = prefix_set
-            .into_iter()
-            .map(|p| CommonPrefix { prefix: p })
-            .collect();
-
-        (contents, cp)
-    } else {
-        (
-            page.iter()
-                .map(|o| ObjectEntry {
-                    key: o.key.clone(),
-                    last_modified: o.last_modified.clone(),
-                    etag: o.etag.clone(),
-                    size: o.size,
-                    storage_class: "STANDARD".to_string(),
-                })
-                .collect(),
-            vec![],
-        )
-    }
 }
 
 async fn list_object_versions(
@@ -263,41 +171,8 @@ async fn list_object_versions(
         .await
         .map_err(|e| S3Error::internal(e))?;
 
-    // Determine which version is latest per key (first in list since sorted newest-first per key)
-    let mut latest_per_key: HashMap<String, String> = HashMap::new();
-    for v in &all_versions {
-        if let Some(vid) = &v.version_id {
-            latest_per_key
-                .entry(v.key.clone())
-                .or_insert_with(|| vid.clone());
-        }
-    }
-
-    let mut versions = Vec::new();
-    let mut delete_markers = Vec::new();
-
-    for v in &all_versions {
-        let vid = v.version_id.as_deref().unwrap_or("null");
-        let is_latest = latest_per_key.get(&v.key).is_some_and(|latest| latest == vid);
-        if v.is_delete_marker {
-            delete_markers.push(DeleteMarkerEntry {
-                key: v.key.clone(),
-                version_id: vid.to_string(),
-                is_latest,
-                last_modified: v.last_modified.clone(),
-            });
-        } else {
-            versions.push(VersionEntry {
-                key: v.key.clone(),
-                version_id: vid.to_string(),
-                is_latest,
-                last_modified: v.last_modified.clone(),
-                etag: v.etag.clone(),
-                size: v.size,
-                storage_class: "STANDARD".to_string(),
-            });
-        }
-    }
+    let latest_per_key = service::latest_version_per_key(&all_versions);
+    let (versions, delete_markers) = service::split_version_entries(&all_versions, &latest_per_key);
 
     let result = ListVersionsResult {
         name: bucket,

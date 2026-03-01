@@ -50,14 +50,10 @@ pub async fn auth_middleware(
         parsed.signed_headers
     );
 
-    if parsed.access_key != state.config.access_key {
-        tracing::debug!(
-            "Access key mismatch: got '{}', expected '{}'",
-            parsed.access_key,
-            state.config.access_key
-        );
+    let Some(secret_key) = state.credentials.get(&parsed.access_key) else {
+        tracing::debug!("Access key mismatch: got '{}'", parsed.access_key);
         return Err(S3Error::invalid_access_key());
-    }
+    };
 
     if parsed.region != state.config.region {
         tracing::debug!(
@@ -78,16 +74,15 @@ pub async fn auth_middleware(
         let now = Utc::now().naive_utc();
         let skew = (now - request_time).num_seconds().unsigned_abs();
         if skew > 15 * 60 {
-            tracing::debug!(
-                "Request timestamp skew too large: {}s (max 900s)",
-                skew
-            );
+            tracing::debug!("Request timestamp skew too large: {}s (max 900s)", skew);
             return Err(S3Error::access_denied(
                 "RequestTimeTooSkewed: The difference between the request time and the current time is too large.",
             ));
         }
     } else {
-        return Err(S3Error::access_denied("Invalid or missing X-Amz-Date header"));
+        return Err(S3Error::access_denied(
+            "Invalid or missing X-Amz-Date header",
+        ));
     }
 
     let path = request.uri().path().to_string();
@@ -109,7 +104,7 @@ pub async fn auth_middleware(
         &query,
         request.headers(),
         &parsed,
-        &state.config.secret_key,
+        secret_key,
     );
 
     if !valid {
@@ -132,12 +127,12 @@ async fn handle_presigned(
 ) -> Result<Response, S3Error> {
     tracing::debug!("Presigned URL detected");
 
-    let (parsed, timestamp, expires_secs) = signature_v4::parse_presigned_query(query)
-        .map_err(|e| S3Error::access_denied(e))?;
+    let (parsed, timestamp, expires_secs) =
+        signature_v4::parse_presigned_query(query).map_err(|e| S3Error::access_denied(e))?;
 
-    if parsed.access_key != state.config.access_key {
+    let Some(secret_key) = state.credentials.get(&parsed.access_key) else {
         return Err(S3Error::invalid_access_key());
-    }
+    };
 
     if parsed.region != state.config.region {
         return Err(S3Error::access_denied("Invalid region in credential scope"));
@@ -146,18 +141,27 @@ async fn handle_presigned(
     // Check expiration
     let issued_at = NaiveDateTime::parse_from_str(&timestamp, "%Y%m%dT%H%M%SZ")
         .map_err(|_| S3Error::access_denied("Invalid X-Amz-Date format"))?;
-    let expires_at = issued_at
-        + chrono::Duration::seconds(expires_secs as i64);
+    let expires_at = issued_at + chrono::Duration::seconds(expires_secs as i64);
     let now = Utc::now().naive_utc();
 
     if now > expires_at {
-        tracing::debug!("Presigned URL expired: issued={}, expires={}, now={}", issued_at, expires_at, now);
+        tracing::debug!(
+            "Presigned URL expired: issued={}, expires={}, now={}",
+            issued_at,
+            expires_at,
+            now
+        );
         return Err(S3Error::expired_presigned_url());
     }
 
     let path = request.uri().path().to_string();
 
-    tracing::debug!("Verifying presigned signature for {} {} ?{}", method, path, query);
+    tracing::debug!(
+        "Verifying presigned signature for {} {} ?{}",
+        method,
+        path,
+        query
+    );
 
     let valid = signature_v4::verify_presigned_signature(
         method,
@@ -166,7 +170,7 @@ async fn handle_presigned(
         request.headers(),
         &parsed,
         &timestamp,
-        &state.config.secret_key,
+        secret_key,
     );
 
     if !valid {

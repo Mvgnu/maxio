@@ -1,5 +1,6 @@
 use super::ChunkManifest;
 use sha2::{Digest, Sha256};
+use std::future::Future;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -22,11 +23,13 @@ pub struct VerifiedChunkReader {
 }
 
 enum ReaderState {
-    /// Need to load the next chunk from disk
+    /// Need to begin loading the next chunk from disk.
     NeedLoad,
-    /// Currently serving bytes from the loaded chunk
+    /// Chunk load is currently in-flight.
+    Loading(Pin<Box<dyn Future<Output = io::Result<Vec<u8>>> + Send>>),
+    /// Currently serving bytes from the loaded chunk.
     Serving,
-    /// All done
+    /// All done.
     Done,
 }
 
@@ -44,12 +47,21 @@ impl VerifiedChunkReader {
             remaining: total,
             buf: Vec::new(),
             buf_pos: 0,
-            state: if total == 0 { ReaderState::Done } else { ReaderState::NeedLoad },
+            state: if total == 0 {
+                ReaderState::Done
+            } else {
+                ReaderState::NeedLoad
+            },
         }
     }
 
     /// Create a reader for a byte range [offset, offset+length).
-    pub fn with_range(chunks_dir: PathBuf, manifest: ChunkManifest, offset: u64, length: u64) -> Self {
+    pub fn with_range(
+        chunks_dir: PathBuf,
+        manifest: ChunkManifest,
+        offset: u64,
+        length: u64,
+    ) -> Self {
         if length == 0 || manifest.total_size == 0 {
             return Self {
                 chunks_dir,
@@ -81,26 +93,46 @@ impl VerifiedChunkReader {
         }
     }
 
-    /// Load a chunk from disk, verify its checksum, and store it in the buffer.
-    /// Falls back to Reed-Solomon reconstruction if the chunk is corrupt/missing
-    /// and parity shards are available.
-    fn load_chunk_sync(&mut self) -> io::Result<()> {
-        let idx = self.current_chunk as usize;
-        let chunk_info = &self.manifest.chunks[idx];
-        let chunk_path = self.chunks_dir.join(format!("{:06}", self.current_chunk));
+    fn start_chunk_load(&mut self) {
+        let chunks_dir = self.chunks_dir.clone();
+        let manifest = self.manifest.clone();
+        let current_chunk = self.current_chunk;
+        self.state = ReaderState::Loading(Box::pin(async move {
+            load_verified_chunk(chunks_dir, manifest, current_chunk).await
+        }));
+    }
+}
 
-        // Try reading and verifying the chunk directly
-        let result = (|| -> io::Result<Vec<u8>> {
-            let data = std::fs::read(&chunk_path).map_err(|e| {
-                io::Error::new(e.kind(), format!("failed to read chunk {}: {}", self.current_chunk, e))
-            })?;
+/// Load a chunk from disk, verify its checksum, and return its bytes.
+/// Falls back to Reed-Solomon reconstruction if the chunk is corrupt/missing
+/// and parity shards are available.
+async fn load_verified_chunk(
+    chunks_dir: PathBuf,
+    manifest: ChunkManifest,
+    current_chunk: u32,
+) -> io::Result<Vec<u8>> {
+    let idx = current_chunk as usize;
+    let chunk_info = &manifest.chunks[idx];
+    let chunk_path = chunks_dir.join(format!("{:06}", current_chunk));
 
+    // Try reading and verifying the chunk directly.
+    let direct_result = tokio::fs::read(&chunk_path)
+        .await
+        .map_err(|e| {
+            io::Error::new(
+                e.kind(),
+                format!("failed to read chunk {}: {}", current_chunk, e),
+            )
+        })
+        .and_then(|data| {
             if data.len() as u64 != chunk_info.size {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!(
                         "chunk {} size mismatch: expected {}, got {}",
-                        self.current_chunk, chunk_info.size, data.len()
+                        current_chunk,
+                        chunk_info.size,
+                        data.len()
                     ),
                 ));
             }
@@ -111,42 +143,27 @@ impl VerifiedChunkReader {
                     io::ErrorKind::InvalidData,
                     format!(
                         "checksum mismatch on chunk {}: expected {}, got {}",
-                        self.current_chunk, chunk_info.sha256, hash
+                        current_chunk, chunk_info.sha256, hash
                     ),
                 ));
             }
 
             Ok(data)
-        })();
+        });
 
-        match result {
-            Ok(data) => {
-                self.buf = data;
-                self.buf_pos = self.skip_bytes;
-                self.skip_bytes = 0;
-                self.state = ReaderState::Serving;
-                Ok(())
-            }
-            Err(original_err) => {
-                // Attempt RS recovery if parity is available
-                if self.manifest.parity_shards.unwrap_or(0) > 0 {
-                    tracing::warn!(
-                        "chunk {} failed integrity check ({}), attempting Reed-Solomon recovery",
-                        self.current_chunk, original_err
-                    );
-                    let data = try_reconstruct_data_chunk(
-                        &self.chunks_dir,
-                        &self.manifest,
-                        self.current_chunk,
-                    )?;
-                    self.buf = data;
-                    self.buf_pos = self.skip_bytes;
-                    self.skip_bytes = 0;
-                    self.state = ReaderState::Serving;
-                    Ok(())
-                } else {
-                    Err(original_err)
-                }
+    match direct_result {
+        Ok(data) => Ok(data),
+        Err(original_err) => {
+            // Attempt RS recovery if parity is available.
+            if manifest.parity_shards.unwrap_or(0) > 0 {
+                tracing::warn!(
+                    "chunk {} failed integrity check ({}), attempting Reed-Solomon recovery",
+                    current_chunk,
+                    original_err
+                );
+                try_reconstruct_data_chunk(&chunks_dir, &manifest, current_chunk).await
+            } else {
+                Err(original_err)
             }
         }
     }
@@ -154,7 +171,7 @@ impl VerifiedChunkReader {
 
 /// Reconstruct a single data chunk using Reed-Solomon erasure coding.
 /// Reads all available data and parity shards, reconstructs the missing one.
-fn try_reconstruct_data_chunk(
+async fn try_reconstruct_data_chunk(
     chunks_dir: &Path,
     manifest: &ChunkManifest,
     target_index: u32,
@@ -165,11 +182,10 @@ fn try_reconstruct_data_chunk(
     let m = manifest.parity_shards.unwrap_or(0) as usize;
     let shard_size = manifest.shard_size.unwrap_or(manifest.chunk_size) as usize;
 
-    let rs = ReedSolomon::new(k, m).map_err(|e| {
-        io::Error::new(io::ErrorKind::Other, format!("RS init error: {e}"))
-    })?;
+    let rs = ReedSolomon::new(k, m)
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("RS init error: {e}")))?;
 
-    // Load all shards as Option<Vec<u8>>
+    // Load all shards as Option<Vec<u8>>.
     let total_shards = k + m;
     let mut shards: Vec<Option<Vec<u8>>> = Vec::with_capacity(total_shards);
 
@@ -177,25 +193,26 @@ fn try_reconstruct_data_chunk(
         let chunk_info = &manifest.chunks[i];
         let chunk_path = chunks_dir.join(format!("{:06}", i));
 
-        let shard = (|| -> Option<Vec<u8>> {
-            let data = std::fs::read(&chunk_path).ok()?;
-
-            // Verify SHA-256
-            let hash = hex::encode(Sha256::digest(&data));
-            if hash != chunk_info.sha256 {
-                return None;
+        let shard = match tokio::fs::read(&chunk_path).await {
+            Ok(data) => {
+                // Verify SHA-256.
+                let hash = hex::encode(Sha256::digest(&data));
+                if hash != chunk_info.sha256 {
+                    None
+                } else {
+                    // Pad to shard_size for RS.
+                    let mut padded = data;
+                    padded.resize(shard_size, 0u8);
+                    Some(padded)
+                }
             }
-
-            // Pad to shard_size for RS
-            let mut padded = data;
-            padded.resize(shard_size, 0u8);
-            Some(padded)
-        })();
+            Err(_) => None,
+        };
 
         shards.push(shard);
     }
 
-    // Count available shards
+    // Count available shards.
     let present = shards.iter().filter(|s| s.is_some()).count();
     if present < k {
         return Err(io::Error::new(
@@ -207,28 +224,37 @@ fn try_reconstruct_data_chunk(
         ));
     }
 
-    // Reconstruct
+    // Reconstruct.
     rs.reconstruct(&mut shards).map_err(|e| {
-        io::Error::new(io::ErrorKind::Other, format!("RS reconstruction failed: {e}"))
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("RS reconstruction failed: {e}"),
+        )
     })?;
 
-    // Extract the target data chunk and truncate to its real size
+    // Extract the target data chunk and truncate to its real size.
     let reconstructed = shards[target_index as usize].take().ok_or_else(|| {
-        io::Error::new(io::ErrorKind::Other, "reconstruction produced None for target shard")
+        io::Error::new(
+            io::ErrorKind::Other,
+            "reconstruction produced None for target shard",
+        )
     })?;
 
     let real_size = manifest.chunks[target_index as usize].size as usize;
     let mut result = reconstructed;
     result.truncate(real_size);
 
-    tracing::warn!("successfully recovered chunk {} via Reed-Solomon", target_index);
+    tracing::warn!(
+        "successfully recovered chunk {} via Reed-Solomon",
+        target_index
+    );
     Ok(result)
 }
 
 impl AsyncRead for VerifiedChunkReader {
     fn poll_read(
         self: Pin<&mut Self>,
-        _cx: &mut Context<'_>,
+        cx: &mut Context<'_>,
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> Poll<io::Result<()>> {
         let this = self.get_mut();
@@ -241,13 +267,18 @@ impl AsyncRead for VerifiedChunkReader {
                         this.state = ReaderState::Done;
                         return Poll::Ready(Ok(()));
                     }
-                    // Load and verify the chunk synchronously.
-                    // This is acceptable because chunk reads are bounded (default 10MB)
-                    // and the underlying fs::read is fast for local disk.
-                    if let Err(e) = this.load_chunk_sync() {
-                        return Poll::Ready(Err(e));
-                    }
+                    this.start_chunk_load();
                 }
+                ReaderState::Loading(ref mut fut) => match fut.as_mut().poll(cx) {
+                    Poll::Pending => return Poll::Pending,
+                    Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
+                    Poll::Ready(Ok(data)) => {
+                        this.buf = data;
+                        this.buf_pos = this.skip_bytes;
+                        this.skip_bytes = 0;
+                        this.state = ReaderState::Serving;
+                    }
+                },
                 ReaderState::Serving => {
                     let available = &this.buf[this.buf_pos..];
                     if available.is_empty() {

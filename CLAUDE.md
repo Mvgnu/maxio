@@ -21,7 +21,7 @@ cargo build --release
 ./target/release/maxio --data-dir ./data --port 9000
 ```
 
-Environment variables: `MAXIO_PORT`, `MAXIO_ADDRESS`, `MAXIO_DATA_DIR`, `MAXIO_ACCESS_KEY` (aliases: `MINIO_ROOT_USER`, `MINIO_ACCESS_KEY`), `MAXIO_SECRET_KEY` (aliases: `MINIO_ROOT_PASSWORD`, `MINIO_SECRET_KEY`), `MAXIO_REGION` (aliases: `MINIO_REGION_NAME`, `MINIO_REGION`)
+Environment variables: `MAXIO_PORT`, `MAXIO_ADDRESS`, `MAXIO_DATA_DIR`, `MAXIO_ACCESS_KEY` (aliases: `MINIO_ROOT_USER`, `MINIO_ACCESS_KEY`), `MAXIO_SECRET_KEY` (aliases: `MINIO_ROOT_PASSWORD`, `MINIO_SECRET_KEY`), `MAXIO_ADDITIONAL_CREDENTIALS` (comma-separated `access:secret` pairs), `MAXIO_REGION` (aliases: `MINIO_REGION_NAME`, `MINIO_REGION`), `MAXIO_NODE_ID`, `MAXIO_CLUSTER_PEERS` (comma-separated `host:port`)
 
 ## Production Build
 
@@ -144,8 +144,9 @@ This runs both processes concurrently (Ctrl+C kills both):
 
 | Endpoint | Method | Auth | Description |
 |---|---|---|---|
-| `/api/auth/login` | POST | none | Login with accessKey/secretKey, sets session cookie |
-| `/api/auth/check` | GET | none | Check if session cookie is valid |
+| `/api/auth/login` | POST | none | Login with accessKey/secretKey, sets session cookie and returns identity/session metadata |
+| `/api/auth/check` | GET | none | Validate session cookie and return identity/session metadata when authenticated |
+| `/api/auth/me` | GET | cookie | Return authenticated access key plus session metadata |
 | `/api/auth/logout` | POST | cookie | Clear session cookie |
 | `/api/buckets` | GET | cookie | List all buckets |
 | `/api/buckets` | POST | cookie | Create bucket (`{ name }`) |
@@ -155,6 +156,7 @@ This runs both processes concurrently (Ctrl+C kills both):
 | `/api/buckets/{bucket}/upload/{key}` | PUT | cookie | Upload object |
 | `/api/buckets/{bucket}/download/{key}` | GET | cookie | Download object |
 | `/api/buckets/{bucket}/presign/{key}` | GET | cookie | Generate presigned URL (`?expires=SECONDS`, default 3600, max 604800) |
+| `/api/system/metrics` | GET | cookie | Runtime metrics + topology context (`mode`, `nodeId`, peer info) in JSON format |
 
 ### Frontend Error Logging
 

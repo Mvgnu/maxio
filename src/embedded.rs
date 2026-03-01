@@ -1,4 +1,4 @@
-use axum::http::{Uri, header, StatusCode};
+use axum::http::{StatusCode, Uri, header};
 use axum::response::{IntoResponse, Response};
 use rust_embed::Embed;
 
@@ -38,8 +38,13 @@ pub async fn ui_handler(uri: Uri) -> Response {
         None => match UiAssets::get("index.html") {
             Some(index) => (
                 StatusCode::OK,
-                [(header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
-                 (header::CACHE_CONTROL, "no-store, must-revalidate".to_string())],
+                [
+                    (header::CONTENT_TYPE, "text/html; charset=utf-8".to_string()),
+                    (
+                        header::CACHE_CONTROL,
+                        "no-store, must-revalidate".to_string(),
+                    ),
+                ],
                 index.data,
             )
                 .into_response(),

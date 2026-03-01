@@ -1,10 +1,16 @@
-use super::{BucketMeta, ByteStream, ChecksumAlgorithm, ChunkInfo, ChunkKind, ChunkManifest, DeleteResult, MultipartUploadMeta, ObjectMeta, PartMeta, PutResult, StorageError};
 use super::chunk_reader::VerifiedChunkReader;
+use super::layout;
+use super::lifecycle::{self, LifecycleRule};
+use super::validation;
+use super::{
+    BucketMeta, ByteStream, ChecksumAlgorithm, ChunkInfo, ChunkKind, ChunkManifest, DeleteResult,
+    MultipartUploadMeta, ObjectMeta, PartMeta, PutResult, StorageError,
+};
 use base64::Engine;
 use md5::{Digest, Md5};
 use rand::RngExt;
 use sha2::Sha256;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 
@@ -43,7 +49,33 @@ impl ChecksumHasher {
             Self::Sha256(h) => b64.encode(Digest::finalize(h)),
         }
     }
+}
 
+fn finalize_checksum(
+    checksum: Option<(ChecksumAlgorithm, Option<String>)>,
+    checksum_hasher: Option<ChecksumHasher>,
+) -> Result<(Option<ChecksumAlgorithm>, Option<String>), StorageError> {
+    match checksum {
+        Some((algo, expected)) => {
+            let hasher = checksum_hasher.ok_or_else(|| {
+                StorageError::Io(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "checksum hasher missing for checksum-enabled write",
+                ))
+            })?;
+            let computed = hasher.finalize_base64();
+            if let Some(expected_val) = expected {
+                if computed != expected_val {
+                    return Err(StorageError::ChecksumMismatch(format!(
+                        "expected {}, got {}",
+                        expected_val, computed
+                    )));
+                }
+            }
+            Ok((Some(algo), Some(computed)))
+        }
+        None => Ok((None, None)),
+    }
 }
 
 pub struct FilesystemStorage {
@@ -53,48 +85,242 @@ pub struct FilesystemStorage {
     parity_shards: u32,
 }
 
-/// Validate that an object key does not contain path traversal components.
-fn validate_key(key: &str) -> Result<(), StorageError> {
-    if key.is_empty() {
-        return Err(StorageError::InvalidKey("Key must not be empty".into()));
-    }
-    if key.len() > 1024 {
-        return Err(StorageError::InvalidKey("Key must not exceed 1024 bytes".into()));
-    }
-    let path = Path::new(key);
-    for component in path.components() {
-        match component {
-            Component::ParentDir => {
-                return Err(StorageError::InvalidKey(
-                    "Key must not contain '..' path components".into(),
-                ));
-            }
-            Component::RootDir => {
-                return Err(StorageError::InvalidKey(
-                    "Key must not be an absolute path".into(),
-                ));
-            }
-            _ => {}
+#[cfg(test)]
+mod lifecycle_tests {
+    use super::{BucketMeta, FilesystemStorage, StorageError};
+    use crate::storage::lifecycle::LifecycleRule;
+    use chrono::{TimeZone, Utc};
+    use tempfile::TempDir;
+    use tokio::fs;
+
+    fn bucket_meta(name: &str) -> BucketMeta {
+        BucketMeta {
+            name: name.to_string(),
+            created_at: "2026-03-01T00:00:00.000Z".to_string(),
+            region: "us-east-1".to_string(),
+            versioning: false,
         }
     }
-    Ok(())
-}
 
-fn validate_upload_id(upload_id: &str) -> Result<(), StorageError> {
-    if upload_id.is_empty() {
-        return Err(StorageError::UploadNotFound(upload_id.to_string()));
+    #[tokio::test]
+    async fn lifecycle_rules_roundtrip_and_clear() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("lifecycle"))
+            .await
+            .unwrap();
+
+        let rules = vec![
+            LifecycleRule {
+                id: "logs-30d".to_string(),
+                prefix: "logs/".to_string(),
+                expiration_days: 30,
+                enabled: true,
+            },
+            LifecycleRule {
+                id: "tmp-7d".to_string(),
+                prefix: "tmp/".to_string(),
+                expiration_days: 7,
+                enabled: false,
+            },
+        ];
+
+        storage
+            .set_lifecycle_rules("lifecycle", &rules)
+            .await
+            .unwrap();
+        let loaded = storage.get_lifecycle_rules("lifecycle").await.unwrap();
+        assert_eq!(loaded, rules);
+
+        storage.set_lifecycle_rules("lifecycle", &[]).await.unwrap();
+        let cleared = storage.get_lifecycle_rules("lifecycle").await.unwrap();
+        assert!(cleared.is_empty());
+        assert!(
+            !fs::try_exists(storage.lifecycle_path("lifecycle"))
+                .await
+                .unwrap()
+        );
     }
-    if upload_id.contains('/') || upload_id.contains('\\') || upload_id.contains("..") {
-        return Err(StorageError::UploadNotFound(upload_id.to_string()));
+
+    #[tokio::test]
+    async fn apply_lifecycle_once_deletes_expired_matching_objects() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("lifecycle"))
+            .await
+            .unwrap();
+
+        storage
+            .put_object(
+                "lifecycle",
+                "logs/old.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"old".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+        storage
+            .put_object(
+                "lifecycle",
+                "logs/new.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"new".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let mut old_meta = storage
+            .head_object("lifecycle", "logs/old.txt")
+            .await
+            .unwrap();
+        old_meta.last_modified = "2026-02-20T00:00:00.000Z".to_string();
+        fs::write(
+            storage.meta_path("lifecycle", "logs/old.txt"),
+            serde_json::to_string_pretty(&old_meta).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let mut new_meta = storage
+            .head_object("lifecycle", "logs/new.txt")
+            .await
+            .unwrap();
+        new_meta.last_modified = "2026-02-28T00:00:00.000Z".to_string();
+        fs::write(
+            storage.meta_path("lifecycle", "logs/new.txt"),
+            serde_json::to_string_pretty(&new_meta).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        storage
+            .set_lifecycle_rules(
+                "lifecycle",
+                &[LifecycleRule {
+                    id: "logs-7d".to_string(),
+                    prefix: "logs/".to_string(),
+                    expiration_days: 7,
+                    enabled: true,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let now = Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+        let deleted = storage
+            .apply_lifecycle_once("lifecycle", now)
+            .await
+            .unwrap();
+        assert_eq!(deleted, vec!["logs/old.txt".to_string()]);
+        assert!(
+            storage
+                .head_object("lifecycle", "logs/new.txt")
+                .await
+                .is_ok()
+        );
+        assert!(matches!(
+            storage.head_object("lifecycle", "logs/old.txt").await,
+            Err(StorageError::NotFound(_))
+        ));
     }
-    Ok(())
+
+    #[tokio::test]
+    async fn lifecycle_rules_missing_bucket_returns_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        assert!(matches!(
+            storage.get_lifecycle_rules("missing").await,
+            Err(StorageError::NotFound(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn apply_lifecycle_once_ignores_disabled_rules() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("lifecycle"))
+            .await
+            .unwrap();
+
+        storage
+            .put_object(
+                "lifecycle",
+                "logs/old.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"old".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let mut old_meta = storage
+            .head_object("lifecycle", "logs/old.txt")
+            .await
+            .unwrap();
+        old_meta.last_modified = "2026-02-20T00:00:00.000Z".to_string();
+        fs::write(
+            storage.meta_path("lifecycle", "logs/old.txt"),
+            serde_json::to_string_pretty(&old_meta).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        storage
+            .set_lifecycle_rules(
+                "lifecycle",
+                &[LifecycleRule {
+                    id: "logs-7d-disabled".to_string(),
+                    prefix: "logs/".to_string(),
+                    expiration_days: 7,
+                    enabled: false,
+                }],
+            )
+            .await
+            .unwrap();
+
+        let now = Utc.with_ymd_and_hms(2026, 3, 1, 12, 0, 0).unwrap();
+        let deleted = storage
+            .apply_lifecycle_once("lifecycle", now)
+            .await
+            .unwrap();
+        assert!(deleted.is_empty(), "disabled rule must not delete objects");
+        assert!(
+            storage
+                .head_object("lifecycle", "logs/old.txt")
+                .await
+                .is_ok()
+        );
+    }
 }
 
 impl FilesystemStorage {
-    pub async fn new(data_dir: &str, erasure_coding: bool, chunk_size: u64, parity_shards: u32) -> Result<Self, anyhow::Error> {
+    pub async fn new(
+        data_dir: &str,
+        erasure_coding: bool,
+        chunk_size: u64,
+        parity_shards: u32,
+    ) -> Result<Self, anyhow::Error> {
         let buckets_dir = Path::new(data_dir).join("buckets");
         fs::create_dir_all(&buckets_dir).await?;
-        Ok(Self { buckets_dir, erasure_coding, chunk_size, parity_shards })
+        Ok(Self {
+            buckets_dir,
+            erasure_coding,
+            chunk_size,
+            parity_shards,
+        })
     }
 
     // --- Bucket operations ---
@@ -146,14 +372,17 @@ impl FilesystemStorage {
                 // is effectively deleted (head_bucket checks .bucket.json).
                 let meta = BucketMeta {
                     name: name.to_string(),
-                    created_at: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+                    created_at: chrono::Utc::now()
+                        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                        .to_string(),
                     region: String::new(),
                     versioning: false,
                 };
                 let _ = fs::write(
                     bucket_dir.join(".bucket.json"),
                     serde_json::to_string_pretty(&meta).unwrap_or_default(),
-                ).await;
+                )
+                .await;
                 Err(StorageError::BucketNotEmpty)
             }
             Err(e) => Err(e.into()),
@@ -177,47 +406,99 @@ impl FilesystemStorage {
         Ok(buckets)
     }
 
+    fn lifecycle_path(&self, bucket: &str) -> PathBuf {
+        layout::lifecycle_path(&self.buckets_dir, bucket)
+    }
+
+    pub async fn get_lifecycle_rules(
+        &self,
+        bucket: &str,
+    ) -> Result<Vec<LifecycleRule>, StorageError> {
+        if !self.head_bucket(bucket).await? {
+            return Err(StorageError::NotFound(bucket.to_string()));
+        }
+
+        let path = self.lifecycle_path(bucket);
+        let data = match fs::read_to_string(&path).await {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(e) => return Err(e.into()),
+        };
+        let rules: Vec<LifecycleRule> = serde_json::from_str(&data)?;
+        lifecycle::validate_rules(&rules).map_err(StorageError::InvalidKey)?;
+        Ok(rules)
+    }
+
+    pub async fn set_lifecycle_rules(
+        &self,
+        bucket: &str,
+        rules: &[LifecycleRule],
+    ) -> Result<(), StorageError> {
+        if !self.head_bucket(bucket).await? {
+            return Err(StorageError::NotFound(bucket.to_string()));
+        }
+        lifecycle::validate_rules(rules).map_err(StorageError::InvalidKey)?;
+
+        let path = self.lifecycle_path(bucket);
+        if rules.is_empty() {
+            let _ = fs::remove_file(&path).await;
+            return Ok(());
+        }
+        fs::write(path, serde_json::to_string_pretty(rules)?).await?;
+        Ok(())
+    }
+
+    pub async fn apply_lifecycle_once(
+        &self,
+        bucket: &str,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> Result<Vec<String>, StorageError> {
+        let rules = self.get_lifecycle_rules(bucket).await?;
+        if rules.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let objects = self.list_objects(bucket, "").await?;
+        let mut deleted = Vec::new();
+        for object in objects {
+            if lifecycle::should_expire_object(&object.key, &object.last_modified, &rules, now) {
+                self.delete_object(bucket, &object.key).await?;
+                deleted.push(object.key);
+            }
+        }
+
+        deleted.sort();
+        Ok(deleted)
+    }
+
     // --- Object operations ---
 
     fn object_path(&self, bucket: &str, key: &str) -> PathBuf {
-        if key.ends_with('/') {
-            let dir = key.trim_end_matches('/');
-            self.buckets_dir.join(bucket).join(dir).join(".folder")
-        } else {
-            self.buckets_dir.join(bucket).join(key)
-        }
+        layout::object_path(&self.buckets_dir, bucket, key)
     }
 
     fn meta_path(&self, bucket: &str, key: &str) -> PathBuf {
-        if key.ends_with('/') {
-            let dir = key.trim_end_matches('/');
-            self.buckets_dir
-                .join(bucket)
-                .join(dir)
-                .join(".folder.meta.json")
-        } else {
-            self.buckets_dir
-                .join(bucket)
-                .join(format!("{}.meta.json", key))
-        }
+        layout::meta_path(&self.buckets_dir, bucket, key)
     }
 
     fn ec_dir(&self, bucket: &str, key: &str) -> PathBuf {
-        self.buckets_dir
-            .join(bucket)
-            .join(format!("{}.ec", key))
+        layout::ec_dir(&self.buckets_dir, bucket, key)
     }
 
     fn chunk_path(&self, bucket: &str, key: &str, index: u32) -> PathBuf {
-        self.ec_dir(bucket, key).join(format!("{:06}", index))
+        layout::chunk_path(&self.buckets_dir, bucket, key, index)
     }
 
     fn manifest_path(&self, bucket: &str, key: &str) -> PathBuf {
-        self.ec_dir(bucket, key).join("manifest.json")
+        layout::manifest_path(&self.buckets_dir, bucket, key)
     }
 
-    fn is_chunked_path(ec_dir: &Path) -> bool {
-        ec_dir.is_dir()
+    async fn is_chunked_path(ec_dir: &Path) -> Result<bool, StorageError> {
+        match fs::metadata(ec_dir).await {
+            Ok(meta) => Ok(meta.is_dir()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(e) => Err(StorageError::Io(e)),
+        }
     }
 
     async fn read_manifest(&self, bucket: &str, key: &str) -> Result<ChunkManifest, StorageError> {
@@ -233,25 +514,23 @@ impl FilesystemStorage {
     }
 
     fn uploads_dir(&self, bucket: &str) -> PathBuf {
-        self.buckets_dir.join(bucket).join(".uploads")
+        layout::uploads_dir(&self.buckets_dir, bucket)
     }
 
     fn upload_dir(&self, bucket: &str, upload_id: &str) -> PathBuf {
-        self.uploads_dir(bucket).join(upload_id)
+        layout::upload_dir(&self.buckets_dir, bucket, upload_id)
     }
 
     fn upload_meta_path(&self, bucket: &str, upload_id: &str) -> PathBuf {
-        self.upload_dir(bucket, upload_id).join(".meta.json")
+        layout::upload_meta_path(&self.buckets_dir, bucket, upload_id)
     }
 
     fn part_path(&self, bucket: &str, upload_id: &str, part_number: u32) -> PathBuf {
-        self.upload_dir(bucket, upload_id)
-            .join(part_number.to_string())
+        layout::part_path(&self.buckets_dir, bucket, upload_id, part_number)
     }
 
     fn part_meta_path(&self, bucket: &str, upload_id: &str, part_number: u32) -> PathBuf {
-        self.upload_dir(bucket, upload_id)
-            .join(format!("{}.meta.json", part_number))
+        layout::part_meta_path(&self.buckets_dir, bucket, upload_id, part_number)
     }
 
     pub async fn put_object(
@@ -262,7 +541,7 @@ impl FilesystemStorage {
         mut body: ByteStream,
         checksum: Option<(ChecksumAlgorithm, Option<String>)>,
     ) -> Result<PutResult, StorageError> {
-        validate_key(key)?;
+        validation::validate_key(key)?;
 
         // Folder marker: zero-byte object with key ending in /
         if key.ends_with('/') {
@@ -270,7 +549,15 @@ impl FilesystemStorage {
         }
 
         if self.erasure_coding {
-            return self.put_object_chunked(bucket, key, content_type, body, checksum.as_ref().map(|(a, _)| *a)).await;
+            return self
+                .put_object_chunked(
+                    bucket,
+                    key,
+                    content_type,
+                    body,
+                    checksum.as_ref().map(|(a, _)| *a),
+                )
+                .await;
         }
 
         let obj_path = self.object_path(bucket, key);
@@ -280,7 +567,9 @@ impl FilesystemStorage {
 
         let mut file = fs::File::create(&obj_path).await?;
         let mut hasher = Md5::new();
-        let mut checksum_hasher = checksum.as_ref().map(|(algo, _)| ChecksumHasher::new(*algo));
+        let mut checksum_hasher = checksum
+            .as_ref()
+            .map(|(algo, _)| ChecksumHasher::new(*algo));
         let mut size: u64 = 0;
         let mut buf = vec![0u8; 64 * 1024];
 
@@ -302,21 +591,18 @@ impl FilesystemStorage {
         let etag_quoted = format!("\"{}\"", etag);
 
         // Validate and compute checksum
-        let (checksum_algorithm, checksum_value) = if let Some((algo, expected)) = checksum {
-            let computed = checksum_hasher.unwrap().finalize_base64();
-            if let Some(expected_val) = expected {
-                if computed != expected_val {
-                    return Err(StorageError::ChecksumMismatch(format!(
-                        "expected {}, got {}", expected_val, computed
-                    )));
+        let (checksum_algorithm, checksum_value) =
+            match finalize_checksum(checksum, checksum_hasher) {
+                Ok(value) => value,
+                Err(err) => {
+                    let _ = fs::remove_file(&obj_path).await;
+                    return Err(err);
                 }
-            }
-            (Some(algo), Some(computed))
-        } else {
-            (None, None)
         };
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
 
         let versioned = self.is_versioned(bucket).await.unwrap_or(false);
         let version_id = if versioned {
@@ -386,7 +672,9 @@ impl FilesystemStorage {
             if n == 0 {
                 // Flush remaining chunk_buf
                 if !chunk_buf.is_empty() {
-                    let ci = self.write_chunk(bucket, key, chunk_index, &chunk_buf).await?;
+                    let ci = self
+                        .write_chunk(bucket, key, chunk_index, &chunk_buf)
+                        .await?;
                     chunks.push(ci);
                 }
                 break;
@@ -401,7 +689,9 @@ impl FilesystemStorage {
 
             while chunk_buf.len() >= self.chunk_size as usize {
                 let chunk_data: Vec<u8> = chunk_buf.drain(..self.chunk_size as usize).collect();
-                let ci = self.write_chunk(bucket, key, chunk_index, &chunk_data).await?;
+                let ci = self
+                    .write_chunk(bucket, key, chunk_index, &chunk_data)
+                    .await?;
                 chunks.push(ci);
                 chunk_index += 1;
             }
@@ -428,8 +718,16 @@ impl FilesystemStorage {
             chunk_size: self.chunk_size,
             chunk_count: data_chunk_count,
             chunks,
-            parity_shards: if has_parity { Some(self.parity_shards) } else { None },
-            shard_size: if has_parity { Some(self.chunk_size) } else { None },
+            parity_shards: if has_parity {
+                Some(self.parity_shards)
+            } else {
+                None
+            },
+            shard_size: if has_parity {
+                Some(self.chunk_size)
+            } else {
+                None
+            },
         };
         let manifest_json = serde_json::to_string_pretty(&manifest)?;
         fs::write(self.manifest_path(bucket, key), manifest_json).await?;
@@ -438,7 +736,9 @@ impl FilesystemStorage {
         let etag_quoted = format!("\"{}\"", etag);
         let checksum_value = checksum_hasher.map(|h| h.finalize_base64());
 
-        let now = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string();
+        let now = chrono::Utc::now()
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string();
 
         let versioned = self.is_versioned(bucket).await.unwrap_or(false);
         let version_id = if versioned {
@@ -447,7 +747,11 @@ impl FilesystemStorage {
             None
         };
 
-        let storage_format = if has_parity { "chunked-v2" } else { "chunked-v1" };
+        let storage_format = if has_parity {
+            "chunked-v2"
+        } else {
+            "chunked-v1"
+        };
         let meta = ObjectMeta {
             key: key.to_string(),
             size: total_size,
@@ -516,7 +820,9 @@ impl FilesystemStorage {
         if k + m > 255 {
             return Err(StorageError::InvalidKey(format!(
                 "too many shards: {} data + {} parity = {} > 255 (GF(2^8) limit). Increase --chunk-size",
-                k, m, k + m
+                k,
+                m,
+                k + m
             )));
         }
 
@@ -526,7 +832,7 @@ impl FilesystemStorage {
         let mut all_shards: Vec<Vec<u8>> = Vec::with_capacity(k + m);
         for ci in data_chunks {
             let path = self.chunk_path(bucket, key, ci.index);
-            let mut data = std::fs::read(&path).map_err(StorageError::Io)?;
+            let mut data = fs::read(&path).await?;
             data.resize(shard_size, 0u8);
             all_shards.push(data);
         }
@@ -537,12 +843,10 @@ impl FilesystemStorage {
         }
 
         // Encode parity
-        let rs = ReedSolomon::new(k, m).map_err(|e| {
-            StorageError::InvalidKey(format!("Reed-Solomon init error: {e}"))
-        })?;
-        rs.encode(&mut all_shards).map_err(|e| {
-            StorageError::InvalidKey(format!("Reed-Solomon encode error: {e}"))
-        })?;
+        let rs = ReedSolomon::new(k, m)
+            .map_err(|e| StorageError::InvalidKey(format!("Reed-Solomon init error: {e}")))?;
+        rs.encode(&mut all_shards)
+            .map_err(|e| StorageError::InvalidKey(format!("Reed-Solomon encode error: {e}")))?;
 
         // Write parity chunks to disk
         let mut parity_infos = Vec::with_capacity(m);
@@ -586,7 +890,8 @@ impl FilesystemStorage {
         let mut chunk_buf = Vec::with_capacity(self.chunk_size as usize);
 
         for part in selected {
-            let mut part_file = fs::File::open(self.part_path(bucket, upload_id, part.part_number)).await?;
+            let mut part_file =
+                fs::File::open(self.part_path(bucket, upload_id, part.part_number)).await?;
             let mut buf = vec![0u8; 64 * 1024];
             loop {
                 let n = part_file.read(&mut buf).await?;
@@ -598,7 +903,9 @@ impl FilesystemStorage {
 
                 while chunk_buf.len() >= self.chunk_size as usize {
                     let chunk_data: Vec<u8> = chunk_buf.drain(..self.chunk_size as usize).collect();
-                    let ci = self.write_chunk(bucket, key, chunk_index, &chunk_data).await?;
+                    let ci = self
+                        .write_chunk(bucket, key, chunk_index, &chunk_data)
+                        .await?;
                     chunks.push(ci);
                     chunk_index += 1;
                 }
@@ -611,7 +918,9 @@ impl FilesystemStorage {
 
         // Flush remaining
         if !chunk_buf.is_empty() {
-            let ci = self.write_chunk(bucket, key, chunk_index, &chunk_buf).await?;
+            let ci = self
+                .write_chunk(bucket, key, chunk_index, &chunk_buf)
+                .await?;
             chunks.push(ci);
         }
 
@@ -635,43 +944,67 @@ impl FilesystemStorage {
             chunk_size: self.chunk_size,
             chunk_count: data_chunk_count,
             chunks,
-            parity_shards: if has_parity { Some(self.parity_shards) } else { None },
-            shard_size: if has_parity { Some(self.chunk_size) } else { None },
+            parity_shards: if has_parity {
+                Some(self.parity_shards)
+            } else {
+                None
+            },
+            shard_size: if has_parity {
+                Some(self.chunk_size)
+            } else {
+                None
+            },
         };
-        fs::write(self.manifest_path(bucket, key), serde_json::to_string_pretty(&manifest)?).await?;
+        fs::write(
+            self.manifest_path(bucket, key),
+            serde_json::to_string_pretty(&manifest)?,
+        )
+        .await?;
 
-        let etag = format!("\"{}-{}\"", hex::encode(etag_hasher.finalize()), selected.len());
+        let etag = format!(
+            "\"{}-{}\"",
+            hex::encode(etag_hasher.finalize()),
+            selected.len()
+        );
 
         // Compute composite checksum if algorithm was specified
-        let (checksum_algorithm, checksum_value) = if let Some(algo) = upload_meta.checksum_algorithm {
-            let b64 = base64::engine::general_purpose::STANDARD;
-            let mut raw_checksums = Vec::new();
-            for part in selected {
-                if let Some(ref val) = part.checksum_value {
-                    if let Ok(raw) = b64.decode(val) {
-                        raw_checksums.extend_from_slice(&raw);
+        let (checksum_algorithm, checksum_value) =
+            if let Some(algo) = upload_meta.checksum_algorithm {
+                let b64 = base64::engine::general_purpose::STANDARD;
+                let mut raw_checksums = Vec::new();
+                for part in selected {
+                    if let Some(ref val) = part.checksum_value {
+                        if let Ok(raw) = b64.decode(val) {
+                            raw_checksums.extend_from_slice(&raw);
+                        }
                     }
                 }
-            }
-            if !raw_checksums.is_empty() {
-                let mut composite_hasher = ChecksumHasher::new(algo);
-                composite_hasher.update(&raw_checksums);
-                let composite = format!("{}-{}", composite_hasher.finalize_base64(), selected.len());
-                (Some(algo), Some(composite))
+                if !raw_checksums.is_empty() {
+                    let mut composite_hasher = ChecksumHasher::new(algo);
+                    composite_hasher.update(&raw_checksums);
+                    let composite =
+                        format!("{}-{}", composite_hasher.finalize_base64(), selected.len());
+                    (Some(algo), Some(composite))
+                } else {
+                    (Some(algo), None)
+                }
             } else {
-                (Some(algo), None)
-            }
-        } else {
-            (None, None)
-        };
+                (None, None)
+            };
 
-        let storage_format = if has_parity { "chunked-v2" } else { "chunked-v1" };
+        let storage_format = if has_parity {
+            "chunked-v2"
+        } else {
+            "chunked-v1"
+        };
         let object_meta = ObjectMeta {
             key: key.to_string(),
             size: total_size,
             etag: etag.clone(),
             content_type: upload_meta.content_type.clone(),
-            last_modified: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            last_modified: chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
             version_id: None,
             is_delete_marker: false,
             storage_format: Some(storage_format.to_string()),
@@ -695,11 +1028,7 @@ impl FilesystemStorage {
         })
     }
 
-    async fn put_folder_marker(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Result<PutResult, StorageError> {
+    async fn put_folder_marker(&self, bucket: &str, key: &str) -> Result<PutResult, StorageError> {
         let folder_dir = self
             .buckets_dir
             .join(bucket)
@@ -745,10 +1074,10 @@ impl FilesystemStorage {
         bucket: &str,
         key: &str,
     ) -> Result<(ByteStream, ObjectMeta), StorageError> {
-        validate_key(key)?;
+        validation::validate_key(key)?;
         let meta = self.read_object_meta(bucket, key).await?;
         let ec_dir = self.ec_dir(bucket, key);
-        if Self::is_chunked_path(&ec_dir) {
+        if Self::is_chunked_path(&ec_dir).await? {
             let manifest = self.read_manifest(bucket, key).await?;
             let reader = VerifiedChunkReader::new(ec_dir, manifest);
             return Ok((Box::pin(reader), meta));
@@ -772,10 +1101,10 @@ impl FilesystemStorage {
         offset: u64,
         length: u64,
     ) -> Result<(ByteStream, ObjectMeta), StorageError> {
-        validate_key(key)?;
+        validation::validate_key(key)?;
         let meta = self.read_object_meta(bucket, key).await?;
         let ec_dir = self.ec_dir(bucket, key);
-        if Self::is_chunked_path(&ec_dir) {
+        if Self::is_chunked_path(&ec_dir).await? {
             let manifest = self.read_manifest(bucket, key).await?;
             let reader = VerifiedChunkReader::with_range(ec_dir, manifest, offset, length);
             return Ok((Box::pin(reader), meta));
@@ -788,18 +1117,16 @@ impl FilesystemStorage {
                 StorageError::Io(e)
             }
         })?;
-        file.seek(std::io::SeekFrom::Start(offset)).await.map_err(StorageError::Io)?;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(StorageError::Io)?;
         let limited = file.take(length);
         let reader = BufReader::new(limited);
         Ok((Box::pin(reader), meta))
     }
 
-    pub async fn head_object(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Result<ObjectMeta, StorageError> {
-        validate_key(key)?;
+    pub async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
+        validation::validate_key(key)?;
         self.read_object_meta(bucket, key).await
     }
 
@@ -808,7 +1135,7 @@ impl FilesystemStorage {
         bucket: &str,
         key: &str,
     ) -> Result<DeleteResult, StorageError> {
-        validate_key(key)?;
+        validation::validate_key(key)?;
 
         let versioned = self.is_versioned(bucket).await.unwrap_or(false);
         if versioned {
@@ -863,7 +1190,7 @@ impl FilesystemStorage {
         content_type: &str,
         checksum_algorithm: Option<ChecksumAlgorithm>,
     ) -> Result<MultipartUploadMeta, StorageError> {
-        validate_key(key)?;
+        validation::validate_key(key)?;
         let upload_id = uuid::Uuid::new_v4().to_string();
         let upload_dir = self.upload_dir(bucket, &upload_id);
         fs::create_dir_all(&upload_dir).await?;
@@ -873,7 +1200,9 @@ impl FilesystemStorage {
             bucket: bucket.to_string(),
             key: key.to_string(),
             content_type: content_type.to_string(),
-            initiated: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            initiated: chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
             checksum_algorithm,
         };
 
@@ -890,9 +1219,11 @@ impl FilesystemStorage {
         mut body: ByteStream,
         checksum: Option<(ChecksumAlgorithm, Option<String>)>,
     ) -> Result<PartMeta, StorageError> {
-        validate_upload_id(upload_id)?;
+        validation::validate_upload_id(upload_id)?;
         if part_number == 0 || part_number > 10_000 {
-            return Err(StorageError::InvalidKey("part number must be 1..=10000".into()));
+            return Err(StorageError::InvalidKey(
+                "part number must be 1..=10000".into(),
+            ));
         }
         let upload_dir = self.upload_dir(bucket, upload_id);
         if !fs::try_exists(&upload_dir).await? {
@@ -902,7 +1233,9 @@ impl FilesystemStorage {
         let part_path = self.part_path(bucket, upload_id, part_number);
         let mut file = fs::File::create(&part_path).await?;
         let mut hasher = Md5::new();
-        let mut checksum_hasher = checksum.as_ref().map(|(algo, _)| ChecksumHasher::new(*algo));
+        let mut checksum_hasher = checksum
+            .as_ref()
+            .map(|(algo, _)| ChecksumHasher::new(*algo));
         let mut size: u64 = 0;
         let mut buf = vec![0u8; 64 * 1024];
 
@@ -921,19 +1254,13 @@ impl FilesystemStorage {
         file.flush().await?;
 
         // Validate and compute checksum
-        let (checksum_algorithm, checksum_value) = if let Some((algo, expected)) = checksum {
-            let computed = checksum_hasher.unwrap().finalize_base64();
-            if let Some(expected_val) = expected {
-                if computed != expected_val {
+        let (checksum_algorithm, checksum_value) =
+            match finalize_checksum(checksum, checksum_hasher) {
+                Ok(value) => value,
+                Err(err) => {
                     let _ = fs::remove_file(&part_path).await;
-                    return Err(StorageError::ChecksumMismatch(format!(
-                        "expected {}, got {}", expected_val, computed
-                    )));
+                    return Err(err);
                 }
-            }
-            (Some(algo), Some(computed))
-        } else {
-            (None, None)
         };
 
         let etag = format!("\"{}\"", hex::encode(hasher.finalize()));
@@ -966,7 +1293,7 @@ impl FilesystemStorage {
         upload_id: &str,
         parts: &[(u32, String)],
     ) -> Result<PutResult, StorageError> {
-        validate_upload_id(upload_id)?;
+        validation::validate_upload_id(upload_id)?;
         if parts.is_empty() {
             return Err(StorageError::InvalidKey(
                 "at least one part is required to complete upload".into(),
@@ -990,7 +1317,9 @@ impl FilesystemStorage {
         }
 
         if self.erasure_coding {
-            return self.complete_multipart_chunked(bucket, upload_id, &upload_meta, &selected).await;
+            return self
+                .complete_multipart_chunked(bucket, upload_id, &upload_meta, &selected)
+                .await;
         }
 
         let obj_path = self.object_path(bucket, &upload_meta.key);
@@ -1002,7 +1331,8 @@ impl FilesystemStorage {
         let mut etag_hasher = Md5::new();
 
         for part in &selected {
-            let mut part_file = fs::File::open(self.part_path(bucket, upload_id, part.part_number)).await?;
+            let mut part_file =
+                fs::File::open(self.part_path(bucket, upload_id, part.part_number)).await?;
             let mut buf = vec![0u8; 64 * 1024];
             loop {
                 let n = part_file.read(&mut buf).await?;
@@ -1019,37 +1349,45 @@ impl FilesystemStorage {
         }
         out.flush().await?;
 
-        let etag = format!("\"{}-{}\"", hex::encode(etag_hasher.finalize()), selected.len());
+        let etag = format!(
+            "\"{}-{}\"",
+            hex::encode(etag_hasher.finalize()),
+            selected.len()
+        );
 
         // Compute composite checksum if algorithm was specified
-        let (checksum_algorithm, checksum_value) = if let Some(algo) = upload_meta.checksum_algorithm {
-            let b64 = base64::engine::general_purpose::STANDARD;
-            let mut raw_checksums = Vec::new();
-            for part in &selected {
-                if let Some(ref val) = part.checksum_value {
-                    if let Ok(raw) = b64.decode(val) {
-                        raw_checksums.extend_from_slice(&raw);
+        let (checksum_algorithm, checksum_value) =
+            if let Some(algo) = upload_meta.checksum_algorithm {
+                let b64 = base64::engine::general_purpose::STANDARD;
+                let mut raw_checksums = Vec::new();
+                for part in &selected {
+                    if let Some(ref val) = part.checksum_value {
+                        if let Ok(raw) = b64.decode(val) {
+                            raw_checksums.extend_from_slice(&raw);
+                        }
                     }
                 }
-            }
-            if !raw_checksums.is_empty() {
-                let mut composite_hasher = ChecksumHasher::new(algo);
-                composite_hasher.update(&raw_checksums);
-                let composite = format!("{}-{}", composite_hasher.finalize_base64(), selected.len());
-                (Some(algo), Some(composite))
+                if !raw_checksums.is_empty() {
+                    let mut composite_hasher = ChecksumHasher::new(algo);
+                    composite_hasher.update(&raw_checksums);
+                    let composite =
+                        format!("{}-{}", composite_hasher.finalize_base64(), selected.len());
+                    (Some(algo), Some(composite))
+                } else {
+                    (Some(algo), None)
+                }
             } else {
-                (Some(algo), None)
-            }
-        } else {
-            (None, None)
-        };
+                (None, None)
+            };
 
         let object_meta = ObjectMeta {
             key: upload_meta.key.clone(),
             size: total_size,
             etag: etag.clone(),
             content_type: upload_meta.content_type,
-            last_modified: chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+            last_modified: chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
             version_id: None,
             is_delete_marker: false,
             storage_format: None,
@@ -1077,7 +1415,7 @@ impl FilesystemStorage {
         bucket: &str,
         upload_id: &str,
     ) -> Result<(), StorageError> {
-        validate_upload_id(upload_id)?;
+        validation::validate_upload_id(upload_id)?;
         let upload_dir = self.upload_dir(bucket, upload_id);
         if !fs::try_exists(&upload_dir).await? {
             return Err(StorageError::UploadNotFound(upload_id.to_string()));
@@ -1091,7 +1429,7 @@ impl FilesystemStorage {
         bucket: &str,
         upload_id: &str,
     ) -> Result<(MultipartUploadMeta, Vec<PartMeta>), StorageError> {
-        validate_upload_id(upload_id)?;
+        validation::validate_upload_id(upload_id)?;
         let meta = self.read_upload_meta(bucket, upload_id).await?;
         let upload_dir = self.upload_dir(bucket, upload_id);
         let mut entries = fs::read_dir(&upload_dir).await?;
@@ -1167,11 +1505,7 @@ impl FilesystemStorage {
         })
     }
 
-    async fn read_object_meta(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Result<ObjectMeta, StorageError> {
+    async fn read_object_meta(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
         let meta_path = self.meta_path(bucket, key);
         let data = fs::read_to_string(&meta_path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -1218,10 +1552,10 @@ impl FilesystemStorage {
                         // Strip the .ec suffix to get the key
                         let key = rel_str.strip_suffix(".ec").unwrap_or(&rel_str).to_string();
                         if key.starts_with(prefix) {
-                            if let Ok(meta) = self.read_object_meta(
-                                base.file_name().unwrap().to_str().unwrap(),
-                                &key,
-                            ).await {
+                            if let Ok(meta) = self
+                                .read_object_meta(base.file_name().unwrap().to_str().unwrap(), &key)
+                                .await
+                            {
                                 results.push(meta);
                             }
                         }
@@ -1232,7 +1566,7 @@ impl FilesystemStorage {
                 if entry.file_type().await?.is_dir() {
                     // Check for folder marker inside this directory
                     let marker = path.join(".folder.meta.json");
-                    if marker.exists() {
+                    if fs::try_exists(&marker).await.unwrap_or(false) {
                         if let Ok(rel) = path.strip_prefix(base) {
                             let key = format!("{}/", rel.to_string_lossy());
                             if key.starts_with(prefix) {
@@ -1249,10 +1583,10 @@ impl FilesystemStorage {
                     if let Ok(rel) = path.strip_prefix(base) {
                         let key = rel.to_string_lossy().to_string();
                         if key.starts_with(prefix) {
-                            if let Ok(meta) = self.read_object_meta(
-                                base.file_name().unwrap().to_str().unwrap(),
-                                &key,
-                            ).await {
+                            if let Ok(meta) = self
+                                .read_object_meta(base.file_name().unwrap().to_str().unwrap(), &key)
+                                .await
+                            {
                                 results.push(meta);
                             }
                         }
@@ -1307,24 +1641,15 @@ impl FilesystemStorage {
     /// Directory holding versions for a given key.
     /// For key `photos/vacation.jpg` → `{bucket}/photos/.versions/vacation.jpg/`
     fn versions_dir(&self, bucket: &str, key: &str) -> PathBuf {
-        let key_path = Path::new(key);
-        let parent = key_path.parent().unwrap_or(Path::new(""));
-        let name = key_path.file_name().unwrap_or(std::ffi::OsStr::new(key));
-        self.buckets_dir
-            .join(bucket)
-            .join(parent)
-            .join(".versions")
-            .join(name)
+        layout::versions_dir(&self.buckets_dir, bucket, key)
     }
 
     fn version_data_path(&self, bucket: &str, key: &str, version_id: &str) -> PathBuf {
-        self.versions_dir(bucket, key)
-            .join(format!("{}.data", version_id))
+        layout::version_data_path(&self.buckets_dir, bucket, key, version_id)
     }
 
     fn version_meta_path(&self, bucket: &str, key: &str, version_id: &str) -> PathBuf {
-        self.versions_dir(bucket, key)
-            .join(format!("{}.meta.json", version_id))
+        layout::version_meta_path(&self.buckets_dir, bucket, key, version_id)
     }
 
     pub async fn is_versioned(&self, bucket: &str) -> Result<bool, StorageError> {
@@ -1340,11 +1665,7 @@ impl FilesystemStorage {
         Ok(meta.versioning)
     }
 
-    pub async fn set_versioning(
-        &self,
-        bucket: &str,
-        enabled: bool,
-    ) -> Result<(), StorageError> {
+    pub async fn set_versioning(&self, bucket: &str, enabled: bool) -> Result<(), StorageError> {
         let meta_path = self.buckets_dir.join(bucket).join(".bucket.json");
         let data = fs::read_to_string(&meta_path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -1354,47 +1675,9 @@ impl FilesystemStorage {
             }
         })?;
         let mut meta: BucketMeta = serde_json::from_str(&data)?;
-        let was_enabled = meta.versioning;
         meta.versioning = enabled;
         fs::write(&meta_path, serde_json::to_string_pretty(&meta)?).await?;
-
-        // If disabling versioning, clean up old versions
-        if was_enabled && !enabled {
-            self.cleanup_versions(bucket).await?;
-        }
         Ok(())
-    }
-
-    /// Remove all `.versions/` directories in the bucket, keeping only current (top-level) files.
-    /// Also remove any objects whose latest version was a delete marker (restore nothing).
-    async fn cleanup_versions(&self, bucket: &str) -> Result<(), StorageError> {
-        let bucket_dir = self.buckets_dir.join(bucket);
-        self.cleanup_versions_recursive(&bucket_dir).await
-    }
-
-    fn cleanup_versions_recursive<'a>(
-        &'a self,
-        dir: &'a Path,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), StorageError>> + Send + 'a>>
-    {
-        Box::pin(async move {
-            let mut entries = match fs::read_dir(dir).await {
-                Ok(e) => e,
-                Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-                Err(e) => return Err(e.into()),
-            };
-            while let Some(entry) = entries.next_entry().await? {
-                let fname = entry.file_name().to_string_lossy().to_string();
-                if entry.file_type().await?.is_dir() {
-                    if fname == ".versions" {
-                        fs::remove_dir_all(entry.path()).await?;
-                    } else if fname != ".uploads" {
-                        self.cleanup_versions_recursive(&entry.path()).await?;
-                    }
-                }
-            }
-            Ok(())
-        })
     }
 
     /// Write a new version to the `.versions/` directory and update the current (top-level) files.
@@ -1489,11 +1772,7 @@ impl FilesystemStorage {
     }
 
     /// Scan versions for a key and update the top-level files to reflect the latest non-delete-marker.
-    async fn update_current_version(
-        &self,
-        bucket: &str,
-        key: &str,
-    ) -> Result<(), StorageError> {
+    async fn update_current_version(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
         let ver_dir = self.versions_dir(bucket, key);
         if !fs::try_exists(&ver_dir).await.unwrap_or(false) {
             return Ok(());
@@ -1511,50 +1790,56 @@ impl FilesystemStorage {
         versions.sort();
         versions.reverse(); // newest first
 
-        for meta_fname in &versions {
-            let meta_path = ver_dir.join(meta_fname);
-            let data = fs::read_to_string(&meta_path).await?;
-            let meta: ObjectMeta = serde_json::from_str(&data)?;
-            if !meta.is_delete_marker {
-                // Restore this version as current
-                let vid = meta.version_id.as_ref().unwrap();
-                let obj_meta_path = self.meta_path(bucket, key);
-
-                let ver_ec = ver_dir.join(format!("{}.ec", vid));
-                if ver_ec.is_dir() {
-                    // Restore chunked version
-                    let dst_ec = self.ec_dir(bucket, key);
-                    if let Some(parent) = dst_ec.parent() {
-                        fs::create_dir_all(parent).await?;
-                    }
-                    let _ = fs::remove_dir_all(&dst_ec).await;
-                    fs::create_dir_all(&dst_ec).await?;
-                    let mut entries = fs::read_dir(&ver_ec).await?;
-                    while let Some(entry) = entries.next_entry().await? {
-                        fs::copy(entry.path(), dst_ec.join(entry.file_name())).await?;
-                    }
-                } else {
-                    // Restore flat version
-                    let ver_data = ver_dir.join(format!("{}.data", vid));
-                    let obj_path = self.object_path(bucket, key);
-                    if let Some(parent) = obj_path.parent() {
-                        fs::create_dir_all(parent).await?;
-                    }
-                    fs::copy(&ver_data, &obj_path).await?;
-                }
-
-                if let Some(parent) = obj_meta_path.parent() {
-                    fs::create_dir_all(parent).await?;
-                }
-                fs::write(&obj_meta_path, serde_json::to_string_pretty(&meta)?).await?;
+        let latest_meta_fname = match versions.first() {
+            Some(name) => name,
+            None => {
+                let _ = fs::remove_file(self.object_path(bucket, key)).await;
+                let _ = fs::remove_file(self.meta_path(bucket, key)).await;
+                let _ = fs::remove_dir_all(self.ec_dir(bucket, key)).await;
                 return Ok(());
             }
+        };
+
+        let latest_meta_path = ver_dir.join(latest_meta_fname);
+        let latest_data = fs::read_to_string(&latest_meta_path).await?;
+        let latest_meta: ObjectMeta = serde_json::from_str(&latest_data)?;
+
+        if latest_meta.is_delete_marker {
+            // Latest version is an explicit tombstone. Keep top-level object deleted.
+            let _ = fs::remove_file(self.object_path(bucket, key)).await;
+            let _ = fs::remove_file(self.meta_path(bucket, key)).await;
+            let _ = fs::remove_dir_all(self.ec_dir(bucket, key)).await;
+            return Ok(());
         }
 
-        // All versions are delete markers — remove top-level files
-        let _ = fs::remove_file(self.object_path(bucket, key)).await;
-        let _ = fs::remove_file(self.meta_path(bucket, key)).await;
-        let _ = fs::remove_dir_all(self.ec_dir(bucket, key)).await;
+        // Restore latest non-delete-marker version as current.
+        let vid = latest_meta.version_id.as_ref().unwrap();
+        let obj_meta_path = self.meta_path(bucket, key);
+        let ver_ec = ver_dir.join(format!("{}.ec", vid));
+        if fs::try_exists(&ver_ec).await.unwrap_or(false) {
+            let dst_ec = self.ec_dir(bucket, key);
+            if let Some(parent) = dst_ec.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            let _ = fs::remove_dir_all(&dst_ec).await;
+            fs::create_dir_all(&dst_ec).await?;
+            let mut entries = fs::read_dir(&ver_ec).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                fs::copy(entry.path(), dst_ec.join(entry.file_name())).await?;
+            }
+        } else {
+            let ver_data = ver_dir.join(format!("{}.data", vid));
+            let obj_path = self.object_path(bucket, key);
+            if let Some(parent) = obj_path.parent() {
+                fs::create_dir_all(parent).await?;
+            }
+            fs::copy(&ver_data, &obj_path).await?;
+        }
+
+        if let Some(parent) = obj_meta_path.parent() {
+            fs::create_dir_all(parent).await?;
+        }
+        fs::write(&obj_meta_path, serde_json::to_string_pretty(&latest_meta)?).await?;
         Ok(())
     }
 
@@ -1564,7 +1849,7 @@ impl FilesystemStorage {
         key: &str,
         version_id: &str,
     ) -> Result<(ByteStream, ObjectMeta), StorageError> {
-        validate_key(key)?;
+        validation::validate_key(key)?;
         let ver_meta_path = self.version_meta_path(bucket, key, version_id);
         let data = fs::read_to_string(&ver_meta_path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -1580,8 +1865,10 @@ impl FilesystemStorage {
         }
 
         // Check for chunked version
-        let ver_ec_dir = self.versions_dir(bucket, key).join(format!("{}.ec", version_id));
-        if ver_ec_dir.is_dir() {
+        let ver_ec_dir = self
+            .versions_dir(bucket, key)
+            .join(format!("{}.ec", version_id));
+        if fs::try_exists(&ver_ec_dir).await.unwrap_or(false) {
             let manifest_path = ver_ec_dir.join("manifest.json");
             let manifest_data = fs::read_to_string(&manifest_path).await.map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
@@ -1612,7 +1899,7 @@ impl FilesystemStorage {
         key: &str,
         version_id: &str,
     ) -> Result<ObjectMeta, StorageError> {
-        validate_key(key)?;
+        validation::validate_key(key)?;
         let ver_meta_path = self.version_meta_path(bucket, key, version_id);
         let data = fs::read_to_string(&ver_meta_path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -1634,7 +1921,7 @@ impl FilesystemStorage {
         key: &str,
         version_id: &str,
     ) -> Result<ObjectMeta, StorageError> {
-        validate_key(key)?;
+        validation::validate_key(key)?;
         let ver_meta_path = self.version_meta_path(bucket, key, version_id);
         let data = fs::read_to_string(&ver_meta_path).await.map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
@@ -1649,7 +1936,9 @@ impl FilesystemStorage {
         let _ = fs::remove_file(&ver_meta_path).await;
         let ver_data_path = self.version_data_path(bucket, key, version_id);
         let _ = fs::remove_file(&ver_data_path).await;
-        let ver_ec_dir = self.versions_dir(bucket, key).join(format!("{}.ec", version_id));
+        let ver_ec_dir = self
+            .versions_dir(bucket, key)
+            .join(format!("{}.ec", version_id));
         let _ = fs::remove_dir_all(&ver_ec_dir).await;
 
         // Clean up empty versions dir

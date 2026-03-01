@@ -13,6 +13,14 @@
   import History from 'lucide-svelte/icons/history'
   import VersionHistory from './VersionHistory.svelte'
   import { toast } from '$lib/toast'
+  import {
+    createFolderApi,
+    deleteObjectApi,
+    getBucketVersioningApi,
+    listObjectsApi,
+    presignObjectApi,
+    uploadObjectApi,
+  } from '$lib/api'
 
   interface Props {
     bucket: string
@@ -60,15 +68,13 @@
     loading = true
     error = null
     try {
-      const params = new URLSearchParams({ prefix, delimiter: '/' })
-      const res = await fetch(`/api/buckets/${encodeURIComponent(bucket)}/objects?${params}`)
-      if (res.ok) {
-        const data = await res.json()
-        files = data.files
-        prefixes = data.prefixes
-        emptyPrefixes = new Set(data.emptyPrefixes || [])
+      const result = await listObjectsApi(bucket, prefix, '/')
+      if (result.ok) {
+        files = result.data.files
+        prefixes = result.data.prefixes
+        emptyPrefixes = new Set(result.data.emptyPrefixes || [])
       } else {
-        error = `Failed to load objects (${res.status})`
+        error = result.error || `Failed to load objects (${result.status})`
       }
     } catch (err) {
       console.error('fetchObjects failed:', err)
@@ -150,14 +156,14 @@
     try {
       for (const file of inputFiles) {
         const key = `${prefix}${file.name}`
-        const res = await fetch(`/api/buckets/${encodeURIComponent(bucket)}/upload/${key}`, {
-          method: 'PUT',
-          headers: { 'Content-Type': file.type || 'application/octet-stream' },
-          body: file,
-        })
-        if (!res.ok) {
-          const data = await res.json()
-          toast.error(data.error || `Failed to upload ${file.name}`, { id: toastId })
+        const result = await uploadObjectApi(
+          bucket,
+          key,
+          file,
+          file.type || 'application/octet-stream'
+        )
+        if (!result.ok) {
+          toast.error(result.error || `Failed to upload ${file.name}`, { id: toastId })
           if (fileInput) fileInput.value = ''
           uploading = false
           return
@@ -183,13 +189,12 @@
     e.stopPropagation()
     if (!confirm(`Delete "${displayName(key)}"?`)) return
     try {
-      const res = await fetch(`/api/buckets/${encodeURIComponent(bucket)}/objects/${key}`, { method: 'DELETE' })
-      if (res.ok) {
+      const result = await deleteObjectApi(bucket, key)
+      if (result.ok) {
         toast.success(`"${displayName(key)}" deleted`)
         await fetchObjects()
       } else {
-        const data = await res.json()
-        toast.error(data.error || 'Failed to delete object')
+        toast.error(result.error || 'Failed to delete object')
       }
     } catch (err) {
       console.error('deleteObject failed:', err)
@@ -212,15 +217,13 @@
   async function shareObject(key: string, expires: number) {
     shareMenuKey = null
     try {
-      const res = await fetch(`/api/buckets/${encodeURIComponent(bucket)}/presign/${key}?expires=${expires}`)
-      if (!res.ok) {
-        const data = await res.json()
-        console.error('Presign failed:', res.status, data)
-        toast.error(data.error || 'Failed to generate share link')
+      const result = await presignObjectApi(bucket, key, expires)
+      if (!result.ok) {
+        console.error('Presign failed:', result.status, result.data)
+        toast.error(result.error || 'Failed to generate share link')
         return
       }
-      const data = await res.json()
-      await navigator.clipboard.writeText(data.url)
+      await navigator.clipboard.writeText(result.data.url)
       copiedKey = key
       setTimeout(() => { copiedKey = null }, 2000)
       toast.success('Presigned URL copied to clipboard')
@@ -236,19 +239,14 @@
     creatingFolder = true
     try {
       const fullName = `${prefix}${name}`
-      const res = await fetch(`/api/buckets/${encodeURIComponent(bucket)}/folders`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: fullName }),
-      })
-      if (res.ok) {
+      const result = await createFolderApi(bucket, fullName)
+      if (result.ok) {
         toast.success(`Folder "${name}" created`)
         newFolderName = ''
         showCreateFolder = false
         await fetchObjects()
       } else {
-        const data = await res.json()
-        toast.error(data.error || 'Failed to create folder')
+        toast.error(result.error || 'Failed to create folder')
       }
     } catch (err) {
       console.error('createFolder failed:', err)
@@ -262,13 +260,12 @@
     e.stopPropagation()
     if (!confirm(`Delete empty folder "${displayName(folderPrefix)}"?`)) return
     try {
-      const res = await fetch(`/api/buckets/${encodeURIComponent(bucket)}/objects/${folderPrefix}`, { method: 'DELETE' })
-      if (res.ok) {
+      const result = await deleteObjectApi(bucket, folderPrefix)
+      if (result.ok) {
         toast.success(`Folder "${displayName(folderPrefix)}" deleted`)
         await fetchObjects()
       } else {
-        const data = await res.json()
-        toast.error(data.error || 'Failed to delete folder')
+        toast.error(result.error || 'Failed to delete folder')
       }
     } catch (err) {
       console.error('deleteFolder failed:', err)
@@ -278,10 +275,9 @@
 
   async function fetchVersioning() {
     try {
-      const res = await fetch(`/api/buckets/${encodeURIComponent(bucket)}/versioning`)
-      if (res.ok) {
-        const data = await res.json()
-        versioningEnabled = data.enabled
+      const result = await getBucketVersioningApi(bucket)
+      if (result.ok) {
+        versioningEnabled = result.data.enabled
       }
     } catch (err) {
       console.error('fetchVersioning failed:', err)
@@ -453,6 +449,12 @@
     class="fixed z-50 min-w-[8rem] rounded-sm border bg-popover p-1 shadow-md"
     style="top: {shareMenuPos.top}px; left: {shareMenuPos.left}px; transform: translate(-100%, -100%);"
     onclick={(e) => e.stopPropagation()}
+    onkeydown={(e) => {
+      if (e.key === 'Escape') shareMenuKey = null
+    }}
+    role="menu"
+    tabindex="-1"
+    aria-label="Share link expiration options"
   >
     {#each expiryOptions as opt}
       <button

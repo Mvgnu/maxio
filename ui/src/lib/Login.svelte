@@ -3,6 +3,7 @@
   import { Input } from "$lib/components/ui/input";
   import Eye from "lucide-svelte/icons/eye";
   import EyeOff from "lucide-svelte/icons/eye-off";
+  import { authLogin } from "$lib/api";
 
   let accessKey = $state('')
   let secretKey = $state('')
@@ -11,7 +12,7 @@
   let showSecret = $state(false)
 
   interface Props {
-    onLogin: () => void
+    onLogin: (accessKey: string) => void
   }
   let { onLogin }: Props = $props()
 
@@ -20,15 +21,11 @@
     error = ''
     loading = true
     try {
-      const res = await fetch('/api/auth/login', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accessKey, secretKey }),
-      })
-      if (res.ok) {
-        onLogin()
+      const result = await authLogin(accessKey, secretKey)
+      if (result.ok) {
+        onLogin(result.data.accessKey)
       } else {
-        error = 'Invalid credentials'
+        error = result.error || 'Invalid credentials'
       }
     } catch (err) {
       console.error('Login failed:', err)

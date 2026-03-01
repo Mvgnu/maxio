@@ -25,6 +25,7 @@ pub enum S3ErrorCode {
     NoSuchKey,
     NoSuchUpload,
     NoSuchVersion,
+    NoSuchLifecycleConfiguration,
     InvalidRange,
     NotImplemented,
     EntityTooSmall,
@@ -49,6 +50,7 @@ impl S3ErrorCode {
             Self::NoSuchKey => "NoSuchKey",
             Self::NoSuchUpload => "NoSuchUpload",
             Self::NoSuchVersion => "NoSuchVersion",
+            Self::NoSuchLifecycleConfiguration => "NoSuchLifecycleConfiguration",
             Self::InvalidRange => "InvalidRange",
             Self::NotImplemented => "NotImplemented",
             Self::EntityTooSmall => "EntityTooSmall",
@@ -63,9 +65,11 @@ impl S3ErrorCode {
             | Self::ExpiredPresignedUrl
             | Self::InvalidAccessKeyId
             | Self::SignatureDoesNotMatch => StatusCode::FORBIDDEN,
-            Self::NoSuchBucket | Self::NoSuchKey | Self::NoSuchUpload | Self::NoSuchVersion => {
-                StatusCode::NOT_FOUND
-            }
+            Self::NoSuchBucket
+            | Self::NoSuchKey
+            | Self::NoSuchUpload
+            | Self::NoSuchVersion
+            | Self::NoSuchLifecycleConfiguration => StatusCode::NOT_FOUND,
             Self::BucketAlreadyOwnedByYou | Self::BucketNotEmpty => StatusCode::CONFLICT,
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             Self::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
@@ -155,7 +159,10 @@ impl S3Error {
     pub fn bad_checksum(algo: &str) -> Self {
         Self {
             code: S3ErrorCode::BadDigest,
-            message: format!("The {} checksum you specified did not match what we received.", algo),
+            message: format!(
+                "The {} checksum you specified did not match what we received.",
+                algo
+            ),
             resource: None,
         }
     }
@@ -179,8 +186,7 @@ impl S3Error {
     pub fn entity_too_small() -> Self {
         Self {
             code: S3ErrorCode::EntityTooSmall,
-            message:
-                "Your proposed upload is smaller than the minimum allowed object size.".into(),
+            message: "Your proposed upload is smaller than the minimum allowed object size.".into(),
             resource: None,
         }
     }
@@ -204,8 +210,9 @@ impl S3Error {
     pub fn signature_mismatch() -> Self {
         Self {
             code: S3ErrorCode::SignatureDoesNotMatch,
-            message: "The request signature we calculated does not match the signature you provided."
-                .into(),
+            message:
+                "The request signature we calculated does not match the signature you provided."
+                    .into(),
             resource: None,
         }
     }
@@ -223,6 +230,14 @@ impl S3Error {
             code: S3ErrorCode::NoSuchVersion,
             message: "The specified version does not exist.".into(),
             resource: Some(version_id.to_string()),
+        }
+    }
+
+    pub fn no_such_lifecycle_configuration(bucket: &str) -> Self {
+        Self {
+            code: S3ErrorCode::NoSuchLifecycleConfiguration,
+            message: "The lifecycle configuration does not exist.".into(),
+            resource: Some(format!("/{}", bucket)),
         }
     }
 
@@ -271,5 +286,82 @@ impl IntoResponse for S3Error {
             xml,
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{S3Error, S3ErrorCode};
+    use axum::body::to_bytes;
+    use axum::response::IntoResponse;
+    use http::StatusCode;
+
+    #[test]
+    fn error_code_status_mapping_matches_contract() {
+        assert_eq!(
+            S3ErrorCode::AccessDenied.status_code(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            S3ErrorCode::InvalidAccessKeyId.status_code(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            S3ErrorCode::SignatureDoesNotMatch.status_code(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            S3ErrorCode::NoSuchLifecycleConfiguration.status_code(),
+            StatusCode::NOT_FOUND
+        );
+        assert_eq!(
+            S3ErrorCode::BucketNotEmpty.status_code(),
+            StatusCode::CONFLICT
+        );
+        assert_eq!(
+            S3ErrorCode::InvalidRange.status_code(),
+            StatusCode::RANGE_NOT_SATISFIABLE
+        );
+    }
+
+    #[test]
+    fn expired_presigned_url_maps_to_access_denied_code() {
+        let err = S3Error::expired_presigned_url();
+        assert_eq!(err.code.as_str(), "AccessDenied");
+        assert_eq!(err.code.status_code(), StatusCode::FORBIDDEN);
+        assert_eq!(err.message, "Request has expired");
+    }
+
+    #[tokio::test]
+    async fn into_response_emits_xml_with_escaped_fields_and_request_id() {
+        let err = S3Error {
+            code: S3ErrorCode::InvalidArgument,
+            message: "bad <input> & bad output".to_string(),
+            resource: Some("/bucket/<key>&".to_string()),
+        };
+
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            response
+                .headers()
+                .get("content-type")
+                .and_then(|v| v.to_str().ok()),
+            Some("application/xml")
+        );
+
+        let request_id = response
+            .headers()
+            .get("x-amz-request-id")
+            .and_then(|v| v.to_str().ok())
+            .expect("missing request id header");
+        uuid::Uuid::parse_str(request_id).expect("request id should be a valid uuid");
+
+        let body = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        let body = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body.contains("<Code>InvalidArgument</Code>"));
+        assert!(body.contains("<Message>bad &lt;input&gt; &amp; bad output</Message>"));
+        assert!(body.contains("<Resource>/bucket/&lt;key&gt;&amp;</Resource>"));
+        assert!(body.contains("<RequestId>"));
     }
 }

@@ -1,5 +1,8 @@
 pub mod chunk_reader;
 pub mod filesystem;
+pub(crate) mod layout;
+pub mod lifecycle;
+pub(crate) mod validation;
 
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;

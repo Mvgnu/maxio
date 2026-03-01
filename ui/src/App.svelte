@@ -4,7 +4,9 @@
   import BucketList from "./lib/BucketList.svelte";
   import ObjectBrowser from "./lib/ObjectBrowser.svelte";
   import BucketSettings from "./lib/BucketSettings.svelte";
+  import SystemMetrics from "./lib/SystemMetrics.svelte";
   import Home from "lucide-svelte/icons/home";
+  import Activity from "lucide-svelte/icons/activity";
   import LogOut from "lucide-svelte/icons/log-out";
   import PanelLeftClose from "lucide-svelte/icons/panel-left-close";
   import PanelLeftOpen from "lucide-svelte/icons/panel-left-open";
@@ -14,11 +16,14 @@
   import Sun from "lucide-svelte/icons/sun";
   import Moon from "lucide-svelte/icons/moon";
   import { Sonner } from "$lib/components/ui/sonner";
+  import { authCheck, authLogout } from "$lib/api";
 
   let authenticated = $state<boolean | null>(null);
+  let activeAccessKey = $state<string | null>(null);
+  let sessionExpiresAt = $state<number | null>(null);
   let collapsed = $state(localStorage.getItem("sidebar-collapsed") === "true");
   let selectedBucket = $state<string | null>(null);
-  let currentView = $state<"objects" | "settings">("objects");
+  let currentView = $state<"objects" | "settings" | "metrics">("objects");
   let objectBrowserRef = $state<ObjectBrowser | null>(null);
   let currentPrefix = $state("");
   let currentBreadcrumbs = $state<{ label: string; prefix: string }[]>([]);
@@ -37,6 +42,11 @@
     if (hash === "/") {
       selectedBucket = null;
       currentView = "objects";
+      currentPrefix = "";
+      currentBreadcrumbs = [];
+    } else if (hash === "/metrics") {
+      selectedBucket = null;
+      currentView = "metrics";
       currentPrefix = "";
       currentBreadcrumbs = [];
     } else {
@@ -62,7 +72,9 @@
   }
 
   function updateHash() {
-    if (!selectedBucket) {
+    if (currentView === "metrics") {
+      window.location.hash = "/metrics";
+    } else if (!selectedBucket) {
       window.location.hash = "/";
     } else if (currentPrefix) {
       window.location.hash = `/${encodeURIComponent(selectedBucket)}/${currentPrefix}`;
@@ -71,10 +83,36 @@
     }
   }
 
+  async function refreshAuthState() {
+    const result = await authCheck();
+    authenticated = result.ok;
+    if (result.ok) {
+      activeAccessKey = result.data.accessKey;
+      sessionExpiresAt = result.data.sessionExpiresAt;
+    } else {
+      activeAccessKey = null;
+      sessionExpiresAt = null;
+    }
+  }
+
+  function formatSessionExpiry(epochSeconds: number | null): string | null {
+    if (epochSeconds === null) {
+      return null;
+    }
+    const date = new Date(epochSeconds * 1000);
+    if (Number.isNaN(date.getTime())) {
+      return null;
+    }
+    return date.toLocaleString();
+  }
+
   onMount(() => {
-    fetch("/api/auth/check")
-      .then((res) => { authenticated = res.ok; })
-      .catch(() => { authenticated = false; });
+    refreshAuthState()
+      .catch(() => {
+        authenticated = false;
+        activeAccessKey = null;
+        sessionExpiresAt = null;
+      });
 
     window.addEventListener("hashchange", applyHash);
     if (window.location.hash && window.location.hash !== "#/") {
@@ -84,13 +122,17 @@
     return () => window.removeEventListener("hashchange", applyHash);
   });
 
-  function handleLogin() {
+  function handleLogin(accessKey: string) {
     authenticated = true;
+    activeAccessKey = accessKey;
+    void refreshAuthState();
   }
 
   async function handleLogout() {
-    await fetch("/api/auth/logout", { method: "POST" });
+    await authLogout();
     authenticated = false;
+    activeAccessKey = null;
+    sessionExpiresAt = null;
   }
 
   function toggleTheme() {
@@ -123,6 +165,14 @@
   function goHome() {
     selectedBucket = null;
     currentView = "objects";
+    currentPrefix = "";
+    currentBreadcrumbs = [];
+    updateHash();
+  }
+
+  function goMetrics() {
+    selectedBucket = null;
+    currentView = "metrics";
     currentPrefix = "";
     currentBreadcrumbs = [];
     updateHash();
@@ -185,11 +235,27 @@
           class:gap-3={!collapsed}
           class:px-3={!collapsed}
           class:justify-center={collapsed}
-          style="background: var(--cool-sidebar-active-bg); color: var(--cool-sidebar-active-fg);"
+          style={currentView === "objects" && !selectedBucket
+            ? "background: var(--cool-sidebar-active-bg); color: var(--cool-sidebar-active-fg);"
+            : ""}
           title="Buckets"
         >
           <Home class="size-4 shrink-0" />
           {#if !collapsed}<span class="whitespace-nowrap">Buckets</span>{/if}
+        </button>
+        <button
+          onclick={goMetrics}
+          class="flex h-9 w-full items-center rounded-sm text-left text-sm font-medium transition-colors overflow-hidden"
+          class:gap-3={!collapsed}
+          class:px-3={!collapsed}
+          class:justify-center={collapsed}
+          style={currentView === "metrics"
+            ? "background: var(--cool-sidebar-active-bg); color: var(--cool-sidebar-active-fg);"
+            : ""}
+          title="Metrics"
+        >
+          <Activity class="size-4 shrink-0" />
+          {#if !collapsed}<span class="whitespace-nowrap">Metrics</span>{/if}
         </button>
       </div>
 
@@ -198,6 +264,16 @@
         class="flex flex-col gap-0.5 p-2"
         style="border-top: 1px solid var(--cool-sidebar-border);"
       >
+        {#if !collapsed && activeAccessKey}
+          <div class="px-3 py-1 text-xs text-muted-foreground truncate" title={`Signed in as ${activeAccessKey}`}>
+            Signed in as {activeAccessKey}
+          </div>
+          {#if formatSessionExpiry(sessionExpiresAt)}
+            <div class="px-3 pb-1 text-[11px] text-muted-foreground truncate" title={`Session expires ${formatSessionExpiry(sessionExpiresAt)}`}>
+              Expires {formatSessionExpiry(sessionExpiresAt)}
+            </div>
+          {/if}
+        {/if}
         <button
           onclick={toggleTheme}
           class="flex h-9 w-full items-center rounded-sm text-left text-sm font-medium text-muted-foreground transition-colors hover:bg-muted overflow-hidden"
@@ -276,12 +352,14 @@
             {/if}
           </nav>
         {:else}
-          <h2 class="text-lg font-semibold">Buckets</h2>
+          <h2 class="text-lg font-semibold">{currentView === "metrics" ? "Metrics" : "Buckets"}</h2>
         {/if}
       </div>
       <!-- Scrollable content -->
       <div class="flex-1 overflow-auto p-6">
-        {#if selectedBucket && currentView === "settings"}
+        {#if currentView === "metrics"}
+          <SystemMetrics />
+        {:else if selectedBucket && currentView === "settings"}
           <BucketSettings
             bucket={selectedBucket}
             onBack={() => selectBucket(selectedBucket!)}

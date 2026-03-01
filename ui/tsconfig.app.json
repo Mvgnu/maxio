@@ -5,7 +5,7 @@
     "target": "ES2022",
     "useDefineForClassFields": true,
     "module": "ESNext",
-    "types": ["svelte", "vite/client"],
+    "types": ["svelte", "vite/client", "bun-types"],
     "noEmit": true,
     "allowJs": true,
     "checkJs": true,

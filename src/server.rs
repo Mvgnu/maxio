@@ -1,8 +1,14 @@
 use axum::Router;
+use axum::extract::State;
+use axum::http::{HeaderMap, HeaderValue, Method, StatusCode, header};
+use axum::response::Response;
 use axum::routing::get;
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 
-use crate::api::console::{console_router, LoginRateLimiter};
+use crate::api::console::{LoginRateLimiter, console_router};
 use crate::api::router::s3_router;
 use crate::auth::middleware::auth_middleware;
 use crate::config::Config;
@@ -13,7 +19,39 @@ use crate::storage::filesystem::FilesystemStorage;
 pub struct AppState {
     pub storage: Arc<FilesystemStorage>,
     pub config: Arc<Config>,
+    pub credentials: Arc<HashMap<String, String>>,
+    pub node_id: Arc<String>,
+    pub cluster_peers: Arc<Vec<String>>,
     pub login_rate_limiter: Arc<LoginRateLimiter>,
+    pub request_count: Arc<AtomicU64>,
+    pub started_at: Instant,
+}
+
+impl AppState {
+    /// Construct the shared runtime state from a parsed config.
+    pub async fn from_config(config: Config) -> anyhow::Result<Self> {
+        let credentials = config.credential_map().map_err(anyhow::Error::msg)?;
+        let cluster_peers = config.parsed_cluster_peers().map_err(anyhow::Error::msg)?;
+        let node_id = config.node_id.clone();
+        let storage = FilesystemStorage::new(
+            &config.data_dir,
+            config.erasure_coding,
+            config.chunk_size,
+            config.parity_shards,
+        )
+        .await?;
+
+        Ok(Self {
+            storage: Arc::new(storage),
+            config: Arc::new(config),
+            credentials: Arc::new(credentials),
+            node_id: Arc::new(node_id),
+            cluster_peers: Arc::new(cluster_peers),
+            login_rate_limiter: Arc::new(LoginRateLimiter::new()),
+            request_count: Arc::new(AtomicU64::new(0)),
+            started_at: Instant::now(),
+        })
+    }
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -24,18 +62,135 @@ pub fn build_router(state: AppState) -> Router {
 
     Router::new()
         .nest("/api", console_router(state.clone()))
+        .route("/healthz", get(health_handler))
+        .route("/metrics", get(metrics_handler))
         .route("/ui", get(ui_handler))
         .route("/ui/", get(ui_handler))
         .route("/ui/{*path}", get(ui_handler))
         .merge(s3_routes)
-        .layer(axum::middleware::from_fn(request_id_middleware))
+        .layer(axum::middleware::from_fn(cors_middleware))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            request_id_middleware,
+        ))
         .with_state(state)
 }
 
-async fn request_id_middleware(
+async fn metrics_handler(State(state): State<AppState>) -> Response {
+    let request_count = state.request_count.load(Ordering::Relaxed);
+    let uptime = state.started_at.elapsed().as_secs_f64();
+    let distributed_mode = if state.cluster_peers.is_empty() { 0 } else { 1 };
+    let cluster_peer_count = state.cluster_peers.len();
+
+    let body = format!(
+        "# HELP maxio_requests_total Total HTTP requests observed by MaxIO.\n\
+         # TYPE maxio_requests_total counter\n\
+         maxio_requests_total {}\n\
+         # HELP maxio_uptime_seconds MaxIO process uptime in seconds.\n\
+         # TYPE maxio_uptime_seconds gauge\n\
+         maxio_uptime_seconds {:.3}\n\
+         # HELP maxio_build_info Build and version information for MaxIO.\n\
+         # TYPE maxio_build_info gauge\n\
+         maxio_build_info{{version=\"{}\"}} 1\n\
+         # HELP maxio_distributed_mode Whether MaxIO is running with configured cluster peers (1=true, 0=false).\n\
+         # TYPE maxio_distributed_mode gauge\n\
+         maxio_distributed_mode {}\n\
+         # HELP maxio_cluster_peers_total Number of configured cluster peers.\n\
+         # TYPE maxio_cluster_peers_total gauge\n\
+         maxio_cluster_peers_total {}\n",
+        request_count,
+        uptime,
+        env!("CARGO_PKG_VERSION"),
+        distributed_mode,
+        cluster_peer_count
+    );
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
+        .body(axum::body::Body::from(body))
+        .unwrap()
+}
+
+async fn health_handler(State(state): State<AppState>) -> Response {
+    let uptime_seconds = state.started_at.elapsed().as_secs_f64();
+    let distributed_mode = !state.cluster_peers.is_empty();
+    let body = serde_json::json!({
+        "ok": true,
+        "version": env!("CARGO_PKG_VERSION"),
+        "uptimeSeconds": uptime_seconds,
+        "mode": if distributed_mode { "distributed" } else { "standalone" },
+        "nodeId": state.node_id.as_str(),
+        "clusterPeerCount": state.cluster_peers.len(),
+        "clusterPeers": state.cluster_peers.as_ref(),
+    });
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(axum::body::Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn apply_cors_headers(response_headers: &mut HeaderMap, request_headers: &HeaderMap) {
+    let origin = request_headers
+        .get(header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .filter(|v| !v.is_empty())
+        .unwrap_or("*");
+
+    if let Ok(value) = HeaderValue::from_str(origin) {
+        response_headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+    }
+    response_headers.insert(
+        header::ACCESS_CONTROL_ALLOW_METHODS,
+        HeaderValue::from_static("GET, PUT, POST, DELETE, HEAD, OPTIONS"),
+    );
+    response_headers.insert(
+        header::ACCESS_CONTROL_ALLOW_HEADERS,
+        HeaderValue::from_static(
+            "authorization,content-type,x-amz-date,x-amz-content-sha256,x-amz-security-token,x-amz-user-agent,x-amz-checksum-algorithm,x-amz-checksum-crc32,x-amz-checksum-crc32c,x-amz-checksum-sha1,x-amz-checksum-sha256,range",
+        ),
+    );
+    response_headers.insert(
+        header::ACCESS_CONTROL_EXPOSE_HEADERS,
+        HeaderValue::from_static(
+            "etag,x-amz-request-id,x-amz-version-id,x-amz-delete-marker,x-amz-checksum-crc32,x-amz-checksum-crc32c,x-amz-checksum-sha1,x-amz-checksum-sha256,content-length,content-type,last-modified,accept-ranges,content-range,location",
+        ),
+    );
+    response_headers.insert(
+        header::ACCESS_CONTROL_MAX_AGE,
+        HeaderValue::from_static("86400"),
+    );
+    response_headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+}
+
+async fn cors_middleware(
     request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> axum::response::Response {
+    let request_headers = request.headers().clone();
+
+    if request.method() == Method::OPTIONS {
+        let mut response = axum::response::Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .body(axum::body::Body::empty())
+            .unwrap();
+        apply_cors_headers(response.headers_mut(), &request_headers);
+        return response;
+    }
+
+    let mut response = next.run(request).await;
+    apply_cors_headers(response.headers_mut(), &request_headers);
+    response
+}
+
+async fn request_id_middleware(
+    State(state): State<AppState>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    state.request_count.fetch_add(1, Ordering::Relaxed);
     let request_id = uuid::Uuid::new_v4().to_string();
     let mut response = next.run(request).await;
     if let Ok(value) = request_id.parse() {

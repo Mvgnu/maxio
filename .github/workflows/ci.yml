@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  backend:
+    name: Backend Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Build frontend assets for embed
+        run: cd ui && bun install && bun run build
+
+      - name: Cargo check
+        run: cargo check
+
+      - name: Cargo test
+        run: cargo test
+
+  frontend:
+    name: Frontend Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install bun
+        uses: oven-sh/setup-bun@v2
+
+      - name: Install dependencies
+        run: cd ui && bun install
+
+      - name: Typecheck
+        run: cd ui && bun run check
+
+      - name: Build
+        run: cd ui && bun run build
