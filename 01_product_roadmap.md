@@ -122,6 +122,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now also executes S3 list-handler unit suites (`api::list::tests`) in S3 domain-local cycles.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
+  - Web console hash-route parsing/building is now centralized in a shared helper module (`ui/src/lib/navigation.ts`) with focused unit coverage (`ui/src/lib/navigation.test.ts`).
   - Frontend verification (`bun run check`, `bun run build`) remains green after backend refactors.
   - CI includes non-release backend/frontend verification.
   - AWS CLI and mc compatibility scripts now include lifecycle regression flows.

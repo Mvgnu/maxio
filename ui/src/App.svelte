@@ -17,6 +17,7 @@
   import Moon from "lucide-svelte/icons/moon";
   import { Sonner } from "$lib/components/ui/sonner";
   import { authCheck, authLogout } from "$lib/api";
+  import { buildHashRoute, parseHashRoute } from "$lib/navigation";
 
   let authenticated = $state<boolean | null>(null);
   let activeAccessKey = $state<string | null>(null);
@@ -38,49 +39,23 @@
   });
 
   function applyHash() {
-    const hash = window.location.hash.slice(1) || "/";
-    if (hash === "/") {
-      selectedBucket = null;
-      currentView = "objects";
-      currentPrefix = "";
-      currentBreadcrumbs = [];
-    } else if (hash === "/metrics") {
-      selectedBucket = null;
-      currentView = "metrics";
-      currentPrefix = "";
-      currentBreadcrumbs = [];
-    } else {
-      const parts = hash.slice(1).split("/"); // remove leading /
-      const bucket = decodeURIComponent(parts[0]);
-      const rest = parts.slice(1).join("/");
-      selectedBucket = bucket;
-      if (rest === "settings") {
-        currentView = "settings";
-        currentPrefix = "";
-        currentBreadcrumbs = [];
+    const route = parseHashRoute(window.location.hash);
+    selectedBucket = route.bucket;
+    currentView = route.view;
+    currentPrefix = "";
+    currentBreadcrumbs = [];
+
+    if (route.view === "objects" && route.prefix) {
+      if (objectBrowserRef) {
+        objectBrowserRef.navigateTo(route.prefix);
       } else {
-        currentView = "objects";
-        if (rest) {
-          if (objectBrowserRef) {
-            objectBrowserRef.navigateTo(rest);
-          } else {
-            pendingPrefix = rest;
-          }
-        }
+        pendingPrefix = route.prefix;
       }
     }
   }
 
   function updateHash() {
-    if (currentView === "metrics") {
-      window.location.hash = "/metrics";
-    } else if (!selectedBucket) {
-      window.location.hash = "/";
-    } else if (currentPrefix) {
-      window.location.hash = `/${encodeURIComponent(selectedBucket)}/${currentPrefix}`;
-    } else {
-      window.location.hash = `/${encodeURIComponent(selectedBucket)}`;
-    }
+    window.location.hash = buildHashRoute(currentView, selectedBucket, currentPrefix);
   }
 
   async function refreshAuthState() {
