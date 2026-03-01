@@ -172,6 +172,7 @@ From CLAUDE phased roadmap (additional context):
   - Presigned S3 auth now rejects excessive future `X-Amz-Date` skew (`RequestTimeTooSkewed`) with dedicated integration coverage.
   - Presigned S3 auth now has explicit unknown-access-key regression coverage (`InvalidAccessKeyId`) in the credential matrix.
   - SigV4 verify/presign signing flow now avoids panic-prone HMAC `unwrap` paths and uses explicit fallible helper handling.
+  - SigV4 presigned-query parsing now decodes `X-Amz-*` query components consistently (including encoded `X-Amz-SignedHeaders`) and rejects invalid UTF-8 encoded query-component bytes.
   - Auth domain verification now explicitly includes `auth::signature_v4::tests` in domain-local checks.
 - Distributed bootstrap groundwork advanced:
   - Runtime config now supports `MAXIO_NODE_ID` and `MAXIO_CLUSTER_PEERS` for topology bootstrap wiring.

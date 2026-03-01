@@ -35,6 +35,13 @@ pub struct ParsedAuth {
     pub signature: String,
 }
 
+fn decode_query_component(input: &str) -> Result<String, &'static str> {
+    percent_encoding::percent_decode_str(input)
+        .decode_utf8()
+        .map(|v| v.into_owned())
+        .map_err(|_| "Invalid query encoding")
+}
+
 pub fn parse_authorization_header(header: &str) -> Result<ParsedAuth, &'static str> {
     let header = header
         .strip_prefix("AWS4-HMAC-SHA256 ")
@@ -123,15 +130,17 @@ pub fn parse_presigned_query(query: &str) -> Result<(ParsedAuth, String, u64), &
 
     for pair in query.split('&') {
         let mut parts = pair.splitn(2, '=');
-        let key = parts.next().unwrap_or("");
-        let val = parts.next().unwrap_or("");
+        let raw_key = parts.next().unwrap_or("");
+        let raw_val = parts.next().unwrap_or("");
+        let key = decode_query_component(raw_key)?;
+        let val = decode_query_component(raw_val)?;
         match key {
-            "X-Amz-Algorithm" => algorithm = Some(val),
-            "X-Amz-Credential" => credential = Some(val),
-            "X-Amz-Date" => date = Some(val),
-            "X-Amz-Expires" => expires = Some(val),
-            "X-Amz-SignedHeaders" => signed_headers = Some(val),
-            "X-Amz-Signature" => signature = Some(val),
+            ref key if key == "X-Amz-Algorithm" => algorithm = Some(val),
+            ref key if key == "X-Amz-Credential" => credential = Some(val),
+            ref key if key == "X-Amz-Date" => date = Some(val),
+            ref key if key == "X-Amz-Expires" => expires = Some(val),
+            ref key if key == "X-Amz-SignedHeaders" => signed_headers = Some(val),
+            ref key if key == "X-Amz-Signature" => signature = Some(val),
             _ => {}
         }
     }
@@ -152,11 +161,8 @@ pub fn parse_presigned_query(query: &str) -> Result<(ParsedAuth, String, u64), &
         return Err("X-Amz-Expires exceeds maximum of 604800 seconds");
     }
 
-    // Credential is URL-encoded: access_key%2Fdate%2Fregion%2Fs3%2Faws4_request
-    let credential_decoded = percent_encoding::percent_decode_str(credential)
-        .decode_utf8()
-        .map_err(|_| "Invalid Credential encoding")?;
-    let cred_parts: Vec<&str> = credential_decoded.splitn(5, '/').collect();
+    // Credential value is normalized via percent-decoding during query parsing.
+    let cred_parts: Vec<&str> = credential.splitn(5, '/').collect();
     if cred_parts.len() != 5 {
         return Err("Invalid Credential format");
     }
@@ -556,6 +562,38 @@ mod tests {
             "X-Amz-Signature=deadbeef"
         );
         assert!(parse_presigned_query(bad_terminator).is_err());
+    }
+
+    #[test]
+    fn parse_presigned_query_decodes_percent_encoded_values() {
+        let query = concat!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
+            "X-Amz-Credential=minioadmin%2F20260301%2Fus-east-1%2Fs3%2Faws4_request&",
+            "X-Amz-Date=20260301T120000Z&",
+            "X-Amz-Expires=60&",
+            "X-Amz-SignedHeaders=host%3Bx-amz-date&",
+            "X-Amz-Signature=deadbeef",
+        );
+        let (parsed, timestamp, expires) = parse_presigned_query(query).expect("query should parse");
+        assert_eq!(parsed.access_key, "minioadmin");
+        assert_eq!(parsed.date, "20260301");
+        assert_eq!(parsed.region, "us-east-1");
+        assert_eq!(parsed.signed_headers, vec!["host", "x-amz-date"]);
+        assert_eq!(timestamp, "20260301T120000Z");
+        assert_eq!(expires, 60);
+    }
+
+    #[test]
+    fn parse_presigned_query_rejects_invalid_utf8_encoded_values() {
+        let query = concat!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
+            "X-Amz-Credential=minioadmin%2F20260301%2Fus-east-1%2Fs3%2Faws4_request&",
+            "X-Amz-Date=20260301T120000Z&",
+            "X-Amz-Expires=60&",
+            "X-Amz-SignedHeaders=host&",
+            "X-Amz-Signature=%FF",
+        );
+        assert!(parse_presigned_query(query).is_err());
     }
 
     #[test]
