@@ -110,6 +110,7 @@ run_domain() {
         core_tests::test_delete_object_invalid_key_returns_invalid_argument \
         core_tests::test_delete_objects_batch_invalid_key_returns_invalid_argument_entry \
         core_tests::test_copy_object_basic \
+        core_tests::test_copy_object_metadata_directive_is_case_insensitive \
         core_tests::test_copy_object_missing_source_bucket_returns_no_such_bucket \
         core_tests::test_copy_object_missing_destination_bucket_returns_no_such_bucket \
         core_tests::test_multipart_create_upload_missing_bucket_returns_no_such_bucket \
