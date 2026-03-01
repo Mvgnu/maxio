@@ -343,6 +343,12 @@ pub async fn delete_object(
 
     // Permanent version deletion
     if let Some(version_id) = params.get("versionId") {
+        match state.storage.head_bucket(&bucket).await {
+            Ok(true) => {}
+            Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
+            Err(e) => return Err(S3Error::internal(e)),
+        }
+
         let deleted_meta = state
             .storage
             .delete_object_version(&bucket, &key, version_id)
@@ -358,6 +364,12 @@ pub async fn delete_object(
             builder = builder.header("x-amz-delete-marker", "true");
         }
         return Ok(builder.body(Body::empty()).unwrap());
+    }
+
+    match state.storage.head_bucket(&bucket).await {
+        Ok(true) => {}
+        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
+        Err(e) => return Err(S3Error::internal(e)),
     }
 
     let result = state
@@ -409,6 +421,12 @@ pub async fn delete_objects(
     Path(bucket): Path<String>,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
+    match state.storage.head_bucket(&bucket).await {
+        Ok(true) => {}
+        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
+        Err(e) => return Err(S3Error::internal(e)),
+    }
+
     let bytes = axum::body::to_bytes(body, DELETE_BODY_MAX)
         .await
         .map_err(|e| S3Error::internal(e))?;

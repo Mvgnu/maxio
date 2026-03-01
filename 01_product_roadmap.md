@@ -82,6 +82,11 @@ From CLAUDE phased roadmap (additional context):
   - Added regression coverage for preserved version history after suspend.
   - Fixed delete-marker/current-version reconciliation: deleting older versions no longer resurrects tombstoned objects.
   - Added erasure-coded versioning regression coverage for delete-marker semantics on chunked objects.
+  - S3 delete endpoints now return explicit `NoSuchBucket` for missing-bucket paths across:
+    - `DELETE /{bucket}/{key}`
+    - `DELETE /{bucket}/{key}?versionId=...`
+    - `POST /{bucket}?delete`
+  - Integration coverage now locks missing-bucket delete semantics for all three paths above.
   - `GET ?versions` now supports marker-based pagination semantics (`max-keys`, `key-marker`, `version-id-marker`).
   - Version-list XML responses now emit `NextKeyMarker` and `NextVersionIdMarker` when truncated.
   - Console API now has regression coverage ensuring object version history remains listable after bucket versioning is suspended.
