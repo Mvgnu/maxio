@@ -1157,6 +1157,44 @@ async fn test_console_delete_object_returns_not_found_for_missing_bucket() {
 }
 
 #[tokio::test]
+async fn test_console_download_object_returns_not_found_for_missing_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/missing-bucket/download/docs/readme.txt",
+            base_url
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+}
+
+#[tokio::test]
+async fn test_console_download_version_returns_not_found_for_missing_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/missing-bucket/versions/version-123/download/docs/readme.txt",
+            base_url
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+}
+
+#[tokio::test]
 async fn test_console_error_contract_shape_for_auth_failures() {
     let (base_url, _tmp) = start_server().await;
     let http = client();

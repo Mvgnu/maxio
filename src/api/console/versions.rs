@@ -95,6 +95,10 @@ pub(super) async fn download_version(
     State(state): State<AppState>,
     Path((bucket, version_id, key)): Path<(String, String, String)>,
 ) -> Response {
+    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+        return resp;
+    }
+
     let (reader, meta) = match state
         .storage
         .get_object_version(&bucket, &key, &version_id)

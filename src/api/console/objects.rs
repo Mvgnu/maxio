@@ -129,6 +129,10 @@ pub(super) async fn download_object(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> Response {
+    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+        return resp;
+    }
+
     let (reader, meta) = match state.storage.get_object(&bucket, &key).await {
         Ok(r) => r,
         Err(crate::storage::StorageError::NotFound(_)) => {

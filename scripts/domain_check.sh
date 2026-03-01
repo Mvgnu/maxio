@@ -140,6 +140,8 @@ run_domain() {
         console_tests::test_console_delete_version_returns_not_found_for_missing_version \
         console_tests::test_console_create_folder_returns_not_found_for_missing_bucket \
         console_tests::test_console_delete_object_returns_not_found_for_missing_bucket \
+        console_tests::test_console_download_object_returns_not_found_for_missing_bucket \
+        console_tests::test_console_download_version_returns_not_found_for_missing_bucket \
         console_tests::test_console_health_endpoint_requires_auth_and_returns_json \
         console_tests::test_console_health_endpoint_reports_distributed_mode_when_configured \
         console_tests::test_console_metrics_endpoint_requires_auth_and_returns_json \
