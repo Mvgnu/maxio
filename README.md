@@ -157,11 +157,14 @@ Run domain-scoped checks with:
 ./scripts/domain_check.sh <domain>
 ```
 
+Note: `quality_harness` also enforces `cargo clippy --all-targets -- -D warnings`.
+
 Example:
 
 ```bash
 ./scripts/domain_check.sh s3_auth_sigv4
 ./scripts/domain_check.sh web_console_ui
+./scripts/domain_check.sh quality_harness
 ```
 
 Run all domain checks:
