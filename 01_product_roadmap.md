@@ -222,6 +222,7 @@ From CLAUDE phased roadmap (additional context):
   - Integration coverage includes secondary-credential S3 signing and console login flows.
   - Console login now also has explicit primary/secondary/unknown credential-matrix regression coverage.
   - Console auth/session internals now avoid panic-prone lock/HMAC/cookie parsing paths and return explicit error responses on internal token/cookie failures.
+  - Console session cookie `Secure`-flag detection now robustly handles forwarded-proto header variants (case-insensitive and comma-separated proxy values) with dedicated auth-unit coverage.
   - Presigned S3 auth now rejects excessive future `X-Amz-Date` skew (`RequestTimeTooSkewed`) with dedicated integration coverage.
   - Presigned S3 auth now has explicit unknown-access-key regression coverage (`InvalidAccessKeyId`) in the credential matrix.
   - SigV4 verify/presign signing flow now avoids panic-prone HMAC `unwrap` paths and uses explicit fallible helper handling.

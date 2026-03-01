@@ -175,8 +175,9 @@ fn make_cookie(value: &str, max_age: i64, request_headers: &HeaderMap) -> String
     let is_secure = request_headers
         .get("x-forwarded-proto")
         .and_then(|v| v.to_str().ok())
-        .map(|v| v == "https")
-        .unwrap_or(false);
+        .and_then(|v| v.split(',').next())
+        .map(|v| v.trim())
+        .is_some_and(|v| v.eq_ignore_ascii_case("https"));
 
     let secure_flag = if is_secure { "; Secure" } else { "" };
 
@@ -348,5 +349,29 @@ mod tests {
         let issued_at = chrono::Utc::now().timestamp() + 120;
         let token = generate_token("ak", "sk", issued_at).expect("token should be generated");
         assert!(authenticated_session(&token, &credentials).is_none());
+    }
+
+    #[test]
+    fn make_cookie_sets_secure_for_https_forwarded_proto() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", "https".parse().unwrap());
+        let cookie = make_cookie("token", TOKEN_MAX_AGE_SECS, &headers);
+        assert!(cookie.contains("; Secure"));
+    }
+
+    #[test]
+    fn make_cookie_sets_secure_for_first_forwarded_proto_value_case_insensitive() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", " HTTPS, http ".parse().unwrap());
+        let cookie = make_cookie("token", TOKEN_MAX_AGE_SECS, &headers);
+        assert!(cookie.contains("; Secure"));
+    }
+
+    #[test]
+    fn make_cookie_omits_secure_for_non_https_forwarded_proto() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-forwarded-proto", "http,https".parse().unwrap());
+        let cookie = make_cookie("token", TOKEN_MAX_AGE_SECS, &headers);
+        assert!(!cookie.contains("; Secure"));
     }
 }
