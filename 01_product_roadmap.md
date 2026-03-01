@@ -90,6 +90,11 @@ From CLAUDE phased roadmap (additional context):
     - `DELETE /{bucket}/{key}?versionId=...`
     - `POST /{bucket}?delete`
   - Integration coverage now locks missing-bucket delete semantics for all three paths above.
+  - S3 delete endpoints now map invalid-key paths to explicit `InvalidArgument` (instead of generic internal errors) across:
+    - `DELETE /{bucket}/{key}`
+    - `DELETE /{bucket}/{key}?versionId=...`
+    - `POST /{bucket}?delete` per-key error entries
+  - Integration coverage now locks invalid-key delete semantics for both single-delete and DeleteObjects batch flows.
   - S3 object read endpoints now return explicit `NoSuchBucket` for missing-bucket paths across:
     - `GET /{bucket}/{key}`
     - `HEAD /{bucket}/{key}`
@@ -122,6 +127,7 @@ From CLAUDE phased roadmap (additional context):
   - S3 error code/status mapping and XML error response contract behavior now have focused unit-test coverage (`error::tests`).
   - S3 listing pagination/token/delimiter/version shaping helpers are now covered by focused list-service unit tests (`api::list::service::tests`).
   - S3 object checksum extraction/response-header mapping and streaming-body decoding helpers are now covered by focused object-service unit tests (`api::object::service::tests`).
+  - S3 object-service unit coverage now also includes delete-path error-mapping helpers (`map_delete_storage_err`, `map_delete_objects_err`) for invalid-key and missing-bucket edge handling.
   - S3 multipart transport response helpers are now covered by focused unit tests (`api::multipart::tests`) and use panic-free response construction.
   - S3 bucket/list/object transport handlers now also use fallible panic-free response construction (`map_err`) instead of `Response::builder(...).unwrap()`.
   - S3 object/multipart mutation error mapping now preserves explicit `NoSuchBucket` semantics for storage-layer missing-bucket paths (instead of collapsing to generic internal errors).
@@ -139,6 +145,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now also executes missing-bucket object-read regressions (`core_tests::test_get_object_missing_bucket_returns_no_such_bucket`, `core_tests::test_head_object_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket CopyObject regressions (`core_tests::test_copy_object_missing_source_bucket_returns_no_such_bucket`, `core_tests::test_copy_object_missing_destination_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket multipart regressions (`core_tests::test_multipart_create_upload_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_upload_part_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_complete_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_list_parts_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_list_uploads_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
+  - Domain check runner now also executes invalid-key delete regressions (`core_tests::test_delete_object_invalid_key_returns_invalid_argument`, `core_tests::test_delete_objects_batch_invalid_key_returns_invalid_argument_entry`) in S3 domain-local cycles.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
   - Web console hash-route parsing/building is now centralized in a shared helper module (`ui/src/lib/navigation.ts`) with focused unit coverage (`ui/src/lib/navigation.test.ts`).

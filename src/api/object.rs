@@ -15,7 +15,10 @@ use crate::server::AppState;
 use crate::storage::StorageError;
 use crate::xml::{response::to_xml, types::CopyObjectResult};
 use parsing::{parse_copy_source, parse_delete_objects_request, parse_range, to_http_date};
-use service::{DeleteObjectsOutcome, add_checksum_header, build_delete_objects_response_xml};
+use service::{
+    DeleteObjectsOutcome, add_checksum_header, build_delete_objects_response_xml,
+    map_delete_objects_err, map_delete_storage_err,
+};
 
 use super::multipart;
 use service::ensure_bucket_exists;
@@ -351,7 +354,7 @@ pub async fn delete_object(
             .await
             .map_err(|e| match e {
                 StorageError::VersionNotFound(_) => S3Error::no_such_version(version_id),
-                _ => S3Error::internal(e),
+                _ => map_delete_storage_err(&bucket, e),
             })?;
 
         let mut builder = Response::builder().status(StatusCode::NO_CONTENT);
@@ -368,7 +371,7 @@ pub async fn delete_object(
         .storage
         .delete_object(&bucket, &key)
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(|e| map_delete_storage_err(&bucket, e))?;
 
     let mut builder = Response::builder().status(StatusCode::NO_CONTENT);
     if let Some(vid) = &result.version_id {
@@ -430,11 +433,7 @@ pub async fn delete_objects(
                 version_id: dr.version_id,
                 is_delete_marker: dr.is_delete_marker,
             }),
-            Err(e) => outcomes.push(DeleteObjectsOutcome::Error {
-                key,
-                code: "InternalError",
-                message: e.to_string(),
-            }),
+            Err(e) => outcomes.push(map_delete_objects_err(&bucket, key, e)),
         }
     }
 

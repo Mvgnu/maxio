@@ -4,7 +4,7 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
 use crate::error::S3Error;
 use crate::server::AppState;
-use crate::storage::{ChecksumAlgorithm, ObjectMeta};
+use crate::storage::{ChecksumAlgorithm, ObjectMeta, StorageError};
 
 pub(super) async fn ensure_bucket_exists(state: &AppState, bucket: &str) -> Result<(), S3Error> {
     match state.storage.head_bucket(bucket).await {
@@ -60,6 +60,38 @@ pub(super) enum DeleteObjectsOutcome {
         code: &'static str,
         message: String,
     },
+}
+
+pub(super) fn map_delete_storage_err(bucket: &str, err: StorageError) -> S3Error {
+    match err {
+        StorageError::NotFound(_) => S3Error::no_such_bucket(bucket),
+        StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
+        _ => S3Error::internal(err),
+    }
+}
+
+pub(super) fn map_delete_objects_err(
+    bucket: &str,
+    key: String,
+    err: StorageError,
+) -> DeleteObjectsOutcome {
+    match err {
+        StorageError::InvalidKey(msg) => DeleteObjectsOutcome::Error {
+            key,
+            code: "InvalidArgument",
+            message: msg,
+        },
+        StorageError::NotFound(_) => DeleteObjectsOutcome::Error {
+            key,
+            code: "NoSuchBucket",
+            message: format!("The specified bucket does not exist: {bucket}"),
+        },
+        _ => DeleteObjectsOutcome::Error {
+            key,
+            code: "InternalError",
+            message: err.to_string(),
+        },
+    }
 }
 
 pub(super) fn build_delete_objects_response_xml(
@@ -280,5 +312,28 @@ mod tests {
 
         assert!(!xml.contains("<Deleted>"));
         assert!(xml.contains("<DeleteResult"));
+    }
+
+    #[test]
+    fn map_delete_storage_err_maps_invalid_key_to_invalid_argument() {
+        let err = map_delete_storage_err("bucket", StorageError::InvalidKey("bad key".into()));
+        assert_eq!(err.code.as_str(), "InvalidArgument");
+        assert_eq!(err.message, "bad key");
+    }
+
+    #[test]
+    fn map_delete_objects_err_maps_invalid_key_to_invalid_argument_entry() {
+        let outcome = map_delete_objects_err(
+            "bucket",
+            "../oops.txt".to_string(),
+            StorageError::InvalidKey("bad key".into()),
+        );
+        match outcome {
+            DeleteObjectsOutcome::Error { code, message, .. } => {
+                assert_eq!(code, "InvalidArgument");
+                assert_eq!(message, "bad key");
+            }
+            _ => panic!("expected error outcome"),
+        }
     }
 }

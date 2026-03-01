@@ -1060,6 +1060,62 @@ async fn test_delete_objects_batch_missing_bucket_returns_no_such_bucket() {
 }
 
 #[tokio::test]
+async fn test_delete_object_invalid_key_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    let invalid_key = "a".repeat(1025);
+
+    let resp = s3_request(
+        "DELETE",
+        &format!("{}/mybucket/{}", base_url, invalid_key),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
+async fn test_delete_objects_batch_invalid_key_returns_invalid_argument_entry() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    s3_request(
+        "PUT",
+        &format!("{}/mybucket/a.txt", base_url),
+        b"aaa".to_vec(),
+    )
+    .await;
+    let invalid_key = "a".repeat(1025);
+
+    let delete_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Delete>
+  <Object><Key>{}</Key></Object>
+  <Object><Key>a.txt</Key></Object>
+</Delete>"#,
+        invalid_key
+    );
+
+    let resp = s3_request(
+        "POST",
+        &format!("{}/mybucket?delete", base_url),
+        delete_xml.into_bytes(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>InvalidArgument</Code>"));
+    assert!(body.contains("<Deleted><Key>a.txt</Key>"));
+
+    let deleted = s3_request("GET", &format!("{}/mybucket/a.txt", base_url), vec![]).await;
+    assert_eq!(deleted.status(), 404);
+}
+
+#[tokio::test]
 async fn test_trailing_slash_bucket_routes() {
     // mc sends PUT /bucket/ (with trailing slash)
     let (base_url, _tmp) = start_server().await;
