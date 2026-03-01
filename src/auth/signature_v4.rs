@@ -347,10 +347,16 @@ fn canonical_uri(uri: &str) -> String {
     if path.is_empty() || path == "/" {
         return "/".to_string();
     }
-    // URI-encode each path segment individually, preserving '/' separators
+    // Decode then re-encode each segment to avoid double-encoding and to
+    // normalize already-encoded incoming request URIs.
     let segments: Vec<String> = path
         .split('/')
-        .map(|s| percent_encoding::utf8_percent_encode(s, S3_URI_ENCODE).to_string())
+        .map(|s| {
+            let decoded = percent_encoding::percent_decode_str(s)
+                .decode_utf8_lossy()
+                .into_owned();
+            percent_encoding::utf8_percent_encode(&decoded, S3_URI_ENCODE).to_string()
+        })
         .collect();
     segments.join("/")
 }
@@ -485,6 +491,10 @@ mod tests {
         assert_eq!(canonical_uri("/"), "/");
         assert_eq!(
             canonical_uri("/photos/Jan 2026/ça+t"),
+            "/photos/Jan%202026/%C3%A7a%2Bt"
+        );
+        assert_eq!(
+            canonical_uri("/photos/Jan%202026/%C3%A7a%2Bt"),
             "/photos/Jan%202026/%C3%A7a%2Bt"
         );
     }

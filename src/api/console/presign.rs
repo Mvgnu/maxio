@@ -4,8 +4,8 @@ use axum::{
     response::IntoResponse,
 };
 
-use super::{auth::ConsolePrincipal, storage};
 use super::response;
+use super::{auth::ConsolePrincipal, storage};
 use crate::auth::signature_v4;
 use crate::server::AppState;
 use crate::storage::StorageError;

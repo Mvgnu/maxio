@@ -133,6 +133,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now also executes console auth-helper unit suites (`api::console::auth::tests`) in console domain-local cycles.
   - Domain check runner now also executes console storage-helper unit suites (`api::console::storage::tests`) in console domain-local cycles.
   - Domain check runner now also executes console presign missing-bucket/missing-object regressions (`console_tests::test_console_presign_returns_not_found_for_missing_bucket`, `console_tests::test_console_presign_returns_not_found_for_missing_object`) in console domain-local cycles.
+  - Domain check runner now also executes console presign key-encoding regression (`console_tests::test_console_presign_encodes_object_keys_with_spaces_and_utf8`) in console domain-local cycles.
   - Domain check runner now also executes S3 bucket validation/service helper unit suites (`api::bucket::validation::tests`, `api::bucket::service::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes S3 list-handler unit suites (`api::list::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket object-read regressions (`core_tests::test_get_object_missing_bucket_returns_no_such_bucket`, `core_tests::test_head_object_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
@@ -177,6 +178,7 @@ From CLAUDE phased roadmap (additional context):
   - Console object-management endpoints now return `404` for missing buckets on folder creation and object deletion paths (instead of implicit success/`500` drift), with dedicated regression coverage.
   - Console object/version download endpoints now also return explicit `404` for missing buckets, with dedicated regression coverage.
   - Console presign endpoint now also returns explicit `404` semantics for missing buckets (`Bucket not found`) and missing objects (`Object not found`), with dedicated regression coverage.
+  - Console presign endpoint now has dedicated regression coverage for percent-encoded object-key signing/URL generation (spaces + UTF-8 segments).
   - Console object/version/lifecycle handlers now share a centralized storage-error helper module for consistent bucket/version `404` semantics and internal error shaping.
   - Console object/version download handlers now use panic-free response construction for streamed responses, with safe fallback headers for malformed metadata values.
   - Integration coverage now asserts console object and version download header/body contracts.
@@ -200,6 +202,7 @@ From CLAUDE phased roadmap (additional context):
   - Presigned S3 auth now has explicit unknown-access-key regression coverage (`InvalidAccessKeyId`) in the credential matrix.
   - SigV4 verify/presign signing flow now avoids panic-prone HMAC `unwrap` paths and uses explicit fallible helper handling.
   - SigV4 presigned-query parsing now decodes `X-Amz-*` query components consistently (including encoded `X-Amz-SignedHeaders`) and rejects invalid UTF-8 encoded query-component bytes.
+  - SigV4 canonical URI normalization now decodes and re-encodes path segments to avoid double-encoding already-encoded request paths in presigned verification flows.
   - Auth domain verification now explicitly includes `auth::signature_v4::tests` in domain-local checks.
 - Distributed bootstrap groundwork advanced:
   - Runtime config now supports `MAXIO_NODE_ID` and `MAXIO_CLUSTER_PEERS` for topology bootstrap wiring.

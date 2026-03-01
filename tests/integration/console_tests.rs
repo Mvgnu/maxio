@@ -473,6 +473,60 @@ async fn test_console_presign_uses_authenticated_session_identity() {
 }
 
 #[tokio::test]
+async fn test_console_presign_encodes_object_keys_with_spaces_and_utf8() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let create_bucket = s3_request(
+        "PUT",
+        &format!("{}/presign-encoding-bucket", base_url),
+        vec![],
+    )
+    .await;
+    assert_eq!(create_bucket.status(), 200);
+
+    let object_body = b"encoded-key-content".to_vec();
+    let upload = client()
+        .put(format!(
+            "{}/api/buckets/presign-encoding-bucket/upload/reports/Jan%202026/%C3%A7a%2Bt.txt",
+            base_url
+        ))
+        .header("cookie", &cookie)
+        .header("content-type", "text/plain")
+        .body(object_body.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), 200);
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/presign-encoding-bucket/presign/reports/Jan%202026/%C3%A7a%2Bt.txt",
+            base_url
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    let presigned_url = body["url"]
+        .as_str()
+        .expect("console presign response should include url");
+    assert!(
+        presigned_url.contains("/reports/Jan%202026/%C3%A7a%2Bt.txt"),
+        "presigned URL path should remain percent-encoded: {presigned_url}"
+    );
+
+    let download = client().get(presigned_url).send().await.unwrap();
+    assert_eq!(download.status(), 200);
+    assert_eq!(
+        download.bytes().await.unwrap().as_ref(),
+        object_body.as_slice()
+    );
+}
+
+#[tokio::test]
 async fn test_console_presign_returns_not_found_for_missing_bucket() {
     let (base_url, _tmp) = start_server().await;
     let cookie = console_login_cookie(&base_url).await;
@@ -494,7 +548,12 @@ async fn test_console_presign_returns_not_found_for_missing_bucket() {
 #[tokio::test]
 async fn test_console_presign_returns_not_found_for_missing_object() {
     let (base_url, _tmp) = start_server().await;
-    s3_request("PUT", &format!("{}/presign-missing-object", base_url), vec![]).await;
+    s3_request(
+        "PUT",
+        &format!("{}/presign-missing-object", base_url),
+        vec![],
+    )
+    .await;
     let cookie = console_login_cookie(&base_url).await;
 
     let resp = client()

@@ -142,6 +142,7 @@ run_domain() {
         console_tests::test_console_protected_route_rejects_future_dated_cookie \
         console_tests::test_console_login_rate_limit_enforced \
         console_tests::test_console_presign_uses_authenticated_session_identity \
+        console_tests::test_console_presign_encodes_object_keys_with_spaces_and_utf8 \
         console_tests::test_console_presign_returns_not_found_for_missing_bucket \
         console_tests::test_console_presign_returns_not_found_for_missing_object \
         console_tests::test_console_lifecycle_roundtrip \
