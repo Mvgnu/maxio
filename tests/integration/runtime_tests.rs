@@ -229,6 +229,47 @@ async fn test_cors_preflight_without_origin_uses_wildcard_without_credentials() 
 }
 
 #[tokio::test]
+async fn test_cors_preflight_console_route_without_auth() {
+    let (base_url, _tmp) = start_server().await;
+    let origin = "https://console.example.com";
+    let resp = client()
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/api/auth/check", base_url),
+        )
+        .header("origin", origin)
+        .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "content-type")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 204);
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        origin
+    );
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-credentials")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "true"
+    );
+    let request_id = resp
+        .headers()
+        .get("x-amz-request-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-amz-request-id");
+    uuid::Uuid::parse_str(request_id).expect("request id should be a valid uuid");
+}
+
+#[tokio::test]
 async fn test_cors_preflight_includes_vary_origin_and_request_id() {
     let (base_url, _tmp) = start_server().await;
     let origin = "https://example.com";

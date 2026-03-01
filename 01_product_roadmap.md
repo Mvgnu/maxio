@@ -70,6 +70,7 @@ From CLAUDE phased roadmap (additional context):
 - CORS delivered:
   - Global CORS middleware is active for API/S3 flows.
   - Preflight and error-path CORS behavior has integration coverage.
+  - Console-route preflights (`OPTIONS /api/...`) are now explicitly covered to ensure global middleware behavior is consistent outside S3 paths.
   - Runtime regression coverage now asserts preflight `Vary: Origin` and request-id propagation semantics.
   - CORS middleware now merges (instead of overwriting) existing `Vary` values and includes preflight cache-key fields (`Access-Control-Request-Method`, `Access-Control-Request-Headers`) when present.
   - CORS responses with reflected request origins now explicitly include `Access-Control-Allow-Credentials: true`; origin-less preflights keep wildcard origin semantics without credential headers.
@@ -127,6 +128,7 @@ From CLAUDE phased roadmap (additional context):
   - CORS origin-reflection behavior on successful authenticated S3 responses now has regression coverage.
   - Domain runtime verification now explicitly executes the successful-response CORS origin-reflection regression.
   - Domain runtime verification now also executes origin-less preflight regression coverage for wildcard/no-credentials CORS behavior.
+  - Domain runtime verification now also executes console-route preflight regression coverage to lock shared CORS/request-id behavior across API and S3 routing paths.
   - Storage key/upload-id validation rules now have explicit unit-test coverage.
   - Erasure/degraded-read chunk verification now runs through async shard reads in `VerifiedChunkReader` (no synchronous shard reads in stream path).
   - Extracted bucket/object/auth parser/validation helpers now have direct unit-test coverage.
@@ -228,9 +230,11 @@ From CLAUDE phased roadmap (additional context):
   - SigV4 verify/presign signing flow now avoids panic-prone HMAC `unwrap` paths and uses explicit fallible helper handling.
   - SigV4 presigned-query parsing now decodes `X-Amz-*` query components consistently (including encoded `X-Amz-SignedHeaders`) and rejects invalid UTF-8 encoded query-component bytes.
   - SigV4 header-auth and presigned-query parsers now reject duplicated auth components (`Credential`/`SignedHeaders`/`Signature`, duplicated `X-Amz-*`) to avoid ambiguous signature inputs.
+  - Integration coverage now includes duplicate-component rejection regressions for both `Authorization` header inputs and presigned `X-Amz-*` query inputs.
   - SigV4 canonical URI normalization now decodes and re-encodes path segments to avoid double-encoding already-encoded request paths in presigned verification flows.
   - Shared SigV4 presign generation now uses a typed `PresignRequest` contract instead of positional multi-argument call sites.
   - Auth domain verification now explicitly includes `auth::signature_v4::tests` in domain-local checks.
+  - Auth domain verification now also executes duplicate SigV4 component rejection integration regressions in domain-local cycles.
 - Distributed bootstrap groundwork advanced:
   - Runtime config now supports `MAXIO_NODE_ID` and `MAXIO_CLUSTER_PEERS` for topology bootstrap wiring.
   - `/healthz` and `/metrics` now expose standalone/distributed runtime topology context.

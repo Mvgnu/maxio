@@ -32,6 +32,7 @@ run_domain() {
         runtime_tests::test_healthz_reports_distributed_mode_when_cluster_peers_configured \
         runtime_tests::test_cors_preflight_s3_without_auth \
         runtime_tests::test_cors_preflight_without_origin_uses_wildcard_without_credentials \
+        runtime_tests::test_cors_preflight_console_route_without_auth \
         runtime_tests::test_cors_preflight_includes_vary_origin_and_request_id \
         runtime_tests::test_cors_headers_present_on_s3_error_response \
         runtime_tests::test_cors_origin_reflection_on_successful_s3_response
@@ -68,12 +69,14 @@ run_domain() {
         auth_tests::test_auth_accepts_secondary_configured_credentials \
         auth_tests::test_auth_credential_matrix_primary_secondary_and_unknown \
         auth_tests::test_auth_compact_header_no_spaces \
+        auth_tests::test_auth_rejects_duplicate_authorization_components \
         auth_tests::test_presigned_rejects_invalid_credential_scope_service \
         auth_tests::test_presigned_rejects_future_timestamp_skew \
         auth_tests::test_presigned_rejects_unknown_access_key \
         auth_tests::test_presigned_get_object_with_secondary_credentials \
         auth_tests::test_presigned_bad_signature \
-        auth_tests::test_presigned_expired_url
+        auth_tests::test_presigned_expired_url \
+        auth_tests::test_presigned_rejects_duplicate_auth_query_components
       do
         cargo test --test integration "$t" -- --exact
       done

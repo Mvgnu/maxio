@@ -133,6 +133,35 @@ async fn test_auth_compact_header_no_spaces() {
     assert_eq!(resp.status(), 200);
 }
 
+#[tokio::test]
+async fn test_auth_rejects_duplicate_authorization_components() {
+    let (base_url, _tmp) = start_server().await;
+    let url = format!("{}/", base_url);
+
+    let mut headers = Vec::new();
+    sign_request("GET", &url, &mut headers, &[]);
+
+    let mut saw_auth = false;
+    for (name, value) in &mut headers {
+        if name == "authorization" {
+            value.push_str(", Signature=deadbeef");
+            saw_auth = true;
+        }
+    }
+    assert!(saw_auth, "signed request should include authorization header");
+
+    let mut req = client().get(&url);
+    for (name, value) in &headers {
+        req = req.header(name, value);
+    }
+
+    let resp = req.send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Duplicate Signature"));
+}
+
 /// Generate a presigned URL for the given method/path.
 fn presign_url(base_url: &str, method: &str, path: &str, expires_secs: u64) -> String {
     presign_url_with_credentials(base_url, method, path, expires_secs, ACCESS_KEY, SECRET_KEY)
@@ -475,4 +504,28 @@ async fn test_presigned_bad_signature() {
 
     let resp = client().get(&presigned).send().await.unwrap();
     assert_eq!(resp.status(), 403);
+}
+
+#[tokio::test]
+async fn test_presigned_rejects_duplicate_auth_query_components() {
+    let (base_url, _tmp) = start_server().await;
+
+    let bucket_url = format!("{}/presign-duplicate-query-bucket", base_url);
+    s3_request("PUT", &bucket_url, vec![]).await;
+    let object_url = format!("{}/presign-duplicate-query-bucket/test.txt", base_url);
+    s3_request("PUT", &object_url, b"data".to_vec()).await;
+
+    let presigned = presign_url(
+        &base_url,
+        "GET",
+        "/presign-duplicate-query-bucket/test.txt",
+        300,
+    );
+    let duplicated = format!("{presigned}&X-Amz-Date=20260101T000000Z");
+
+    let resp = client().get(&duplicated).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Duplicate X-Amz-Date"));
 }
