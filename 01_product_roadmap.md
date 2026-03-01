@@ -151,6 +151,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now also executes console presign key-encoding regression (`console_tests::test_console_presign_encodes_object_keys_with_spaces_and_utf8`) in console domain-local cycles.
   - Domain check runner now also executes S3 bucket validation/service helper unit suites (`api::bucket::validation::tests`, `api::bucket::service::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes S3 list-handler unit suites (`api::list::tests`) in S3 domain-local cycles.
+  - Domain check runner now also executes S3 list-response helper unit suites (`api::list::response::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket object-read regressions (`core_tests::test_get_object_missing_bucket_returns_no_such_bucket`, `core_tests::test_head_object_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Domain check runner now also executes invalid-prefix list regressions (`core_tests::test_list_objects_invalid_prefix_returns_invalid_argument`, `core_tests::test_list_object_versions_invalid_prefix_returns_invalid_argument`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket CopyObject regressions (`core_tests::test_copy_object_missing_source_bucket_returns_no_such_bucket`, `core_tests::test_copy_object_missing_destination_bucket_returns_no_such_bucket`) in S3 domain-local cycles.

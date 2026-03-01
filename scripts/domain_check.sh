@@ -84,6 +84,7 @@ run_domain() {
       cargo test api::bucket::validation::tests
       cargo test api::bucket::service::tests
       cargo test api::list::tests
+      cargo test api::list::response::tests
       cargo test api::list::service::tests
       cargo test api::object::service::tests
       cargo test api::multipart::tests
