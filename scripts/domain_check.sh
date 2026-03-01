@@ -126,6 +126,7 @@ run_domain() {
         core_tests::test_bucket_versioning_suspend_preserves_existing_versions \
         core_tests::test_object_version_roundtrip_and_specific_version_delete \
         core_tests::test_get_object_range_with_version_id_reads_specific_version \
+        core_tests::test_get_object_range_without_version_id_returns_current_version_header \
         core_tests::test_list_object_versions_supports_max_keys_and_markers \
         core_tests::test_delete_marker_stays_current_after_deleting_older_version \
         core_tests::test_bucket_lifecycle_put_and_get \
