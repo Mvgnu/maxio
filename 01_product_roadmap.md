@@ -72,6 +72,7 @@ From CLAUDE phased roadmap (additional context):
   - Preflight and error-path CORS behavior has integration coverage.
   - Runtime regression coverage now asserts preflight `Vary: Origin` and request-id propagation semantics.
   - CORS middleware now merges (instead of overwriting) existing `Vary` values and includes preflight cache-key fields (`Access-Control-Request-Method`, `Access-Control-Request-Headers`) when present.
+  - Runtime metrics/health and CORS preflight response construction now avoid panic-prone response builders (`unwrap`) and use deterministic header/status assignment.
 - Versioning hardening advanced:
   - Explicit `PUT ?versioning` XML status validation now enforced.
   - Versioning/bucket protocol validation was split into an isolated `bucket/validation` module with unit coverage.

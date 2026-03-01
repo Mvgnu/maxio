@@ -105,11 +105,11 @@ async fn metrics_handler(State(state): State<AppState>) -> Response {
         cluster_peer_count
     );
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/plain; version=0.0.4")
-        .body(axum::body::Body::from(body))
-        .unwrap()
+    response_with_content_type(
+        StatusCode::OK,
+        HeaderValue::from_static("text/plain; version=0.0.4"),
+        axum::body::Body::from(body),
+    )
 }
 
 async fn health_handler(State(state): State<AppState>) -> Response {
@@ -125,11 +125,24 @@ async fn health_handler(State(state): State<AppState>) -> Response {
         "clusterPeers": state.cluster_peers.as_ref(),
     });
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/json")
-        .body(axum::body::Body::from(body.to_string()))
-        .unwrap()
+    response_with_content_type(
+        StatusCode::OK,
+        HeaderValue::from_static("application/json"),
+        axum::body::Body::from(body.to_string()),
+    )
+}
+
+fn response_with_content_type(
+    status: StatusCode,
+    content_type: HeaderValue,
+    body: axum::body::Body,
+) -> Response {
+    let mut response = Response::new(body);
+    *response.status_mut() = status;
+    response
+        .headers_mut()
+        .insert(header::CONTENT_TYPE, content_type);
+    response
 }
 
 fn apply_cors_headers(response_headers: &mut HeaderMap, request_headers: &HeaderMap) {
@@ -206,10 +219,8 @@ async fn cors_middleware(
     let request_headers = request.headers().clone();
 
     if request.method() == Method::OPTIONS {
-        let mut response = axum::response::Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .body(axum::body::Body::empty())
-            .unwrap();
+        let mut response = Response::new(axum::body::Body::empty());
+        *response.status_mut() = StatusCode::NO_CONTENT;
         apply_cors_headers(response.headers_mut(), &request_headers);
         return response;
     }
@@ -258,6 +269,23 @@ mod tests {
         assert_eq!(
             vary,
             "Accept-Encoding, Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+        );
+    }
+
+    #[test]
+    fn response_with_content_type_sets_status_and_header() {
+        let response = response_with_content_type(
+            StatusCode::CREATED,
+            HeaderValue::from_static("application/json"),
+            axum::body::Body::from("{}"),
+        );
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/json")
         );
     }
 }
