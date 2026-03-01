@@ -94,6 +94,8 @@ From CLAUDE phased roadmap (additional context):
     - `GET /{bucket}/{key}`
     - `HEAD /{bucket}/{key}`
   - Integration coverage now locks missing-bucket read semantics for both object paths above.
+  - CopyObject now returns explicit `NoSuchBucket` when either source or destination bucket is missing.
+  - Integration coverage now locks missing-bucket CopyObject semantics for both source and destination bucket paths.
   - `GET ?versions` now supports marker-based pagination semantics (`max-keys`, `key-marker`, `version-id-marker`).
   - Version-list XML responses now emit `NextKeyMarker` and `NextVersionIdMarker` when truncated.
   - Console API now has regression coverage ensuring object version history remains listable after bucket versioning is suspended.
@@ -126,6 +128,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now also executes S3 bucket validation/service helper unit suites (`api::bucket::validation::tests`, `api::bucket::service::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes S3 list-handler unit suites (`api::list::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket object-read regressions (`core_tests::test_get_object_missing_bucket_returns_no_such_bucket`, `core_tests::test_head_object_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
+  - Domain check runner now also executes missing-bucket CopyObject regressions (`core_tests::test_copy_object_missing_source_bucket_returns_no_such_bucket`, `core_tests::test_copy_object_missing_destination_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
   - Web console hash-route parsing/building is now centralized in a shared helper module (`ui/src/lib/navigation.ts`) with focused unit coverage (`ui/src/lib/navigation.test.ts`).

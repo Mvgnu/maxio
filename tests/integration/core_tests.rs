@@ -1905,6 +1905,46 @@ async fn test_copy_object_source_not_found() {
 }
 
 #[tokio::test]
+async fn test_copy_object_missing_source_bucket_returns_no_such_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/dst-bucket", base_url), vec![]).await;
+
+    let resp = s3_request_with_headers(
+        "PUT",
+        &format!("{}/dst-bucket/dst.txt", base_url),
+        vec![],
+        vec![("x-amz-copy-source", "/missing-source/src.txt")],
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>NoSuchBucket</Code>"));
+}
+
+#[tokio::test]
+async fn test_copy_object_missing_destination_bucket_returns_no_such_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/src-bucket", base_url), vec![]).await;
+    s3_request(
+        "PUT",
+        &format!("{}/src-bucket/src.txt", base_url),
+        b"copy me".to_vec(),
+    )
+    .await;
+
+    let resp = s3_request_with_headers(
+        "PUT",
+        &format!("{}/missing-dst/dst.txt", base_url),
+        vec![],
+        vec![("x-amz-copy-source", "/src-bucket/src.txt")],
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>NoSuchBucket</Code>"));
+}
+
+#[tokio::test]
 async fn test_copy_object_no_leading_slash() {
     let (base_url, _tmp) = start_server().await;
     s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
