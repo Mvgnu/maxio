@@ -147,12 +147,31 @@ fn presign_url_with_credentials(
     access_key: &str,
     secret_key: &str,
 ) -> String {
+    presign_url_with_credentials_at(
+        base_url,
+        method,
+        path,
+        expires_secs,
+        access_key,
+        secret_key,
+        chrono::Utc::now(),
+    )
+}
+
+fn presign_url_with_credentials_at(
+    base_url: &str,
+    method: &str,
+    path: &str,
+    expires_secs: u64,
+    access_key: &str,
+    secret_key: &str,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
     let parsed = reqwest::Url::parse(&format!("{}{}", base_url, path)).unwrap();
     let host = parsed.host_str().unwrap();
     let port = parsed.port().unwrap();
     let host_header = format!("{}:{}", host, port);
 
-    let now = chrono::Utc::now();
     let date_stamp = now.format("%Y%m%d").to_string();
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let credential = format!("{}/{}/{}/s3/aws4_request", access_key, date_stamp, REGION);
@@ -236,6 +255,35 @@ async fn test_presigned_get_object() {
     let resp = client().get(&presigned).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.bytes().await.unwrap().as_ref(), body);
+}
+
+#[tokio::test]
+async fn test_presigned_rejects_future_timestamp_skew() {
+    let (base_url, _tmp) = start_server().await;
+
+    let url = format!("{}/presign-skew-bucket", base_url);
+    s3_request("PUT", &url, vec![]).await;
+
+    let body = b"presigned skew test";
+    let object_url = format!("{}/presign-skew-bucket/test.txt", base_url);
+    s3_request("PUT", &object_url, body.to_vec()).await;
+
+    let future = chrono::Utc::now() + chrono::Duration::minutes(20);
+    let presigned = presign_url_with_credentials_at(
+        &base_url,
+        "GET",
+        "/presign-skew-bucket/test.txt",
+        300,
+        ACCESS_KEY,
+        SECRET_KEY,
+        future,
+    );
+
+    let resp = client().get(&presigned).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("RequestTimeTooSkewed"));
 }
 
 #[tokio::test]

@@ -163,24 +163,33 @@ async fn list_object_versions(
     bucket: String,
     params: HashMap<String, String>,
 ) -> Result<Response<Body>, S3Error> {
-    let prefix = params.get("prefix").cloned().unwrap_or_default();
+    let query = service::ListVersionsQuery::from_params(&params);
 
     let all_versions = state
         .storage
-        .list_object_versions(&bucket, &prefix)
+        .list_object_versions(&bucket, &query.prefix)
         .await
         .map_err(|e| S3Error::internal(e))?;
 
     let latest_per_key = service::latest_version_per_key(&all_versions);
-    let (versions, delete_markers) = service::split_version_entries(&all_versions, &latest_per_key);
+    let filtered = service::filter_versions_after(
+        &all_versions,
+        query.key_marker.as_deref(),
+        query.version_id_marker.as_deref(),
+    );
+    let (page, is_truncated, next_markers) = service::paginate_versions(filtered, query.max_keys);
+    let page_owned: Vec<_> = page.into_iter().cloned().collect();
+    let (versions, delete_markers) = service::split_version_entries(&page_owned, &latest_per_key);
 
     let result = ListVersionsResult {
         name: bucket,
-        prefix,
-        key_marker: String::new(),
-        version_id_marker: String::new(),
-        max_keys: 1000,
-        is_truncated: false,
+        prefix: query.prefix,
+        key_marker: query.key_marker.unwrap_or_default(),
+        version_id_marker: query.version_id_marker.unwrap_or_default(),
+        next_key_marker: next_markers.as_ref().map(|(key, _)| key.clone()),
+        next_version_id_marker: next_markers.map(|(_, version_id)| version_id),
+        max_keys: query.max_keys as i32,
+        is_truncated,
         versions,
         delete_markers,
     };

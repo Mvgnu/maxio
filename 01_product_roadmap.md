@@ -81,6 +81,10 @@ From CLAUDE phased roadmap (additional context):
   - Added regression coverage for preserved version history after suspend.
   - Fixed delete-marker/current-version reconciliation: deleting older versions no longer resurrects tombstoned objects.
   - Added erasure-coded versioning regression coverage for delete-marker semantics on chunked objects.
+  - `GET ?versions` now supports marker-based pagination semantics (`max-keys`, `key-marker`, `version-id-marker`).
+  - Version-list XML responses now emit `NextKeyMarker` and `NextVersionIdMarker` when truncated.
+  - Console API now has regression coverage ensuring object version history remains listable after bucket versioning is suspended.
+  - Web console versioning UX now reflects non-destructive suspend semantics and keeps version-history access reachable while suspended.
   - DeleteObjects request parsing now supports `<Quiet>true</Quiet>` and routes through a dedicated typed parser (`object/parsing`).
   - DeleteObjects response XML shaping is now centralized in `object/service` for deterministic request-order output and clearer handler boundaries.
   - Integration tests cover enable/suspend and invalid-status rejection.
@@ -97,6 +101,7 @@ From CLAUDE phased roadmap (additional context):
   - S3 listing pagination/token/delimiter/version shaping helpers are now covered by focused list-service unit tests (`api::list::service::tests`).
   - S3 object checksum extraction/response-header mapping and streaming-body decoding helpers are now covered by focused object-service unit tests (`api::object::service::tests`).
   - Integration coverage now includes DeleteObjects quiet-mode response semantics.
+  - Integration coverage now includes versions-list marker pagination roundtrip semantics.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
   - Frontend verification (`bun run check`, `bun run build`) remains green after backend refactors.
@@ -121,6 +126,8 @@ From CLAUDE phased roadmap (additional context):
   - Console lifecycle admin JSON endpoints are available and test-backed.
   - Web console bucket settings now expose lifecycle rule management UX.
   - Storage checksum-write finalization now uses typed error paths (no panic-on-invariant `unwrap` in write flows), with cleanup of staged files on checksum mismatch.
+  - Flat-object writes now clean up staged data files when metadata persistence fails, with storage-unit regression coverage for no-orphan behavior.
+  - Chunked and multipart-complete write flows now also clean up staged object artifacts when metadata persistence fails, with dedicated storage-unit regressions.
 - Console readiness advanced:
   - Session/login/logout/rate-limit behavior now has dedicated integration coverage.
   - Console API handlers are split by concern (auth/buckets/objects/presign/versions) with `console.rs` as router entrypoint.
@@ -140,6 +147,7 @@ From CLAUDE phased roadmap (additional context):
   - Web console now hydrates auth identity from `/api/auth/check` and surfaces session expiry context in the shell UI.
   - Integration coverage includes secondary-credential S3 signing and console login flows.
   - Console login now also has explicit primary/secondary/unknown credential-matrix regression coverage.
+  - Presigned S3 auth now rejects excessive future `X-Amz-Date` skew (`RequestTimeTooSkewed`) with dedicated integration coverage.
 - Distributed bootstrap groundwork advanced:
   - Runtime config now supports `MAXIO_NODE_ID` and `MAXIO_CLUSTER_PEERS` for topology bootstrap wiring.
   - `/healthz` and `/metrics` now expose standalone/distributed runtime topology context.

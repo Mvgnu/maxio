@@ -41,6 +41,33 @@ pub(super) struct ListV1Query {
     pub(super) marker: Option<String>,
 }
 
+pub(super) struct ListVersionsQuery {
+    pub(super) prefix: String,
+    pub(super) key_marker: Option<String>,
+    pub(super) version_id_marker: Option<String>,
+    pub(super) max_keys: usize,
+}
+
+impl ListVersionsQuery {
+    pub(super) fn from_params(params: &HashMap<String, String>) -> Self {
+        let key_marker = params
+            .get("key-marker")
+            .cloned()
+            .filter(|value| !value.is_empty());
+        let version_id_marker = params
+            .get("version-id-marker")
+            .cloned()
+            .filter(|value| !value.is_empty());
+
+        Self {
+            prefix: params.get("prefix").cloned().unwrap_or_default(),
+            key_marker,
+            version_id_marker,
+            max_keys: parse_max_keys(params),
+        }
+    }
+}
+
 impl ListV1Query {
     pub(super) fn from_params(params: &HashMap<String, String>) -> Self {
         Self {
@@ -144,6 +171,56 @@ pub(super) fn latest_version_per_key(versions: &[ObjectMeta]) -> HashMap<String,
         }
     }
     latest
+}
+
+pub(super) fn filter_versions_after<'a>(
+    all_versions: &'a [ObjectMeta],
+    key_marker: Option<&str>,
+    version_id_marker: Option<&str>,
+) -> Vec<&'a ObjectMeta> {
+    all_versions
+        .iter()
+        .filter(|version| {
+            let Some(marker_key) = key_marker else {
+                return true;
+            };
+
+            if version.key.as_str() > marker_key {
+                return true;
+            }
+            if version.key.as_str() < marker_key {
+                return false;
+            }
+
+            // Same key as marker key.
+            let Some(marker_version_id) = version_id_marker else {
+                // Key marker without version marker skips all versions for the marker key.
+                return false;
+            };
+            let candidate_version_id = version.version_id.as_deref().unwrap_or("null");
+            // Storage ordering is key asc + version_id desc, so "after marker" means lower version id.
+            candidate_version_id < marker_version_id
+        })
+        .collect()
+}
+
+pub(super) fn paginate_versions<'a>(
+    filtered_versions: Vec<&'a ObjectMeta>,
+    max_keys: usize,
+) -> (Vec<&'a ObjectMeta>, bool, Option<(String, String)>) {
+    let is_truncated = filtered_versions.len() > max_keys;
+    let page: Vec<&ObjectMeta> = filtered_versions.into_iter().take(max_keys).collect();
+    let next_markers = if is_truncated {
+        page.last().map(|version| {
+            (
+                version.key.clone(),
+                version.version_id.as_deref().unwrap_or("null").to_string(),
+            )
+        })
+    } else {
+        None
+    };
+    (page, is_truncated, next_markers)
 }
 
 pub(super) fn split_version_entries(
@@ -273,6 +350,61 @@ mod tests {
                 .find(|v| v.key == "b.txt" && v.version_id == "b1")
                 .expect("missing b.txt delete marker")
                 .is_latest
+        );
+    }
+
+    #[test]
+    fn filter_versions_after_key_and_version_markers() {
+        let versions = vec![
+            object_meta("a.txt", Some("v3"), false),
+            object_meta("a.txt", Some("v2"), false),
+            object_meta("a.txt", Some("v1"), false),
+            object_meta("b.txt", Some("b2"), false),
+            object_meta("b.txt", Some("b1"), false),
+        ];
+
+        let filtered = filter_versions_after(&versions, Some("a.txt"), Some("v2"));
+        let filtered_ids: Vec<_> = filtered
+            .iter()
+            .map(|version| (version.key.as_str(), version.version_id.as_deref().unwrap_or("null")))
+            .collect();
+        assert_eq!(
+            filtered_ids,
+            vec![("a.txt", "v1"), ("b.txt", "b2"), ("b.txt", "b1")]
+        );
+    }
+
+    #[test]
+    fn filter_versions_after_key_marker_without_version_skips_marker_key() {
+        let versions = vec![
+            object_meta("a.txt", Some("v2"), false),
+            object_meta("a.txt", Some("v1"), false),
+            object_meta("b.txt", Some("b1"), false),
+        ];
+
+        let filtered = filter_versions_after(&versions, Some("a.txt"), None);
+        let filtered_ids: Vec<_> = filtered
+            .iter()
+            .map(|version| (version.key.as_str(), version.version_id.as_deref().unwrap_or("null")))
+            .collect();
+        assert_eq!(filtered_ids, vec![("b.txt", "b1")]);
+    }
+
+    #[test]
+    fn paginate_versions_returns_next_markers_when_truncated() {
+        let versions = vec![
+            object_meta("a.txt", Some("v3"), false),
+            object_meta("a.txt", Some("v2"), false),
+            object_meta("b.txt", Some("b1"), false),
+        ];
+        let refs: Vec<&ObjectMeta> = versions.iter().collect();
+        let (page, is_truncated, next_markers) = paginate_versions(refs, 2);
+
+        assert_eq!(page.len(), 2);
+        assert!(is_truncated);
+        assert_eq!(
+            next_markers,
+            Some(("a.txt".to_string(), "v2".to_string()))
         );
     }
 }

@@ -45,7 +45,11 @@
   async function toggleVersioning() {
     const newState = !versioningEnabled
     if (versioningEnabled && !newState) {
-      if (!confirm('Disable versioning?\n\nThis will permanently delete all old versions. Only the latest version of each file will be kept. This cannot be undone.')) {
+      if (
+        !confirm(
+          'Suspend versioning?\n\nNew uploads will overwrite the current object version until versioning is enabled again. Existing object versions are preserved.'
+        )
+      ) {
         return
       }
     }
@@ -192,7 +196,7 @@
           {:else if versioningEnabled}
             Every upload creates a new version. Deleted files become delete markers.
           {:else}
-            Uploading a file overwrites the previous version.
+            Versioning is currently suspended. New uploads overwrite the current version, and previously created versions remain available.
           {/if}
         </span>
       </div>

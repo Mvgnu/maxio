@@ -304,6 +304,191 @@ mod lifecycle_tests {
                 .is_ok()
         );
     }
+
+    #[tokio::test]
+    async fn put_object_meta_write_failure_cleans_orphaned_data_file() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("lifecycle"))
+            .await
+            .unwrap();
+
+        let key = "broken-meta-write.txt";
+        let meta_path = storage.meta_path("lifecycle", key);
+        if let Some(parent) = meta_path.parent() {
+            fs::create_dir_all(parent).await.unwrap();
+        }
+        // Force fs::write(meta_path, ...) to fail with "Is a directory".
+        fs::create_dir_all(&meta_path).await.unwrap();
+
+        let result = storage
+            .put_object(
+                "lifecycle",
+                key,
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"content".to_vec())),
+                None,
+            )
+            .await;
+        assert!(matches!(result, Err(StorageError::Io(_))));
+
+        // Data file must be cleaned up when metadata persistence fails.
+        assert!(
+            !fs::try_exists(storage.object_path("lifecycle", key))
+                .await
+                .unwrap(),
+            "object data file should be removed on metadata write failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn put_object_chunked_meta_write_failure_cleans_orphaned_ec_dir() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), true, 4, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("lifecycle"))
+            .await
+            .unwrap();
+
+        let key = "broken-chunked-meta-write.txt";
+        let meta_path = storage.meta_path("lifecycle", key);
+        if let Some(parent) = meta_path.parent() {
+            fs::create_dir_all(parent).await.unwrap();
+        }
+        // Force fs::write(meta_path, ...) to fail with "Is a directory".
+        fs::create_dir_all(&meta_path).await.unwrap();
+
+        let result = storage
+            .put_object(
+                "lifecycle",
+                key,
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"chunked-content".to_vec())),
+                None,
+            )
+            .await;
+        assert!(matches!(result, Err(StorageError::Io(_))));
+
+        assert!(
+            !fs::try_exists(storage.ec_dir("lifecycle", key)).await.unwrap(),
+            "chunk directory should be removed on metadata write failure"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_multipart_meta_write_failure_cleans_orphaned_object_file() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("lifecycle"))
+            .await
+            .unwrap();
+
+        let key = "multipart-failure.txt";
+        let upload = storage
+            .create_multipart_upload("lifecycle", key, "text/plain", None)
+            .await
+            .unwrap();
+        let part = storage
+            .upload_part(
+                "lifecycle",
+                &upload.upload_id,
+                1,
+                Box::pin(std::io::Cursor::new(b"multipart-content".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let meta_path = storage.meta_path("lifecycle", key);
+        if let Some(parent) = meta_path.parent() {
+            fs::create_dir_all(parent).await.unwrap();
+        }
+        fs::create_dir_all(&meta_path).await.unwrap();
+
+        let result = storage
+            .complete_multipart_upload(
+                "lifecycle",
+                &upload.upload_id,
+                &[(part.part_number, part.etag.clone())],
+            )
+            .await;
+        assert!(matches!(result, Err(StorageError::Io(_))));
+
+        assert!(
+            !fs::try_exists(storage.object_path("lifecycle", key))
+                .await
+                .unwrap(),
+            "completed object file should be removed when metadata write fails"
+        );
+        assert!(
+            fs::try_exists(storage.upload_dir("lifecycle", &upload.upload_id))
+                .await
+                .unwrap(),
+            "multipart upload directory should remain for retry"
+        );
+    }
+
+    #[tokio::test]
+    async fn complete_multipart_chunked_meta_write_failure_cleans_orphaned_ec_dir() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), true, 4, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("lifecycle"))
+            .await
+            .unwrap();
+
+        let key = "multipart-chunked-failure.txt";
+        let upload = storage
+            .create_multipart_upload("lifecycle", key, "text/plain", None)
+            .await
+            .unwrap();
+        let part = storage
+            .upload_part(
+                "lifecycle",
+                &upload.upload_id,
+                1,
+                Box::pin(std::io::Cursor::new(b"chunked-multipart-content".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let meta_path = storage.meta_path("lifecycle", key);
+        if let Some(parent) = meta_path.parent() {
+            fs::create_dir_all(parent).await.unwrap();
+        }
+        fs::create_dir_all(&meta_path).await.unwrap();
+
+        let result = storage
+            .complete_multipart_upload(
+                "lifecycle",
+                &upload.upload_id,
+                &[(part.part_number, part.etag.clone())],
+            )
+            .await;
+        assert!(matches!(result, Err(StorageError::Io(_))));
+
+        assert!(
+            !fs::try_exists(storage.ec_dir("lifecycle", key)).await.unwrap(),
+            "chunk directory should be removed when metadata write fails"
+        );
+        assert!(
+            fs::try_exists(storage.upload_dir("lifecycle", &upload.upload_id))
+                .await
+                .unwrap(),
+            "multipart upload directory should remain for retry"
+        );
+    }
 }
 
 impl FilesystemStorage {
@@ -629,7 +814,11 @@ impl FilesystemStorage {
             fs::create_dir_all(parent).await?;
         }
         let json = serde_json::to_string_pretty(&meta)?;
-        fs::write(&meta_path, json).await?;
+        if let Err(e) = fs::write(&meta_path, json).await {
+            // Avoid leaving a data file without metadata if persistence fails.
+            let _ = fs::remove_file(&obj_path).await;
+            return Err(e.into());
+        }
 
         if versioned {
             self.write_version(bucket, key, &meta, &obj_path).await?;
@@ -769,7 +958,11 @@ impl FilesystemStorage {
         if let Some(parent) = meta_path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        fs::write(&meta_path, serde_json::to_string_pretty(&meta)?).await?;
+        if let Err(e) = fs::write(&meta_path, serde_json::to_string_pretty(&meta)?).await {
+            // Avoid leaving chunk files without metadata if persistence fails.
+            let _ = fs::remove_dir_all(&ec_dir).await;
+            return Err(e.into());
+        }
 
         if versioned {
             self.write_version_chunked(bucket, key, &meta).await?;
@@ -1016,7 +1209,11 @@ impl FilesystemStorage {
         if let Some(parent) = meta_path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        fs::write(&meta_path, serde_json::to_string_pretty(&object_meta)?).await?;
+        if let Err(e) = fs::write(&meta_path, serde_json::to_string_pretty(&object_meta)?).await {
+            // Keep multipart upload parts for retries, but avoid exposing an object without metadata.
+            let _ = fs::remove_dir_all(&ec_dir).await;
+            return Err(e.into());
+        }
         let _ = fs::remove_dir_all(self.upload_dir(bucket, upload_id)).await;
 
         Ok(PutResult {
@@ -1398,7 +1595,11 @@ impl FilesystemStorage {
         if let Some(parent) = meta_path.parent() {
             fs::create_dir_all(parent).await?;
         }
-        fs::write(meta_path, serde_json::to_string_pretty(&object_meta)?).await?;
+        if let Err(e) = fs::write(&meta_path, serde_json::to_string_pretty(&object_meta)?).await {
+            // Keep multipart upload parts for retries, but avoid exposing an object without metadata.
+            let _ = fs::remove_file(&obj_path).await;
+            return Err(e.into());
+        }
         let _ = fs::remove_dir_all(self.upload_dir(bucket, upload_id)).await;
 
         Ok(PutResult {

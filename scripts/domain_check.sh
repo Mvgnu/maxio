@@ -65,6 +65,7 @@ run_domain() {
         auth_tests::test_auth_credential_matrix_primary_secondary_and_unknown \
         auth_tests::test_auth_compact_header_no_spaces \
         auth_tests::test_presigned_rejects_invalid_credential_scope_service \
+        auth_tests::test_presigned_rejects_future_timestamp_skew \
         auth_tests::test_presigned_get_object_with_secondary_credentials \
         auth_tests::test_presigned_bad_signature \
         auth_tests::test_presigned_expired_url
@@ -93,6 +94,7 @@ run_domain() {
         core_tests::test_bucket_versioning_invalid_status_rejected \
         core_tests::test_bucket_versioning_suspend_preserves_existing_versions \
         core_tests::test_object_version_roundtrip_and_specific_version_delete \
+        core_tests::test_list_object_versions_supports_max_keys_and_markers \
         core_tests::test_delete_marker_stays_current_after_deleting_older_version \
         core_tests::test_bucket_lifecycle_put_and_get \
         core_tests::test_bucket_lifecycle_get_missing_returns_not_found_code \
@@ -126,6 +128,7 @@ run_domain() {
         console_tests::test_console_topology_endpoint_requires_auth_and_returns_json \
         console_tests::test_console_topology_endpoint_reports_distributed_mode_when_configured \
         console_tests::test_console_buckets_and_objects_json_contract_shapes \
+        console_tests::test_console_versions_list_remains_available_after_versioning_suspend \
         console_tests::test_console_error_contract_shape_for_auth_failures
       do
         cargo test --test integration "$t" -- --exact

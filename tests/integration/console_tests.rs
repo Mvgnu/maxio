@@ -821,6 +821,87 @@ async fn test_console_buckets_and_objects_json_contract_shapes() {
 }
 
 #[tokio::test]
+async fn test_console_versions_list_remains_available_after_versioning_suspend() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+    let bucket = "console-version-suspend-bucket";
+    let key = "docs/readme.txt";
+
+    let create_bucket = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create_bucket.status(), 200);
+
+    let enable_versioning = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning=", base_url, bucket),
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Status>Enabled</Status>
+</VersioningConfiguration>"#
+            .to_vec(),
+    )
+    .await;
+    assert_eq!(enable_versioning.status(), 200);
+
+    let put_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"first".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+
+    let put_v2 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"second".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+
+    let suspend_versioning = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning=", base_url, bucket),
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Status>Suspended</Status>
+</VersioningConfiguration>"#
+            .to_vec(),
+    )
+    .await;
+    assert_eq!(suspend_versioning.status(), 200);
+
+    let versioning_state = client()
+        .get(format!(
+            "{}/api/buckets/{}/versioning",
+            base_url, bucket
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(versioning_state.status(), 200);
+    let versioning_body: serde_json::Value = versioning_state.json().await.unwrap();
+    assert_eq!(versioning_body["enabled"], false);
+
+    let versions_response = client()
+        .get(format!(
+            "{}/api/buckets/{}/versions?key={}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(versions_response.status(), 200);
+    let versions_body: serde_json::Value = versions_response.json().await.unwrap();
+    let versions = versions_body["versions"]
+        .as_array()
+        .expect("versions should be an array");
+    assert_eq!(versions.len(), 2);
+    assert!(versions.iter().all(|entry| entry["versionId"].is_string()));
+}
+
+#[tokio::test]
 async fn test_console_error_contract_shape_for_auth_failures() {
     let (base_url, _tmp) = start_server().await;
     let http = client();

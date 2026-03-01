@@ -284,6 +284,115 @@ async fn test_object_version_roundtrip_and_specific_version_delete() {
     assert!(body.contains("<Code>NoSuchVersion</Code>"));
 }
 
+fn extract_xml_tag_value(body: &str, tag: &str) -> Option<String> {
+    let open = format!("<{}>", tag);
+    let close = format!("</{}>", tag);
+    let start = body.find(&open)? + open.len();
+    let end = body[start..].find(&close)? + start;
+    Some(body[start..end].to_string())
+}
+
+#[tokio::test]
+async fn test_list_object_versions_supports_max_keys_and_markers() {
+    use std::time::Duration;
+
+    let (base_url, _tmp) = start_server().await;
+    let bucket = "version-paging";
+    s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+
+    let enable_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let enable = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", base_url, bucket),
+        enable_xml,
+    )
+    .await;
+    assert_eq!(enable.status(), 200);
+
+    let put_a_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/a.txt", base_url, bucket),
+        b"a-v1".to_vec(),
+    )
+    .await;
+    assert_eq!(put_a_v1.status(), 200);
+    let a_v1 = put_a_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id for a-v1")
+        .to_string();
+
+    tokio::time::sleep(Duration::from_millis(2)).await;
+
+    let put_a_v2 = s3_request(
+        "PUT",
+        &format!("{}/{}/a.txt", base_url, bucket),
+        b"a-v2".to_vec(),
+    )
+    .await;
+    assert_eq!(put_a_v2.status(), 200);
+    let a_v2 = put_a_v2
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id for a-v2")
+        .to_string();
+
+    tokio::time::sleep(Duration::from_millis(2)).await;
+
+    let put_b_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/b.txt", base_url, bucket),
+        b"b-v1".to_vec(),
+    )
+    .await;
+    assert_eq!(put_b_v1.status(), 200);
+    let b_v1 = put_b_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id for b-v1")
+        .to_string();
+
+    let first_page = s3_request(
+        "GET",
+        &format!("{}/{}?versions=&max-keys=2", base_url, bucket),
+        vec![],
+    )
+    .await;
+    assert_eq!(first_page.status(), 200);
+    let first_body = first_page.text().await.unwrap();
+    assert!(first_body.contains("<IsTruncated>true</IsTruncated>"));
+    assert!(first_body.contains(&format!("<VersionId>{}</VersionId>", a_v2)));
+    assert!(first_body.contains(&format!("<VersionId>{}</VersionId>", a_v1)));
+    assert!(!first_body.contains(&format!("<VersionId>{}</VersionId>", b_v1)));
+
+    let next_key_marker =
+        extract_xml_tag_value(&first_body, "NextKeyMarker").expect("missing NextKeyMarker");
+    let next_version_marker = extract_xml_tag_value(&first_body, "NextVersionIdMarker")
+        .expect("missing NextVersionIdMarker");
+    assert_eq!(next_key_marker, "a.txt");
+    assert_eq!(next_version_marker, a_v1);
+
+    let second_page = s3_request(
+        "GET",
+        &format!(
+            "{}/{}?versions=&max-keys=2&key-marker={}&version-id-marker={}",
+            base_url, bucket, next_key_marker, next_version_marker
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(second_page.status(), 200);
+    let second_body = second_page.text().await.unwrap();
+    assert!(second_body.contains("<IsTruncated>false</IsTruncated>"));
+    assert!(second_body.contains(&format!("<VersionId>{}</VersionId>", b_v1)));
+    assert!(!second_body.contains("<NextKeyMarker>"));
+    assert!(!second_body.contains("<NextVersionIdMarker>"));
+}
+
 #[tokio::test]
 async fn test_delete_marker_stays_current_after_deleting_older_version() {
     let (base_url, _tmp) = start_server().await;

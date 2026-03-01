@@ -16,7 +16,6 @@
   import {
     createFolderApi,
     deleteObjectApi,
-    getBucketVersioningApi,
     listObjectsApi,
     presignObjectApi,
     uploadObjectApi,
@@ -54,7 +53,6 @@
     node.focus()
   }
   let shareMenuPos = $state({ top: 0, left: 0 })
-  let versioningEnabled = $state(false)
   let versionKey = $state<string | null>(null)
 
   const expiryOptions = [
@@ -273,24 +271,12 @@
     }
   }
 
-  async function fetchVersioning() {
-    try {
-      const result = await getBucketVersioningApi(bucket)
-      if (result.ok) {
-        versioningEnabled = result.data.enabled
-      }
-    } catch (err) {
-      console.error('fetchVersioning failed:', err)
-    }
-  }
-
   function handleClickOutside(e: MouseEvent) {
     if (shareMenuKey) shareMenuKey = null
   }
 
   onMount(() => {
     fetchObjects()
-    fetchVersioning()
     document.addEventListener('click', handleClickOutside)
     return () => document.removeEventListener('click', handleClickOutside)
   })
@@ -391,15 +377,13 @@
             <Table.Cell class="text-muted-foreground">{formatDate(file.lastModified)}</Table.Cell>
             <Table.Cell class="w-24">
               <span class="flex items-center gap-4">
-                {#if versioningEnabled}
-                  <button
-                    class="text-muted-foreground hover:text-foreground transition-colors"
-                    onclick={(e) => { e.stopPropagation(); versionKey = versionKey === file.key ? null : file.key }}
-                    title="Version history"
-                  >
-                    <History class="size-4" />
-                  </button>
-                {/if}
+                <button
+                  class="text-muted-foreground hover:text-foreground transition-colors"
+                  onclick={(e) => { e.stopPropagation(); versionKey = versionKey === file.key ? null : file.key }}
+                  title="Version history"
+                >
+                  <History class="size-4" />
+                </button>
                 <button
                   class="text-muted-foreground hover:text-foreground transition-colors"
                   onclick={(e) => toggleShareMenu(file.key, e)}

@@ -10,6 +10,8 @@ use crate::server::AppState;
 
 use super::signature_v4;
 
+const MAX_SIGV4_FUTURE_SKEW_SECS: i64 = 15 * 60;
+
 pub async fn auth_middleware(
     State(state): State<AppState>,
     request: Request,
@@ -143,6 +145,18 @@ async fn handle_presigned(
         .map_err(|_| S3Error::access_denied("Invalid X-Amz-Date format"))?;
     let expires_at = issued_at + chrono::Duration::seconds(expires_secs as i64);
     let now = Utc::now().naive_utc();
+
+    if issued_at > now + chrono::Duration::seconds(MAX_SIGV4_FUTURE_SKEW_SECS) {
+        tracing::debug!(
+            "Presigned URL timestamp too far in future: issued={}, now={}, max_future_skew={}s",
+            issued_at,
+            now,
+            MAX_SIGV4_FUTURE_SKEW_SECS
+        );
+        return Err(S3Error::access_denied(
+            "RequestTimeTooSkewed: The difference between the request time and the current time is too large.",
+        ));
+    }
 
     if now > expires_at {
         tracing::debug!(
