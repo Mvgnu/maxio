@@ -73,6 +73,7 @@ From CLAUDE phased roadmap (additional context):
   - Console-route preflights (`OPTIONS /api/...`) are now explicitly covered to ensure global middleware behavior is consistent outside S3 paths.
   - Runtime regression coverage now asserts preflight `Vary: Origin` and request-id propagation semantics.
   - CORS middleware now merges (instead of overwriting) existing `Vary` values and includes preflight cache-key fields (`Access-Control-Request-Method`, `Access-Control-Request-Headers`) when present.
+  - CORS preflight responses now merge valid requested header names into `Access-Control-Allow-Headers` for custom metadata/tracing headers (while retaining the baseline S3/console allowlist).
   - CORS responses with reflected request origins now explicitly include `Access-Control-Allow-Credentials: true`; origin-less preflights keep wildcard origin semantics without credential headers.
   - Runtime metrics/health and CORS preflight response construction now avoid panic-prone response builders (`unwrap`) and use deterministic header/status assignment.
 - Versioning hardening advanced:
@@ -132,6 +133,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain runtime verification now explicitly executes the successful-response CORS origin-reflection regression.
   - Domain runtime verification now also executes origin-less preflight regression coverage for wildcard/no-credentials CORS behavior.
   - Domain runtime verification now also executes console-route preflight regression coverage to lock shared CORS/request-id behavior across API and S3 routing paths.
+  - Domain runtime verification now also executes requested-header reflection regression coverage for CORS preflight `Access-Control-Allow-Headers` shaping.
   - Storage key/upload-id validation rules now have explicit unit-test coverage.
   - Erasure/degraded-read chunk verification now runs through async shard reads in `VerifiedChunkReader` (no synchronous shard reads in stream path).
   - Extracted bucket/object/auth parser/validation helpers now have direct unit-test coverage.

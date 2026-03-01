@@ -303,6 +303,36 @@ async fn test_cors_preflight_includes_vary_origin_and_request_id() {
 }
 
 #[tokio::test]
+async fn test_cors_preflight_reflects_requested_allow_headers() {
+    let (base_url, _tmp) = start_server().await;
+    let resp = client()
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/api/auth/check", base_url),
+        )
+        .header("origin", "https://example.com")
+        .header("access-control-request-method", "GET")
+        .header(
+            "access-control-request-headers",
+            "x-amz-date, X-Amz-Meta-Filename, X-Custom-Trace",
+        )
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 204);
+    let allow_headers = resp
+        .headers()
+        .get("access-control-allow-headers")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing access-control-allow-headers");
+    let allow_header_values: Vec<&str> = allow_headers.split(',').collect();
+    assert!(allow_header_values.contains(&"x-amz-date"));
+    assert!(allow_header_values.contains(&"x-amz-meta-filename"));
+    assert!(allow_header_values.contains(&"x-custom-trace"));
+}
+
+#[tokio::test]
 async fn test_cors_headers_present_on_s3_error_response() {
     let (base_url, _tmp) = start_server().await;
     let origin = "https://example.com";

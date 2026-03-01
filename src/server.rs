@@ -15,6 +15,22 @@ use crate::config::Config;
 use crate::embedded::ui_handler;
 use crate::storage::filesystem::FilesystemStorage;
 
+const CORS_ALLOW_HEADERS_BASELINE: &str = "authorization,content-type,x-amz-date,x-amz-content-sha256,x-amz-security-token,x-amz-user-agent,x-amz-checksum-algorithm,x-amz-checksum-crc32,x-amz-checksum-crc32c,x-amz-checksum-sha1,x-amz-checksum-sha256,range";
+const CORS_ALLOW_HEADERS_BASELINE_FIELDS: &[&str] = &[
+    "authorization",
+    "content-type",
+    "x-amz-date",
+    "x-amz-content-sha256",
+    "x-amz-security-token",
+    "x-amz-user-agent",
+    "x-amz-checksum-algorithm",
+    "x-amz-checksum-crc32",
+    "x-amz-checksum-crc32c",
+    "x-amz-checksum-sha1",
+    "x-amz-checksum-sha256",
+    "range",
+];
+
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Arc<FilesystemStorage>,
@@ -172,9 +188,7 @@ fn apply_cors_headers(response_headers: &mut HeaderMap, request_headers: &Header
     );
     response_headers.insert(
         header::ACCESS_CONTROL_ALLOW_HEADERS,
-        HeaderValue::from_static(
-            "authorization,content-type,x-amz-date,x-amz-content-sha256,x-amz-security-token,x-amz-user-agent,x-amz-checksum-algorithm,x-amz-checksum-crc32,x-amz-checksum-crc32c,x-amz-checksum-sha1,x-amz-checksum-sha256,range",
-        ),
+        build_allow_headers(request_headers),
     );
     response_headers.insert(
         header::ACCESS_CONTROL_EXPOSE_HEADERS,
@@ -194,6 +208,45 @@ fn apply_cors_headers(response_headers: &mut HeaderMap, request_headers: &Header
         vary_fields.push("Access-Control-Request-Headers");
     }
     merge_vary_headers(response_headers, &vary_fields);
+}
+
+fn build_allow_headers(request_headers: &HeaderMap) -> HeaderValue {
+    let mut allow_headers: Vec<String> = CORS_ALLOW_HEADERS_BASELINE_FIELDS
+        .iter()
+        .map(|v| (*v).to_string())
+        .collect();
+
+    if let Some(requested_headers) = request_headers
+        .get(header::ACCESS_CONTROL_REQUEST_HEADERS)
+        .and_then(|v| v.to_str().ok())
+    {
+        for token in requested_headers.split(',').map(str::trim) {
+            if token.is_empty() || !is_valid_header_name_token(token) {
+                continue;
+            }
+            let normalized = token.to_ascii_lowercase();
+            if !allow_headers
+                .iter()
+                .any(|existing| existing.eq_ignore_ascii_case(&normalized))
+            {
+                allow_headers.push(normalized);
+            }
+        }
+    }
+
+    HeaderValue::from_str(&allow_headers.join(","))
+        .unwrap_or_else(|_| HeaderValue::from_static(CORS_ALLOW_HEADERS_BASELINE))
+}
+
+fn is_valid_header_name_token(token: &str) -> bool {
+    token.bytes().all(|b| {
+        b.is_ascii_alphanumeric()
+            || matches!(
+                b,
+                b'!' | b'#' | b'$' | b'%' | b'&' | b'\'' | b'*' | b'+' | b'-' | b'.' | b'^'
+                    | b'_' | b'`' | b'|' | b'~'
+            )
+    })
 }
 
 fn merge_vary_headers(response_headers: &mut HeaderMap, values: &[&str]) {
@@ -351,6 +404,32 @@ mod tests {
             response_headers
                 .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn build_allow_headers_adds_requested_headers_once() {
+        let mut request_headers = HeaderMap::new();
+        request_headers.insert(
+            header::ACCESS_CONTROL_REQUEST_HEADERS,
+            HeaderValue::from_static("X-Amz-Date, X-Custom-Trace, x custom invalid, x-custom-trace"),
+        );
+
+        let allow_header_value = build_allow_headers(&request_headers);
+        let allow_headers = allow_header_value
+            .to_str()
+            .expect("allow headers should be valid utf-8");
+        let values: Vec<&str> = allow_headers.split(',').collect();
+
+        assert!(values.contains(&"x-amz-date"));
+        assert!(values.contains(&"x-custom-trace"));
+        assert!(!values.contains(&"x custom invalid"));
+        assert_eq!(
+            values
+                .iter()
+                .filter(|entry| entry.eq_ignore_ascii_case(&"x-custom-trace"))
+                .count(),
+            1
         );
     }
 }
