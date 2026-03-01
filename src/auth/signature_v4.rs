@@ -42,6 +42,22 @@ fn decode_query_component(input: &str) -> Result<String, &'static str> {
         .map_err(|_| "Invalid query encoding")
 }
 
+fn query_pair_has_key(pair: &str, expected_key: &str) -> bool {
+    let raw_key = pair.split('=').next().unwrap_or("");
+    if raw_key == expected_key {
+        return true;
+    }
+    decode_query_component(raw_key)
+        .map(|decoded| decoded == expected_key)
+        .unwrap_or(false)
+}
+
+pub fn has_presigned_signature_query_param(query: &str) -> bool {
+    query
+        .split('&')
+        .any(|pair| query_pair_has_key(pair, "X-Amz-Signature"))
+}
+
 pub fn parse_authorization_header(header: &str) -> Result<ParsedAuth, &'static str> {
     let header = header
         .strip_prefix("AWS4-HMAC-SHA256 ")
@@ -244,7 +260,7 @@ pub fn verify_presigned_signature(
     // Build canonical query string excluding X-Amz-Signature
     let filtered_qs: String = query_string
         .split('&')
-        .filter(|pair| !pair.starts_with("X-Amz-Signature="))
+        .filter(|pair| !query_pair_has_key(pair, "X-Amz-Signature"))
         .collect::<Vec<_>>()
         .join("&");
 
@@ -669,6 +685,18 @@ mod tests {
             "X-Amz-Signature=%FF",
         );
         assert!(parse_presigned_query(query).is_err());
+    }
+
+    #[test]
+    fn has_presigned_signature_query_param_detects_encoded_key() {
+        let query_with_encoded_key = concat!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
+            "%58-Amz-Signature=deadbeef"
+        );
+        assert!(has_presigned_signature_query_param(query_with_encoded_key));
+        assert!(!has_presigned_signature_query_param(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Date=20260301T120000Z"
+        ));
     }
 
     #[test]

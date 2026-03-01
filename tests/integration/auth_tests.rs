@@ -389,6 +389,30 @@ async fn test_presigned_get_object_with_secondary_credentials() {
 }
 
 #[tokio::test]
+async fn test_presigned_accepts_percent_encoded_signature_query_key() {
+    let (base_url, _tmp) = start_server().await;
+
+    let bucket_url = format!("{}/presign-encoded-sig-key-bucket", base_url);
+    s3_request("PUT", &bucket_url, vec![]).await;
+    let object_url = format!("{}/presign-encoded-sig-key-bucket/test.txt", base_url);
+    let expected_body = b"encoded signature key";
+    s3_request("PUT", &object_url, expected_body.to_vec()).await;
+
+    let presigned = presign_url(
+        &base_url,
+        "GET",
+        "/presign-encoded-sig-key-bucket/test.txt",
+        300,
+    );
+    let encoded_signature_key =
+        presigned.replacen("X-Amz-Signature=", "%58-Amz-Signature=", 1);
+
+    let resp = client().get(&encoded_signature_key).send().await.unwrap();
+    assert_eq!(resp.status(), 200);
+    assert_eq!(resp.bytes().await.unwrap().as_ref(), expected_body);
+}
+
+#[tokio::test]
 async fn test_presigned_rejects_unknown_access_key() {
     let (base_url, _tmp) = start_server().await;
 

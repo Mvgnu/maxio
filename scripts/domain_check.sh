@@ -74,6 +74,7 @@ run_domain() {
         auth_tests::test_presigned_rejects_future_timestamp_skew \
         auth_tests::test_presigned_rejects_unknown_access_key \
         auth_tests::test_presigned_get_object_with_secondary_credentials \
+        auth_tests::test_presigned_accepts_percent_encoded_signature_query_key \
         auth_tests::test_presigned_bad_signature \
         auth_tests::test_presigned_expired_url \
         auth_tests::test_presigned_rejects_duplicate_auth_query_components

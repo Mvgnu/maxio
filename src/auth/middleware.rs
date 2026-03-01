@@ -24,8 +24,9 @@ pub async fn auth_middleware(
 
     let query = request.uri().query().unwrap_or("").to_string();
 
-    // Detect presigned URL by presence of X-Amz-Signature in query string
-    if query.contains("X-Amz-Signature=") {
+    // Detect presigned URL by presence of X-Amz-Signature in query string.
+    // Query keys may be percent-encoded by some clients/proxies.
+    if signature_v4::has_presigned_signature_query_param(&query) {
         return handle_presigned(&state, &method, &query, request, next).await;
     }
 
