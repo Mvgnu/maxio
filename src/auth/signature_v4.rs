@@ -55,11 +55,17 @@ pub fn parse_authorization_header(header: &str) -> Result<ParsedAuth, &'static s
     for part in header.split(',') {
         let part = part.trim();
         if let Some(val) = part.strip_prefix("Credential=") {
-            credential = Some(val);
+            if credential.replace(val).is_some() {
+                return Err("Duplicate Credential");
+            }
         } else if let Some(val) = part.strip_prefix("SignedHeaders=") {
-            signed_headers = Some(val);
+            if signed_headers.replace(val).is_some() {
+                return Err("Duplicate SignedHeaders");
+            }
         } else if let Some(val) = part.strip_prefix("Signature=") {
-            signature = Some(val);
+            if signature.replace(val).is_some() {
+                return Err("Duplicate Signature");
+            }
         }
     }
 
@@ -134,13 +140,37 @@ pub fn parse_presigned_query(query: &str) -> Result<(ParsedAuth, String, u64), &
         let raw_val = parts.next().unwrap_or("");
         let key = decode_query_component(raw_key)?;
         let val = decode_query_component(raw_val)?;
-        match key {
-            ref key if key == "X-Amz-Algorithm" => algorithm = Some(val),
-            ref key if key == "X-Amz-Credential" => credential = Some(val),
-            ref key if key == "X-Amz-Date" => date = Some(val),
-            ref key if key == "X-Amz-Expires" => expires = Some(val),
-            ref key if key == "X-Amz-SignedHeaders" => signed_headers = Some(val),
-            ref key if key == "X-Amz-Signature" => signature = Some(val),
+        match key.as_str() {
+            "X-Amz-Algorithm" => {
+                if algorithm.replace(val).is_some() {
+                    return Err("Duplicate X-Amz-Algorithm");
+                }
+            }
+            "X-Amz-Credential" => {
+                if credential.replace(val).is_some() {
+                    return Err("Duplicate X-Amz-Credential");
+                }
+            }
+            "X-Amz-Date" => {
+                if date.replace(val).is_some() {
+                    return Err("Duplicate X-Amz-Date");
+                }
+            }
+            "X-Amz-Expires" => {
+                if expires.replace(val).is_some() {
+                    return Err("Duplicate X-Amz-Expires");
+                }
+            }
+            "X-Amz-SignedHeaders" => {
+                if signed_headers.replace(val).is_some() {
+                    return Err("Duplicate X-Amz-SignedHeaders");
+                }
+            }
+            "X-Amz-Signature" => {
+                if signature.replace(val).is_some() {
+                    return Err("Duplicate X-Amz-Signature");
+                }
+            }
             _ => {}
         }
     }
@@ -566,6 +596,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_authorization_header_rejects_duplicate_components() {
+        let duplicate_credential = "AWS4-HMAC-SHA256 Credential=minioadmin/20260301/us-east-1/s3/aws4_request, Credential=minioadmin/20260301/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123";
+        assert!(parse_authorization_header(duplicate_credential).is_err());
+    }
+
+    #[test]
     fn parse_presigned_query_rejects_invalid_scope_parts() {
         let bad_service = concat!(
             "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
@@ -586,6 +622,20 @@ mod tests {
             "X-Amz-Signature=deadbeef"
         );
         assert!(parse_presigned_query(bad_terminator).is_err());
+    }
+
+    #[test]
+    fn parse_presigned_query_rejects_duplicate_components() {
+        let duplicate_date = concat!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
+            "X-Amz-Credential=minioadmin%2F20260301%2Fus-east-1%2Fs3%2Faws4_request&",
+            "X-Amz-Date=20260301T120000Z&",
+            "X-Amz-Date=20260301T120500Z&",
+            "X-Amz-Expires=60&",
+            "X-Amz-SignedHeaders=host&",
+            "X-Amz-Signature=deadbeef"
+        );
+        assert!(parse_presigned_query(duplicate_date).is_err());
     }
 
     #[test]

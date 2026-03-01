@@ -227,6 +227,7 @@ From CLAUDE phased roadmap (additional context):
   - Presigned S3 auth now has explicit unknown-access-key regression coverage (`InvalidAccessKeyId`) in the credential matrix.
   - SigV4 verify/presign signing flow now avoids panic-prone HMAC `unwrap` paths and uses explicit fallible helper handling.
   - SigV4 presigned-query parsing now decodes `X-Amz-*` query components consistently (including encoded `X-Amz-SignedHeaders`) and rejects invalid UTF-8 encoded query-component bytes.
+  - SigV4 header-auth and presigned-query parsers now reject duplicated auth components (`Credential`/`SignedHeaders`/`Signature`, duplicated `X-Amz-*`) to avoid ambiguous signature inputs.
   - SigV4 canonical URI normalization now decodes and re-encodes path segments to avoid double-encoding already-encoded request paths in presigned verification flows.
   - Shared SigV4 presign generation now uses a typed `PresignRequest` contract instead of positional multi-argument call sites.
   - Auth domain verification now explicitly includes `auth::signature_v4::tests` in domain-local checks.
