@@ -34,6 +34,7 @@ run_domain() {
         runtime_tests::test_cors_preflight_without_origin_uses_wildcard_without_credentials \
         runtime_tests::test_cors_preflight_console_route_without_auth \
         runtime_tests::test_cors_preflight_includes_vary_origin_and_request_id \
+        runtime_tests::test_cors_preflight_reflects_requested_allow_headers \
         runtime_tests::test_cors_headers_present_on_s3_error_response \
         runtime_tests::test_cors_origin_reflection_on_successful_s3_response
       do

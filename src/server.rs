@@ -427,7 +427,7 @@ mod tests {
         assert_eq!(
             values
                 .iter()
-                .filter(|entry| entry.eq_ignore_ascii_case(&"x-custom-trace"))
+                .filter(|entry| entry.eq_ignore_ascii_case("x-custom-trace"))
                 .count(),
             1
         );
