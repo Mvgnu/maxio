@@ -21,11 +21,18 @@
     presignObjectApi,
     uploadObjectApi,
   } from '$lib/api'
+  import {
+    buildObjectBreadcrumbs,
+    formatObjectSize,
+    objectDisplayName,
+    parentObjectPrefix,
+  } from '$lib/object-browser'
+  import type { ObjectBreadcrumb } from '$lib/object-browser'
 
   interface Props {
     bucket: string
     onBack: () => void
-    onPrefixChange?: (prefix: string, breadcrumbs: { label: string; prefix: string }[]) => void
+    onPrefixChange?: (prefix: string, breadcrumbs: ObjectBreadcrumb[]) => void
   }
   let { bucket, onBack, onPrefixChange }: Props = $props()
 
@@ -98,24 +105,9 @@
       onBack()
       return
     }
-    const trimmed = prefix.slice(0, -1)
-    const lastSlash = trimmed.lastIndexOf('/')
-    prefix = lastSlash >= 0 ? trimmed.slice(0, lastSlash + 1) : ''
+    prefix = parentObjectPrefix(prefix)
     fetchObjects()
     notifyPrefix()
-  }
-
-  function displayName(fullPath: string): string {
-    const trimmed = fullPath.endsWith('/') ? fullPath.slice(0, -1) : fullPath
-    const lastSlash = trimmed.lastIndexOf('/')
-    return lastSlash >= 0 ? trimmed.slice(lastSlash + 1) : trimmed
-  }
-
-  function formatSize(bytes: number): string {
-    if (bytes < 1024) return `${bytes} B`
-    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
-    if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
-    return `${(bytes / (1024 * 1024 * 1024)).toFixed(1)} GB`
   }
 
   function formatDate(iso: string): string {
@@ -126,18 +118,7 @@
     }
   }
 
-  let breadcrumbs = $derived.by(() => {
-    const parts = prefix.split('/').filter(Boolean)
-    const crumbs: { label: string; prefix: string }[] = [
-      { label: bucket, prefix: '' },
-    ]
-    let acc = ''
-    for (const part of parts) {
-      acc += part + '/'
-      crumbs.push({ label: part, prefix: acc })
-    }
-    return crumbs
-  })
+  let breadcrumbs = $derived.by(() => buildObjectBreadcrumbs(bucket, prefix))
 
   async function handleUpload() {
     const inputFiles = fileInput?.files
@@ -182,11 +163,11 @@
 
   async function deleteObject(key: string, e: Event) {
     e.stopPropagation()
-    if (!confirm(`Delete "${displayName(key)}"?`)) return
+    if (!confirm(`Delete "${objectDisplayName(key)}"?`)) return
     try {
       const result = await deleteObjectApi(bucket, key)
       if (result.ok) {
-        toast.success(`"${displayName(key)}" deleted`)
+        toast.success(`"${objectDisplayName(key)}" deleted`)
         await fetchObjects()
       } else {
         toast.error(result.error || 'Failed to delete object')
@@ -253,11 +234,11 @@
 
   async function deleteFolder(folderPrefix: string, e: Event) {
     e.stopPropagation()
-    if (!confirm(`Delete empty folder "${displayName(folderPrefix)}"?`)) return
+    if (!confirm(`Delete empty folder "${objectDisplayName(folderPrefix)}"?`)) return
     try {
       const result = await deleteObjectApi(bucket, folderPrefix)
       if (result.ok) {
-        toast.success(`Folder "${displayName(folderPrefix)}" deleted`)
+        toast.success(`Folder "${objectDisplayName(folderPrefix)}" deleted`)
         await fetchObjects()
       } else {
         toast.error(result.error || 'Failed to delete folder')
@@ -342,11 +323,11 @@
         {#each prefixes as p}
           <Table.Row class="cursor-pointer" onclick={() => navigateTo(p)}>
             <Table.Cell>
-              <span class="flex items-center gap-2">
-                <Folder class="size-4 shrink-0 text-muted-foreground" />
-                <span class="font-medium">{displayName(p)}/</span>
-              </span>
-            </Table.Cell>
+                <span class="flex items-center gap-2">
+                  <Folder class="size-4 shrink-0 text-muted-foreground" />
+                  <span class="font-medium">{objectDisplayName(p)}/</span>
+                </span>
+              </Table.Cell>
             <Table.Cell class="text-right text-muted-foreground">&mdash;</Table.Cell>
             <Table.Cell class="text-muted-foreground">&mdash;</Table.Cell>
             <Table.Cell>
@@ -365,12 +346,12 @@
         {#each files as file}
           <Table.Row>
             <Table.Cell>
-              <span class="flex items-center gap-2">
-                <FileIcon class="size-4 shrink-0 text-muted-foreground" />
-                <span class="font-medium">{displayName(file.key)}</span>
-              </span>
-            </Table.Cell>
-            <Table.Cell class="text-right text-muted-foreground">{formatSize(file.size)}</Table.Cell>
+                <span class="flex items-center gap-2">
+                  <FileIcon class="size-4 shrink-0 text-muted-foreground" />
+                  <span class="font-medium">{objectDisplayName(file.key)}</span>
+                </span>
+              </Table.Cell>
+              <Table.Cell class="text-right text-muted-foreground">{formatObjectSize(file.size)}</Table.Cell>
             <Table.Cell class="text-muted-foreground">{formatDate(file.lastModified)}</Table.Cell>
             <Table.Cell class="w-24">
               <span class="flex items-center gap-4">

@@ -177,6 +177,7 @@ From CLAUDE phased roadmap (additional context):
   - Web console hash-route parsing/building is now centralized in a shared helper module (`ui/src/lib/navigation.ts`) with focused unit coverage (`ui/src/lib/navigation.test.ts`).
   - Web console hash-route bucket decoding now tolerates malformed percent-encoding without runtime crashes, with dedicated navigation-helper regression coverage.
   - Web console settings-route hash generation now also flows through shared navigation helpers (`buildHashRoute`) instead of ad-hoc `App.svelte` hash string assembly, with explicit route-builder regression coverage.
+  - Web console object-browser path/breadcrumb/display-size helpers are now centralized in a shared helper module (`ui/src/lib/object-browser.ts`) with focused unit coverage (`ui/src/lib/object-browser.test.ts`).
   - Frontend verification (`bun run check`, `bun run build`) remains green after backend refactors.
   - Repository-wide strict lint verification now passes with `cargo clippy --all-targets -- -D warnings` (including integration test targets).
   - Integration helper/test harness signing and parity fixtures were lint-hardened (array-based sortable header sets, iterator/repeat helpers) with no behavior drift.
