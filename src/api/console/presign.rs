@@ -4,10 +4,11 @@ use axum::{
     response::IntoResponse,
 };
 
-use super::auth::ConsolePrincipal;
+use super::{auth::ConsolePrincipal, storage};
 use super::response;
 use crate::auth::signature_v4;
 use crate::server::AppState;
+use crate::storage::StorageError;
 
 #[derive(serde::Deserialize)]
 pub(super) struct PresignParams {
@@ -21,9 +22,16 @@ pub(super) async fn presign_object(
     Query(params): Query<PresignParams>,
     headers: HeaderMap,
 ) -> impl IntoResponse {
+    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+        return resp;
+    }
+
     match state.storage.head_object(&bucket, &key).await {
         Ok(_) => {}
-        Err(_) => return response::error(StatusCode::NOT_FOUND, "Object not found"),
+        Err(StorageError::NotFound(_)) => {
+            return response::error(StatusCode::NOT_FOUND, "Object not found");
+        }
+        Err(err) => return storage::internal_err(err),
     }
 
     let expires_secs = params.expires.unwrap_or(3600).min(604800);

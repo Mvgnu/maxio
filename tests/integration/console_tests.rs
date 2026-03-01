@@ -473,6 +473,45 @@ async fn test_console_presign_uses_authenticated_session_identity() {
 }
 
 #[tokio::test]
+async fn test_console_presign_returns_not_found_for_missing_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/missing-bucket/presign/reports/2026-03-01.txt",
+            base_url
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+}
+
+#[tokio::test]
+async fn test_console_presign_returns_not_found_for_missing_object() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/presign-missing-object", base_url), vec![]).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/presign-missing-object/presign/reports/does-not-exist.txt",
+            base_url
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Object not found");
+}
+
+#[tokio::test]
 async fn test_console_lifecycle_roundtrip() {
     let (base_url, _tmp) = start_server().await;
     s3_request("PUT", &format!("{}/lifecycle-bucket", base_url), vec![]).await;
