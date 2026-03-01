@@ -109,6 +109,7 @@ From CLAUDE phased roadmap (additional context):
   - S3 object checksum extraction/response-header mapping and streaming-body decoding helpers are now covered by focused object-service unit tests (`api::object::service::tests`).
   - Integration coverage now includes DeleteObjects quiet-mode response semantics.
   - Integration coverage now includes versions-list marker pagination roundtrip semantics.
+  - Domain check runner now executes runtime and console response-helper unit suites in domain-local cycles (`server::tests`, `api::console::response::tests`) instead of only catching them in full-suite runs.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
   - Frontend verification (`bun run check`, `bun run build`) remains green after backend refactors.

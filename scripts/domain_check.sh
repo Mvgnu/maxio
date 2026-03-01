@@ -23,6 +23,7 @@ run_domain() {
   case "$domain" in
     runtime_platform)
       cargo check
+      cargo test server::tests
       for t in \
         runtime_tests::test_request_id_header_present_on_s3_auth_failure \
         runtime_tests::test_metrics_endpoint_exposes_runtime_counters \
@@ -110,6 +111,7 @@ run_domain() {
       ;;
     console_api)
       cargo check
+      cargo test api::console::response::tests
       for t in \
         console_tests::test_console_auth_login_check_logout_flow \
         console_tests::test_console_auth_secondary_credentials_login_flow \
