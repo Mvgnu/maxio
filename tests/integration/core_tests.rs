@@ -806,6 +806,49 @@ async fn test_list_objects() {
 }
 
 #[tokio::test]
+async fn test_list_objects_invalid_prefix_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    let invalid_prefix = "a".repeat(1025);
+
+    let resp = s3_request(
+        "GET",
+        &format!(
+            "{}/mybucket?list-type=2&prefix={}",
+            base_url, invalid_prefix
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
+async fn test_list_object_versions_invalid_prefix_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    let invalid_prefix = "a".repeat(1025);
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/mybucket?versions=&prefix={}", base_url, invalid_prefix),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
 async fn test_last_modified_http_date_format() {
     // Last-Modified header must be RFC 7231 format: "Tue, 17 Feb 2026 22:17:45 GMT"
     let (base_url, _tmp) = start_server().await;

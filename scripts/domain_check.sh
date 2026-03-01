@@ -89,6 +89,8 @@ run_domain() {
       for t in \
         core_tests::test_create_bucket \
         core_tests::test_list_objects \
+        core_tests::test_list_objects_invalid_prefix_returns_invalid_argument \
+        core_tests::test_list_object_versions_invalid_prefix_returns_invalid_argument \
         core_tests::test_put_and_get_object \
         core_tests::test_get_object_missing_bucket_returns_no_such_bucket \
         core_tests::test_head_object_missing_bucket_returns_no_such_bucket \

@@ -72,6 +72,7 @@ async fn list_objects_v2(
     params: HashMap<String, String>,
 ) -> Result<Response<Body>, S3Error> {
     let query = service::ListV2Query::from_params(&params);
+    service::validate_prefix(&query.prefix)?;
 
     let all_objects = state
         .storage
@@ -120,6 +121,7 @@ async fn list_objects_v1(
     params: HashMap<String, String>,
 ) -> Result<Response<Body>, S3Error> {
     let query = service::ListV1Query::from_params(&params);
+    service::validate_prefix(&query.prefix)?;
 
     let all_objects = state
         .storage
@@ -165,6 +167,7 @@ async fn list_object_versions(
     params: HashMap<String, String>,
 ) -> Result<Response<Body>, S3Error> {
     let query = service::ListVersionsQuery::from_params(&params);
+    service::validate_prefix(&query.prefix)?;
 
     let all_versions = state
         .storage
@@ -206,6 +209,7 @@ async fn list_object_versions(
 fn map_bucket_storage_err(bucket: &str, err: StorageError) -> S3Error {
     match err {
         StorageError::NotFound(_) => S3Error::no_such_bucket(bucket),
+        StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
         other => S3Error::internal(other),
     }
 }
@@ -219,5 +223,14 @@ mod tests {
     fn map_bucket_storage_err_maps_not_found_to_no_such_bucket() {
         let err = map_bucket_storage_err("missing", StorageError::NotFound("missing".to_string()));
         assert!(matches!(err.code, S3ErrorCode::NoSuchBucket));
+    }
+
+    #[test]
+    fn map_bucket_storage_err_maps_invalid_key_to_invalid_argument() {
+        let err = map_bucket_storage_err(
+            "bucket",
+            StorageError::InvalidKey("invalid prefix".to_string()),
+        );
+        assert!(matches!(err.code, S3ErrorCode::InvalidArgument));
     }
 }

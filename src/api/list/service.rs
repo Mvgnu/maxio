@@ -1,9 +1,40 @@
 use std::collections::{BTreeSet, HashMap};
+use std::path::{Component, Path};
 
+use crate::error::S3Error;
 use crate::storage::ObjectMeta;
 use crate::xml::types::{CommonPrefix, DeleteMarkerEntry, ObjectEntry, VersionEntry};
 
 const MAX_KEYS_CAP: usize = 1000;
+
+pub(super) fn validate_prefix(prefix: &str) -> Result<(), S3Error> {
+    if prefix.is_empty() {
+        return Ok(());
+    }
+    if prefix.len() > 1024 {
+        return Err(S3Error::invalid_argument(
+            "Prefix must not exceed 1024 bytes",
+        ));
+    }
+
+    for component in Path::new(prefix).components() {
+        match component {
+            Component::ParentDir => {
+                return Err(S3Error::invalid_argument(
+                    "Prefix must not contain '..' path components",
+                ));
+            }
+            Component::RootDir => {
+                return Err(S3Error::invalid_argument(
+                    "Prefix must not be an absolute path",
+                ));
+            }
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
 
 pub(super) struct ListV2Query {
     pub(super) prefix: String,
@@ -320,6 +351,20 @@ mod tests {
 
         assert_eq!(contents.len(), 2);
         assert!(common_prefixes.is_empty());
+    }
+
+    #[test]
+    fn validate_prefix_accepts_normal_prefixes() {
+        assert!(validate_prefix("").is_ok());
+        assert!(validate_prefix("logs/2026/").is_ok());
+        assert!(validate_prefix("tenant-a").is_ok());
+    }
+
+    #[test]
+    fn validate_prefix_rejects_invalid_prefixes() {
+        assert!(validate_prefix("../escape").is_err());
+        assert!(validate_prefix("/absolute").is_err());
+        assert!(validate_prefix(&"a".repeat(1025)).is_err());
     }
 
     #[test]

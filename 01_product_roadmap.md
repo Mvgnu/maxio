@@ -99,6 +99,8 @@ From CLAUDE phased roadmap (additional context):
     - `GET /{bucket}/{key}`
     - `HEAD /{bucket}/{key}`
   - Integration coverage now locks missing-bucket read semantics for both object paths above.
+  - S3 list and versions-list endpoints now map invalid `prefix` query values to explicit `InvalidArgument` (instead of generic internal errors).
+  - Integration coverage now locks invalid-prefix list semantics for both `GET ?list-type=2` and `GET ?versions` paths.
   - CopyObject now returns explicit `NoSuchBucket` when either source or destination bucket is missing.
   - Integration coverage now locks missing-bucket CopyObject semantics for both source and destination bucket paths.
   - Multipart endpoints now return explicit `NoSuchBucket` for missing-bucket paths across:
@@ -143,6 +145,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now also executes S3 bucket validation/service helper unit suites (`api::bucket::validation::tests`, `api::bucket::service::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes S3 list-handler unit suites (`api::list::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket object-read regressions (`core_tests::test_get_object_missing_bucket_returns_no_such_bucket`, `core_tests::test_head_object_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
+  - Domain check runner now also executes invalid-prefix list regressions (`core_tests::test_list_objects_invalid_prefix_returns_invalid_argument`, `core_tests::test_list_object_versions_invalid_prefix_returns_invalid_argument`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket CopyObject regressions (`core_tests::test_copy_object_missing_source_bucket_returns_no_such_bucket`, `core_tests::test_copy_object_missing_destination_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket multipart regressions (`core_tests::test_multipart_create_upload_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_upload_part_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_complete_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_list_parts_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_list_uploads_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Domain check runner now also executes invalid-key delete regressions (`core_tests::test_delete_object_invalid_key_returns_invalid_argument`, `core_tests::test_delete_objects_batch_invalid_key_returns_invalid_argument_entry`) in S3 domain-local cycles.
