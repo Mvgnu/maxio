@@ -43,6 +43,7 @@ run_domain() {
       cargo test storage::validation::tests
       cargo test storage::layout::tests
       cargo test lifecycle_tests
+      cargo test versioning_tests
       cargo test lifecycle::tests
       for t in \
         core_tests::test_put_and_get_object \
@@ -58,6 +59,7 @@ run_domain() {
       ;;
     s3_auth_sigv4)
       cargo check
+      cargo test auth::signature_v4::tests
       for t in \
         auth_tests::test_auth_rejects_bad_key \
         auth_tests::test_auth_accepts_valid_signature \

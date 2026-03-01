@@ -83,6 +83,8 @@ From CLAUDE phased roadmap (additional context):
   - Added regression coverage for preserved version history after suspend.
   - Fixed delete-marker/current-version reconciliation: deleting older versions no longer resurrects tombstoned objects.
   - Added erasure-coded versioning regression coverage for delete-marker semantics on chunked objects.
+  - Storage versioning snapshot/restore paths now avoid panic-prone `version_id` unwraps and return typed invalid-data errors on corrupt metadata.
+  - Added storage regression coverage for corrupted version metadata (missing `version_id`) to lock clean failure behavior.
   - S3 delete endpoints now return explicit `NoSuchBucket` for missing-bucket paths across:
     - `DELETE /{bucket}/{key}`
     - `DELETE /{bucket}/{key}?versionId=...`
@@ -161,6 +163,8 @@ From CLAUDE phased roadmap (additional context):
   - Console login now also has explicit primary/secondary/unknown credential-matrix regression coverage.
   - Presigned S3 auth now rejects excessive future `X-Amz-Date` skew (`RequestTimeTooSkewed`) with dedicated integration coverage.
   - Presigned S3 auth now has explicit unknown-access-key regression coverage (`InvalidAccessKeyId`) in the credential matrix.
+  - SigV4 verify/presign signing flow now avoids panic-prone HMAC `unwrap` paths and uses explicit fallible helper handling.
+  - Auth domain verification now explicitly includes `auth::signature_v4::tests` in domain-local checks.
 - Distributed bootstrap groundwork advanced:
   - Runtime config now supports `MAXIO_NODE_ID` and `MAXIO_CLUSTER_PEERS` for topology bootstrap wiring.
   - `/healthz` and `/metrics` now expose standalone/distributed runtime topology context.

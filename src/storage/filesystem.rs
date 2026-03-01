@@ -78,6 +78,18 @@ fn finalize_checksum(
     }
 }
 
+fn version_id_from_meta<'a>(
+    meta: &'a ObjectMeta,
+    context: &str,
+) -> Result<&'a str, StorageError> {
+    meta.version_id.as_deref().ok_or_else(|| {
+        StorageError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("missing version_id while {} for key {}", context, meta.key),
+        ))
+    })
+}
+
 pub struct FilesystemStorage {
     buckets_dir: PathBuf,
     erasure_coding: bool,
@@ -488,6 +500,119 @@ mod lifecycle_tests {
                 .unwrap(),
             "multipart upload directory should remain for retry"
         );
+    }
+}
+
+#[cfg(test)]
+mod versioning_tests {
+    use super::{BucketMeta, FilesystemStorage, ObjectMeta, StorageError, version_id_from_meta};
+    use tempfile::TempDir;
+    use tokio::fs;
+
+    fn bucket_meta(name: &str) -> BucketMeta {
+        BucketMeta {
+            name: name.to_string(),
+            created_at: "2026-03-01T00:00:00.000Z".to_string(),
+            region: "us-east-1".to_string(),
+            versioning: true,
+        }
+    }
+
+    #[test]
+    fn version_id_from_meta_rejects_missing_value() {
+        let meta = ObjectMeta {
+            key: "docs/readme.txt".to_string(),
+            size: 1,
+            etag: "\"abc\"".to_string(),
+            content_type: "text/plain".to_string(),
+            last_modified: "2026-03-01T00:00:00.000Z".to_string(),
+            version_id: None,
+            is_delete_marker: false,
+            storage_format: None,
+            checksum_algorithm: None,
+            checksum_value: None,
+        };
+
+        let err = version_id_from_meta(&meta, "testing").expect_err("should reject missing version");
+        match err {
+            StorageError::Io(io_err) => assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidData),
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_object_version_fails_cleanly_when_latest_version_metadata_lacks_version_id() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("versioned"))
+            .await
+            .unwrap();
+
+        storage
+            .put_object(
+                "versioned",
+                "docs/readme.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"v1".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+        storage
+            .put_object(
+                "versioned",
+                "docs/readme.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"v2".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let versions = storage
+            .list_object_versions("versioned", "docs/readme.txt")
+            .await
+            .unwrap();
+        assert_eq!(versions.len(), 2);
+        let latest_version_id = versions[0]
+            .version_id
+            .as_ref()
+            .expect("latest version should have id")
+            .to_string();
+        let older_version_id = versions[1]
+            .version_id
+            .as_ref()
+            .expect("older version should have id")
+            .to_string();
+
+        let latest_meta_path =
+            storage.version_meta_path("versioned", "docs/readme.txt", &latest_version_id);
+        let mut latest_json: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(&latest_meta_path).await.unwrap(),
+        )
+        .unwrap();
+        latest_json
+            .as_object_mut()
+            .expect("metadata should be object")
+            .remove("version_id");
+        fs::write(
+            &latest_meta_path,
+            serde_json::to_string_pretty(&latest_json).unwrap(),
+        )
+        .await
+        .unwrap();
+
+        let err = storage
+            .delete_object_version("versioned", "docs/readme.txt", &older_version_id)
+            .await
+            .expect_err("corrupt latest metadata should not panic");
+        match err {
+            StorageError::Io(io_err) => assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidData),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 }
 
@@ -1374,7 +1499,7 @@ impl FilesystemStorage {
     ) -> Result<Vec<ObjectMeta>, StorageError> {
         let bucket_dir = self.buckets_dir.join(bucket);
         let mut results = Vec::new();
-        self.walk_dir(&bucket_dir, &bucket_dir, prefix, &mut results)
+        self.walk_dir(bucket, &bucket_dir, &bucket_dir, prefix, &mut results)
             .await?;
         results.sort_by(|a, b| a.key.cmp(&b.key));
         Ok(results)
@@ -1720,6 +1845,7 @@ impl FilesystemStorage {
 
     fn walk_dir<'a>(
         &'a self,
+        bucket: &'a str,
         base: &'a Path,
         dir: &'a Path,
         prefix: &'a str,
@@ -1753,10 +1879,7 @@ impl FilesystemStorage {
                         // Strip the .ec suffix to get the key
                         let key = rel_str.strip_suffix(".ec").unwrap_or(&rel_str).to_string();
                         if key.starts_with(prefix) {
-                            if let Ok(meta) = self
-                                .read_object_meta(base.file_name().unwrap().to_str().unwrap(), &key)
-                                .await
-                            {
+                            if let Ok(meta) = self.read_object_meta(bucket, &key).await {
                                 results.push(meta);
                             }
                         }
@@ -1779,15 +1902,12 @@ impl FilesystemStorage {
                             }
                         }
                     }
-                    self.walk_dir(base, &path, prefix, results).await?;
+                    self.walk_dir(bucket, base, &path, prefix, results).await?;
                 } else {
                     if let Ok(rel) = path.strip_prefix(base) {
                         let key = rel.to_string_lossy().to_string();
                         if key.starts_with(prefix) {
-                            if let Ok(meta) = self
-                                .read_object_meta(base.file_name().unwrap().to_str().unwrap(), &key)
-                                .await
-                            {
+                            if let Ok(meta) = self.read_object_meta(bucket, &key).await {
                                 results.push(meta);
                             }
                         }
@@ -1889,7 +2009,7 @@ impl FilesystemStorage {
         meta: &ObjectMeta,
         data_path: &Path,
     ) -> Result<(), StorageError> {
-        let version_id = meta.version_id.as_ref().unwrap();
+        let version_id = version_id_from_meta(meta, "writing flat version snapshot")?;
         let ver_dir = self.versions_dir(bucket, key);
         fs::create_dir_all(&ver_dir).await?;
 
@@ -1911,7 +2031,7 @@ impl FilesystemStorage {
         key: &str,
         meta: &ObjectMeta,
     ) -> Result<(), StorageError> {
-        let version_id = meta.version_id.as_ref().unwrap();
+        let version_id = version_id_from_meta(meta, "writing chunked version snapshot")?;
         let ver_dir = self.versions_dir(bucket, key);
         fs::create_dir_all(&ver_dir).await?;
 
@@ -2014,7 +2134,7 @@ impl FilesystemStorage {
         }
 
         // Restore latest non-delete-marker version as current.
-        let vid = latest_meta.version_id.as_ref().unwrap();
+        let vid = version_id_from_meta(&latest_meta, "restoring current version")?;
         let obj_meta_path = self.meta_path(bucket, key);
         let ver_ec = ver_dir.join(format!("{}.ec", vid));
         if fs::try_exists(&ver_ec).await.unwrap_or(false) {

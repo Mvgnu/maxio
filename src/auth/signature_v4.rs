@@ -97,10 +97,13 @@ pub fn verify_signature(
     tracing::debug!("String to sign:\n{}", string_to_sign);
 
     let signing_key = derive_signing_key(secret_key, &parsed.date, &parsed.region);
-
-    let mut mac = HmacSha256::new_from_slice(&signing_key).unwrap();
-    mac.update(string_to_sign.as_bytes());
-    let computed = hex::encode(mac.finalize().into_bytes());
+    if signing_key.is_empty() {
+        return false;
+    }
+    let computed = match hmac_sha256_hex(&signing_key, string_to_sign.as_bytes()) {
+        Some(signature) => signature,
+        None => return false,
+    };
 
     tracing::debug!("Computed signature: {}", computed);
     tracing::debug!("Provided signature: {}", parsed.signature);
@@ -226,10 +229,13 @@ pub fn verify_presigned_signature(
     tracing::debug!("Presigned string to sign:\n{}", string_to_sign);
 
     let signing_key = derive_signing_key(secret_key, &parsed.date, &parsed.region);
-
-    let mut mac = HmacSha256::new_from_slice(&signing_key).unwrap();
-    mac.update(string_to_sign.as_bytes());
-    let computed = hex::encode(mac.finalize().into_bytes());
+    if signing_key.is_empty() {
+        return false;
+    }
+    let computed = match hmac_sha256_hex(&signing_key, string_to_sign.as_bytes()) {
+        Some(signature) => signature,
+        None => return false,
+    };
 
     tracing::debug!("Computed signature: {}", computed);
     tracing::debug!("Provided signature: {}", parsed.signature);
@@ -295,9 +301,11 @@ pub fn generate_presigned_url(
     let string_to_sign = build_string_to_sign(&canonical_request, &amz_date, &parsed);
 
     let signing_key = derive_signing_key(secret_key, &date_stamp, region);
-    let mut mac = HmacSha256::new_from_slice(&signing_key).unwrap();
-    mac.update(string_to_sign.as_bytes());
-    let signature = hex::encode(mac.finalize().into_bytes());
+    if signing_key.is_empty() {
+        return Err("Failed to derive signing key");
+    }
+    let signature = hmac_sha256_hex(&signing_key, string_to_sign.as_bytes())
+        .ok_or("Failed to sign request")?;
 
     Ok(format!(
         "{}://{}{}?{}&X-Amz-Signature={}",
@@ -414,22 +422,26 @@ fn build_string_to_sign(canonical_request: &str, timestamp: &str, parsed: &Parse
 
 pub fn derive_signing_key(secret_key: &str, date: &str, region: &str) -> Vec<u8> {
     let key = format!("AWS4{}", secret_key);
+    let Some(date_key) = hmac_sha256(key.as_bytes(), date.as_bytes()) else {
+        return Vec::new();
+    };
+    let Some(date_region_key) = hmac_sha256(&date_key, region.as_bytes()) else {
+        return Vec::new();
+    };
+    let Some(date_region_service_key) = hmac_sha256(&date_region_key, b"s3") else {
+        return Vec::new();
+    };
+    hmac_sha256(&date_region_service_key, b"aws4_request").unwrap_or_default()
+}
 
-    let mut mac = HmacSha256::new_from_slice(key.as_bytes()).unwrap();
-    mac.update(date.as_bytes());
-    let date_key = mac.finalize().into_bytes();
+fn hmac_sha256(key: &[u8], data: &[u8]) -> Option<Vec<u8>> {
+    let mut mac = HmacSha256::new_from_slice(key).ok()?;
+    mac.update(data);
+    Some(mac.finalize().into_bytes().to_vec())
+}
 
-    let mut mac = HmacSha256::new_from_slice(&date_key).unwrap();
-    mac.update(region.as_bytes());
-    let date_region_key = mac.finalize().into_bytes();
-
-    let mut mac = HmacSha256::new_from_slice(&date_region_key).unwrap();
-    mac.update(b"s3");
-    let date_region_service_key = mac.finalize().into_bytes();
-
-    let mut mac = HmacSha256::new_from_slice(&date_region_service_key).unwrap();
-    mac.update(b"aws4_request");
-    mac.finalize().into_bytes().to_vec()
+fn hmac_sha256_hex(key: &[u8], data: &[u8]) -> Option<String> {
+    hmac_sha256(key, data).map(hex::encode)
 }
 
 fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
