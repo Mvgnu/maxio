@@ -13,6 +13,17 @@ export type ApiFailure = {
 
 export type ApiResult<T> = ApiSuccess<T> | ApiFailure
 
+function encodePathPreservingDelimiters(path: string): string {
+  return path
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/')
+}
+
+function objectPath(bucket: string, namespace: string, key: string): string {
+  return `/api/buckets/${encodeURIComponent(bucket)}/${namespace}/${encodePathPreservingDelimiters(key)}`
+}
+
 async function requestJson<T>(input: RequestInfo, init?: RequestInit): Promise<ApiResult<T>> {
   let response: Response
   try {
@@ -237,7 +248,7 @@ export function uploadObjectApi(
   contentType: string
 ) {
   return requestJson<{ ok: true; etag: string; size: number }>(
-    `/api/buckets/${encodeURIComponent(bucket)}/upload/${key}`,
+    objectPath(bucket, 'upload', key),
     {
       method: 'PUT',
       headers: { 'Content-Type': contentType },
@@ -247,7 +258,7 @@ export function uploadObjectApi(
 }
 
 export function deleteObjectApi(bucket: string, key: string) {
-  return requestJson<{ ok: true }>(`/api/buckets/${encodeURIComponent(bucket)}/objects/${key}`, {
+  return requestJson<{ ok: true }>(objectPath(bucket, 'objects', key), {
     method: 'DELETE',
   })
 }
@@ -262,8 +273,12 @@ export function createFolderApi(bucket: string, name: string) {
 
 export function presignObjectApi(bucket: string, key: string, expires: number) {
   return requestJson<{ url: string; expiresIn: number }>(
-    `/api/buckets/${encodeURIComponent(bucket)}/presign/${key}?expires=${expires}`
+    `${objectPath(bucket, 'presign', key)}?expires=${expires}`
   )
+}
+
+export function buildObjectDownloadUrl(bucket: string, key: string): string {
+  return objectPath(bucket, 'download', key)
 }
 
 export function listVersionsApi(bucket: string, key: string) {
@@ -274,9 +289,17 @@ export function listVersionsApi(bucket: string, key: string) {
 
 export function deleteVersionApi(bucket: string, versionId: string, key: string) {
   return requestJson<{ ok: true }>(
-    `/api/buckets/${encodeURIComponent(bucket)}/versions/${encodeURIComponent(versionId)}/objects/${encodeURIComponent(key)}`,
+    `/api/buckets/${encodeURIComponent(bucket)}/versions/${encodeURIComponent(versionId)}/objects/${encodePathPreservingDelimiters(key)}`,
     { method: 'DELETE' }
   )
+}
+
+export function buildVersionDownloadUrl(
+  bucket: string,
+  versionId: string,
+  key: string
+): string {
+  return `/api/buckets/${encodeURIComponent(bucket)}/versions/${encodeURIComponent(versionId)}/download/${encodePathPreservingDelimiters(key)}`
 }
 
 function normalizeRuntimeTopology(data: {

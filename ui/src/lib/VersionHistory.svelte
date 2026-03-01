@@ -6,7 +6,11 @@
   import Trash2 from 'lucide-svelte/icons/trash-2'
   import Tag from 'lucide-svelte/icons/tag'
   import Loader2 from 'lucide-svelte/icons/loader-2'
-  import { deleteVersionApi, listVersionsApi } from '$lib/api'
+  import {
+    buildVersionDownloadUrl,
+    deleteVersionApi,
+    listVersionsApi,
+  } from '$lib/api'
 
   interface Props {
     bucket: string
@@ -63,10 +67,7 @@
   }
 
   function downloadVersion(versionId: string) {
-    window.open(
-      `/api/buckets/${encodeURIComponent(bucket)}/versions/${encodeURIComponent(versionId)}/download/${encodeURIComponent(objectKey)}`,
-      '_blank'
-    )
+    window.open(buildVersionDownloadUrl(bucket, versionId, objectKey), '_blank', 'noopener,noreferrer')
   }
 
   function formatSize(bytes: number): string {

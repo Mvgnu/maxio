@@ -134,7 +134,7 @@
     currentView = "settings";
     currentPrefix = "";
     currentBreadcrumbs = [];
-    window.location.hash = `/${encodeURIComponent(name)}/settings`;
+    updateHash();
   }
 
   function goHome() {

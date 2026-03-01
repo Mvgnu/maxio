@@ -47,5 +47,8 @@ describe("navigation route helpers", () => {
     expect(buildHashRoute("objects", "bucket name", "a/b")).toBe(
       "/bucket%20name/a/b"
     );
+    expect(buildHashRoute("settings", "bucket name", "")).toBe(
+      "/bucket%20name/settings"
+    );
   });
 });

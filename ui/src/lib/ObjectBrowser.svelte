@@ -14,6 +14,7 @@
   import VersionHistory from './VersionHistory.svelte'
   import { toast } from '$lib/toast'
   import {
+    buildObjectDownloadUrl,
     createFolderApi,
     deleteObjectApi,
     listObjectsApi,
@@ -137,10 +138,6 @@
     }
     return crumbs
   })
-
-  function downloadUrl(key: string): string {
-    return `/api/buckets/${encodeURIComponent(bucket)}/download/${key}`
-  }
 
   async function handleUpload() {
     const inputFiles = fileInput?.files
@@ -395,7 +392,7 @@
                     <Share2 class="size-4" />
                   {/if}
                 </button>
-                <a href={downloadUrl(file.key)} class="text-muted-foreground hover:text-foreground" onclick={(e) => e.stopPropagation()} title="Download">
+                <a href={buildObjectDownloadUrl(bucket, file.key)} class="text-muted-foreground hover:text-foreground" onclick={(e) => e.stopPropagation()} title="Download">
                   <Download class="size-4" />
                 </a>
                 <button

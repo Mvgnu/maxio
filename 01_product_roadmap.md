@@ -167,7 +167,9 @@ From CLAUDE phased roadmap (additional context):
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Storage unit coverage now also locks multipart part-upload checksum-mismatch cleanup semantics (no orphaned part data/metadata files).
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
+  - Web console object-key path handling is now centralized and segment-encoded in the shared API client for upload/delete/presign/download/version-download routes, with dedicated UI API-client regression coverage for encoded path semantics.
   - Web console hash-route parsing/building is now centralized in a shared helper module (`ui/src/lib/navigation.ts`) with focused unit coverage (`ui/src/lib/navigation.test.ts`).
+  - Web console settings-route hash generation now also flows through shared navigation helpers (`buildHashRoute`) instead of ad-hoc `App.svelte` hash string assembly, with explicit route-builder regression coverage.
   - Frontend verification (`bun run check`, `bun run build`) remains green after backend refactors.
   - Repository-wide strict lint verification now passes with `cargo clippy --all-targets -- -D warnings` (including integration test targets).
   - Integration helper/test harness signing and parity fixtures were lint-hardened (array-based sortable header sets, iterator/repeat helpers) with no behavior drift.

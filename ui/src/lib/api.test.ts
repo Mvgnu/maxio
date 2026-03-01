@@ -2,9 +2,14 @@ import { afterEach, describe, expect, it } from 'bun:test'
 
 import {
   authCheck,
+  buildObjectDownloadUrl,
+  buildVersionDownloadUrl,
+  deleteObjectApi,
   getRuntimeHealthApi,
   getRuntimeMetricsApi,
   getRuntimeTopologyApi,
+  presignObjectApi,
+  uploadObjectApi,
 } from './api'
 
 const originalFetch = globalThis.fetch
@@ -18,6 +23,14 @@ function mockFetchSequence(items: Array<Response | Error>) {
       throw item
     }
     return item
+  }) as unknown as typeof fetch
+}
+
+function mockFetchCapture(calls: Array<{ url: string; init?: RequestInit }>, response: Response) {
+  globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = typeof input === 'string' ? input : input.toString()
+    calls.push({ url, init })
+    return response
   }) as unknown as typeof fetch
 }
 
@@ -220,5 +233,38 @@ describe('api client', () => {
       expect(result.status).toBe(401)
       expect(result.error).toBe('Not authenticated')
     }
+  })
+
+  it('encodes object-key path segments for object endpoints', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const okResponse = new Response(JSON.stringify({ ok: true }), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+    mockFetchCapture(calls, okResponse)
+
+    await uploadObjectApi(
+      'bucket name',
+      'nested/path/my file #1.txt',
+      new Blob(['hello'], { type: 'text/plain' }),
+      'text/plain'
+    )
+    await deleteObjectApi('bucket name', 'nested/path/my file #1.txt')
+    await presignObjectApi('bucket name', 'nested/path/my file #1.txt', 3600)
+
+    expect(calls.map((c) => c.url)).toEqual([
+      '/api/buckets/bucket%20name/upload/nested/path/my%20file%20%231.txt',
+      '/api/buckets/bucket%20name/objects/nested/path/my%20file%20%231.txt',
+      '/api/buckets/bucket%20name/presign/nested/path/my%20file%20%231.txt?expires=3600',
+    ])
+  })
+
+  it('builds encoded download URLs for object and version routes', () => {
+    expect(buildObjectDownloadUrl('bucket name', 'folder/a b#1.txt')).toBe(
+      '/api/buckets/bucket%20name/download/folder/a%20b%231.txt'
+    )
+    expect(buildVersionDownloadUrl('bucket name', 'ver/1', 'folder/a b#1.txt')).toBe(
+      '/api/buckets/bucket%20name/versions/ver%2F1/download/folder/a%20b%231.txt'
+    )
   })
 })

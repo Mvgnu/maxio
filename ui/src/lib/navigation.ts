@@ -42,6 +42,10 @@ export function buildHashRoute(
     return "/";
   }
 
+  if (view === "settings") {
+    return `/${encodeURIComponent(bucket)}/settings`;
+  }
+
   if (prefix) {
     return `/${encodeURIComponent(bucket)}/${prefix}`;
   }
