@@ -257,7 +257,7 @@ pub async fn get_object(
                 let stream = ReaderStream::new(reader);
                 let body = Body::from_stream(stream);
 
-                return Response::builder()
+                let mut builder = Response::builder()
                     .status(StatusCode::PARTIAL_CONTENT)
                     .header("Content-Type", &meta.content_type)
                     .header("Content-Length", length.to_string())
@@ -267,9 +267,13 @@ pub async fn get_object(
                     )
                     .header("Accept-Ranges", "bytes")
                     .header("ETag", &meta.etag)
-                    .header("Last-Modified", to_http_date(&meta.last_modified))
-                    .body(body)
-                    .map_err(S3Error::internal);
+                    .header("Last-Modified", to_http_date(&meta.last_modified));
+                if let Some(vid) = &meta.version_id {
+                    builder = builder.header("x-amz-version-id", vid.as_str());
+                }
+                builder = add_checksum_header(builder, &meta);
+
+                return builder.body(body).map_err(S3Error::internal);
             }
             Ok(None) => {
                 // Unparseable or multi-range — fall through to full 200

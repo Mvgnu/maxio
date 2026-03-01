@@ -336,7 +336,71 @@ async fn test_get_object_range_with_version_id_reads_specific_version() {
     assert_eq!(ranged.status(), 206);
     assert_eq!(ranged.headers()["content-length"], "4");
     assert_eq!(ranged.headers()["content-range"], "bytes 2-5/10");
+    assert_eq!(
+        ranged
+            .headers()
+            .get("x-amz-version-id")
+            .and_then(|v| v.to_str().ok()),
+        Some(version_1.as_str())
+    );
     assert_eq!(ranged.bytes().await.unwrap().as_ref(), b"cdef");
+}
+
+#[tokio::test]
+async fn test_get_object_range_without_version_id_returns_current_version_header() {
+    let (base_url, _tmp) = start_server().await;
+    let bucket = "versioned-range-current";
+    let key = "docs/current.txt";
+    s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+
+    let enable_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let enable = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", base_url, bucket),
+        enable_xml,
+    )
+    .await;
+    assert_eq!(enable.status(), 200);
+
+    let put_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"version-one".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+
+    let put_v2 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"version-two".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+    let version_2 = put_v2
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id for v2")
+        .to_string();
+
+    let ranged = s3_request_with_headers(
+        "GET",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        vec![],
+        vec![("range", "bytes=0-6")],
+    )
+    .await;
+    assert_eq!(ranged.status(), 206);
+    assert_eq!(
+        ranged
+            .headers()
+            .get("x-amz-version-id")
+            .and_then(|v| v.to_str().ok()),
+        Some(version_2.as_str())
+    );
+    assert_eq!(ranged.bytes().await.unwrap().as_ref(), b"version");
 }
 
 fn extract_xml_tag_value(body: &str, tag: &str) -> Option<String> {
