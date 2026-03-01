@@ -154,6 +154,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now also executes missing-bucket multipart regressions (`core_tests::test_multipart_create_upload_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_upload_part_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_complete_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_list_parts_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_list_uploads_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Domain check runner now also executes invalid-key delete regressions (`core_tests::test_delete_object_invalid_key_returns_invalid_argument`, `core_tests::test_delete_objects_batch_invalid_key_returns_invalid_argument_entry`) in S3 domain-local cycles.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
+  - Storage unit coverage now also locks multipart part-upload checksum-mismatch cleanup semantics (no orphaned part data/metadata files).
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
   - Web console hash-route parsing/building is now centralized in a shared helper module (`ui/src/lib/navigation.ts`) with focused unit coverage (`ui/src/lib/navigation.test.ts`).
   - Frontend verification (`bun run check`, `bun run build`) remains green after backend refactors.
@@ -178,6 +179,7 @@ From CLAUDE phased roadmap (additional context):
   - Console lifecycle admin JSON endpoints are available and test-backed.
   - Web console bucket settings now expose lifecycle rule management UX.
   - Storage checksum-write finalization now uses typed error paths (no panic-on-invariant `unwrap` in write flows), with cleanup of staged files on checksum mismatch.
+  - Multipart part-upload checksum mismatches now also explicitly clean up staged part artifacts, with dedicated storage-unit regression coverage.
   - Flat-object writes now clean up staged data files when metadata persistence fails, with storage-unit regression coverage for no-orphan behavior.
   - Chunked and multipart-complete write flows now also clean up staged object artifacts when metadata persistence fails, with dedicated storage-unit regressions.
   - Storage object write/delete/multipart-init paths now enforce explicit bucket existence and reject missing-bucket mutations without implicitly creating bucket directory trees.

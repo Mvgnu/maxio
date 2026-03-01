@@ -172,7 +172,8 @@ pub(crate) async fn body_to_reader(
             }
             let line = line.trim_end_matches(['\r', '\n']);
             let size_str = line.split(';').next().unwrap_or("0");
-            let chunk_size = usize::from_str_radix(size_str.trim(), 16).map_err(|_| framing_err())?;
+            let chunk_size =
+                usize::from_str_radix(size_str.trim(), 16).map_err(|_| framing_err())?;
             if chunk_size == 0 {
                 saw_final_chunk = true;
                 break;
@@ -292,9 +293,10 @@ mod tests {
             "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse().unwrap(),
         );
         let encoded = b"5;chunk-signature=a\r\nhello\r\n";
-        let err = body_to_reader(&headers, Body::from(encoded.as_slice()))
-            .await
-            .expect_err("payload without final chunk should fail");
+        let err = match body_to_reader(&headers, Body::from(encoded.as_slice())).await {
+            Ok(_) => panic!("payload without final chunk should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.code.as_str(), "InvalidArgument");
     }
 
@@ -306,9 +308,10 @@ mod tests {
             "STREAMING-AWS4-HMAC-SHA256-PAYLOAD".parse().unwrap(),
         );
         let encoded = b"zz;chunk-signature=a\r\nhello\r\n0;chunk-signature=b\r\n\r\n";
-        let err = body_to_reader(&headers, Body::from(encoded.as_slice()))
-            .await
-            .expect_err("payload with invalid chunk size should fail");
+        let err = match body_to_reader(&headers, Body::from(encoded.as_slice())).await {
+            Ok(_) => panic!("payload with invalid chunk size should fail"),
+            Err(err) => err,
+        };
         assert_eq!(err.code.as_str(), "InvalidArgument");
     }
 

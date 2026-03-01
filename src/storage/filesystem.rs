@@ -96,7 +96,7 @@ pub struct FilesystemStorage {
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use super::{BucketMeta, FilesystemStorage, StorageError};
+    use super::{BucketMeta, ChecksumAlgorithm, FilesystemStorage, StorageError};
     use crate::storage::lifecycle::LifecycleRule;
     use chrono::{TimeZone, Utc};
     use tempfile::TempDir;
@@ -338,6 +338,47 @@ mod lifecycle_tests {
             !fs::try_exists(storage.buckets_dir.join("missing"))
                 .await
                 .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn upload_part_checksum_mismatch_cleans_orphaned_part_files() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("lifecycle"))
+            .await
+            .unwrap();
+
+        let upload = storage
+            .create_multipart_upload("lifecycle", "bad-checksum.txt", "text/plain", None)
+            .await
+            .unwrap();
+
+        let result = storage
+            .upload_part(
+                "lifecycle",
+                &upload.upload_id,
+                1,
+                Box::pin(std::io::Cursor::new(b"part-content".to_vec())),
+                Some((ChecksumAlgorithm::SHA256, Some("AAAA".to_string()))),
+            )
+            .await;
+        assert!(matches!(result, Err(StorageError::ChecksumMismatch(_))));
+
+        assert!(
+            !fs::try_exists(storage.part_path("lifecycle", &upload.upload_id, 1))
+                .await
+                .unwrap(),
+            "part data file should be removed after checksum mismatch"
+        );
+        assert!(
+            !fs::try_exists(storage.part_meta_path("lifecycle", &upload.upload_id, 1))
+                .await
+                .unwrap(),
+            "part metadata file should not exist after checksum mismatch"
         );
     }
 
