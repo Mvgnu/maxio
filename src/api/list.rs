@@ -1,3 +1,4 @@
+mod response;
 mod service;
 
 use std::collections::HashMap;
@@ -13,7 +14,8 @@ use super::multipart;
 use crate::error::S3Error;
 use crate::server::AppState;
 use crate::storage::StorageError;
-use crate::xml::{response::to_xml, types::*};
+use crate::xml::types::*;
+use response::{bucket_location_response, xml_response};
 
 pub async fn handle_bucket_get(
     State(state): State<AppState>,
@@ -47,16 +49,7 @@ pub async fn handle_bucket_get(
     // Handle ?location query (GetBucketLocation)
     if params.contains_key("location") {
         tracing::debug!("GetBucketLocation for {}", bucket);
-        let xml = format!(
-            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
-             <LocationConstraint>{}</LocationConstraint>",
-            state.config.region
-        );
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header("content-type", "application/xml")
-            .body(Body::from(xml))
-            .map_err(S3Error::internal);
+        return bucket_location_response(&state.config.region);
     }
 
     if params.get("list-type").map(|v| v.as_str()) == Some("2") {
@@ -106,13 +99,7 @@ async fn list_objects_v2(
         start_after: query.start_after,
     };
 
-    let xml = to_xml(&result).map_err(S3Error::internal)?;
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml")
-        .body(Body::from(xml))
-        .map_err(S3Error::internal)
+    xml_response(StatusCode::OK, &result)
 }
 
 async fn list_objects_v1(
@@ -152,13 +139,7 @@ async fn list_objects_v1(
         delimiter: query.delimiter,
     };
 
-    let xml = to_xml(&result).map_err(S3Error::internal)?;
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml")
-        .body(Body::from(xml))
-        .map_err(S3Error::internal)
+    xml_response(StatusCode::OK, &result)
 }
 
 async fn list_object_versions(
@@ -198,12 +179,7 @@ async fn list_object_versions(
         delete_markers,
     };
 
-    let xml = to_xml(&result).map_err(S3Error::internal)?;
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml")
-        .body(Body::from(xml))
-        .map_err(S3Error::internal)
+    xml_response(StatusCode::OK, &result)
 }
 
 fn map_bucket_storage_err(bucket: &str, err: StorageError) -> S3Error {

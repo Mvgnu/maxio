@@ -133,6 +133,7 @@ From CLAUDE phased roadmap (additional context):
   - S3 error code/status mapping and XML error response contract behavior now have focused unit-test coverage (`error::tests`).
   - S3 listing pagination/token/delimiter/version shaping helpers are now covered by focused list-service unit tests (`api::list::service::tests`).
   - S3 list-service unit coverage now also includes dedicated prefix-validation behavior (`validate_prefix`) for deterministic query-boundary rejection semantics.
+  - S3 list XML transport response construction is now centralized in a dedicated helper module (`api::list::response`) with focused unit coverage (content-type/status + bucket-location XML escaping).
   - S3 object checksum extraction/response-header mapping and streaming-body decoding helpers are now covered by focused object-service unit tests (`api::object::service::tests`).
   - S3 object-service unit coverage now also includes delete-path error-mapping helpers (`map_delete_storage_err`, `map_delete_objects_err`) for invalid-key and missing-bucket edge handling.
   - S3 object-service unit coverage now also includes malformed/truncated AWS chunked-framing regressions for strict decode-path validation.
