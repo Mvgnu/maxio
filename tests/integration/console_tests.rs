@@ -821,6 +821,142 @@ async fn test_console_buckets_and_objects_json_contract_shapes() {
 }
 
 #[tokio::test]
+async fn test_console_download_object_returns_expected_headers_and_body() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+    let bucket = "console-download-bucket";
+    let key = "docs/report.txt";
+    let payload = b"console download payload".to_vec();
+
+    let create_bucket = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create_bucket.status(), 200);
+
+    let upload = client()
+        .put(format!("{}/api/buckets/{}/upload/{}", base_url, bucket, key))
+        .header("cookie", &cookie)
+        .header("content-type", "text/plain")
+        .body(payload.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), 200);
+
+    let download = client()
+        .get(format!("{}/api/buckets/{}/download/{}", base_url, bucket, key))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 200);
+    let expected_len = payload.len().to_string();
+    assert_eq!(
+        download
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("text/plain")
+    );
+    assert_eq!(
+        download
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()),
+        Some(expected_len.as_str())
+    );
+    assert_eq!(
+        download
+            .headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok()),
+        Some("attachment; filename=\"report.txt\"")
+    );
+    assert_eq!(download.bytes().await.unwrap().as_ref(), payload.as_slice());
+}
+
+#[tokio::test]
+async fn test_console_download_version_returns_expected_headers_and_body() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+    let bucket = "console-version-download-bucket";
+    let key = "docs/versioned.txt";
+
+    let create_bucket = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create_bucket.status(), 200);
+
+    let enable_versioning = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning=", base_url, bucket),
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Status>Enabled</Status>
+</VersioningConfiguration>"#
+            .to_vec(),
+    )
+    .await;
+    assert_eq!(enable_versioning.status(), 200);
+
+    let first_payload = b"v1-body".to_vec();
+    let put_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        first_payload.clone(),
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+    let v1_id = put_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id on first upload")
+        .to_string();
+
+    let put_v2 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"v2-body".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/versions/{}/download/{}",
+            base_url, bucket, v1_id, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 200);
+    let expected_len = first_payload.len().to_string();
+    assert_eq!(
+        download
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok()),
+        Some("application/octet-stream")
+    );
+    assert_eq!(
+        download
+            .headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()),
+        Some(expected_len.as_str())
+    );
+    assert_eq!(
+        download
+            .headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok()),
+        Some("attachment; filename=\"versioned.txt\"")
+    );
+    assert_eq!(
+        download.bytes().await.unwrap().as_ref(),
+        first_payload.as_slice()
+    );
+}
+
+#[tokio::test]
 async fn test_console_versions_list_remains_available_after_versioning_suspend() {
     let (base_url, _tmp) = start_server().await;
     let cookie = console_login_cookie(&base_url).await;

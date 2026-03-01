@@ -140,6 +140,8 @@ From CLAUDE phased roadmap (additional context):
   - Console JSON success/error response shaping is centralized via shared response helpers.
   - Console versioning/version-history endpoints now return explicit `404` for missing buckets and missing versions (instead of generic `500`), with dedicated regression coverage.
   - Console object-management endpoints now return `404` for missing buckets on folder creation and object deletion paths (instead of implicit success/`500` drift), with dedicated regression coverage.
+  - Console object/version download handlers now use panic-free response construction for streamed responses, with safe fallback headers for malformed metadata values.
+  - Integration coverage now asserts console object and version download header/body contracts.
   - Integration coverage now locks console JSON contract shapes for bucket/object success payloads and auth/protected-route error payloads.
   - Integration coverage now includes tampered-session-cookie rejection for protected console routes.
   - Integration coverage now includes session-boundary rejection for expired and future-dated console cookies.

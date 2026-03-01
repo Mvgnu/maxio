@@ -117,15 +117,5 @@ pub(super) async fn download_version(
     let stream = tokio_util::io::ReaderStream::new(reader);
     let body = axum::body::Body::from_stream(stream);
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("Content-Type", &meta.content_type)
-        .header("Content-Length", meta.size.to_string())
-        .header(
-            "Content-Disposition",
-            format!("attachment; filename=\"{}\"", safe_filename),
-        )
-        .body(body)
-        .unwrap()
-        .into_response()
+    response::download(body, &meta.content_type, meta.size, &safe_filename)
 }
