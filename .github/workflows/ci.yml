@@ -53,5 +53,8 @@ jobs:
       - name: Typecheck
         run: cd ui && bun run check
 
+      - name: Unit tests
+        run: cd ui && bun run test
+
       - name: Build
         run: cd ui && bun run build

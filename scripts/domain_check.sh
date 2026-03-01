@@ -194,6 +194,10 @@ run_domain() {
     quality_harness)
       cargo clippy --all-targets -- -D warnings
       cargo test
+      (
+        cd ui
+        bun run test
+      )
       bash -n tests/mc_test.sh
       bash -n tests/aws_cli_test.sh
       ;;

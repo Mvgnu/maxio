@@ -174,8 +174,10 @@ From CLAUDE phased roadmap (additional context):
   - Repository-wide strict lint verification now passes with `cargo clippy --all-targets -- -D warnings` (including integration test targets).
   - Integration helper/test harness signing and parity fixtures were lint-hardened (array-based sortable header sets, iterator/repeat helpers) with no behavior drift.
   - Domain check runner now enforces strict lint verification inside the `quality_harness` domain (`cargo clippy --all-targets -- -D warnings`).
+  - Domain check runner `quality_harness` suite now also executes UI unit tests (`ui: bun run test`) to keep frontend regression coverage in the top-level harness cycle.
   - CI backend checks now include explicit `cargo clippy --all-targets -- -D warnings` gating before test execution.
   - CI includes non-release backend/frontend verification.
+  - CI frontend checks now also execute automated UI unit tests (`bun run test`) in addition to typecheck/build.
   - AWS CLI and mc compatibility scripts now include lifecycle regression flows.
 - Metrics groundwork advanced:
   - Runtime Prometheus-style `/metrics` endpoint is now available with request count, uptime, and build info gauges/counters.
