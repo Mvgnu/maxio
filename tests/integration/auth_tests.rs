@@ -360,6 +360,31 @@ async fn test_presigned_get_object_with_secondary_credentials() {
 }
 
 #[tokio::test]
+async fn test_presigned_rejects_unknown_access_key() {
+    let (base_url, _tmp) = start_server().await;
+
+    let bucket_url = format!("{}/presign-unknown-key-bucket", base_url);
+    s3_request("PUT", &bucket_url, vec![]).await;
+
+    let object_url = format!("{}/presign-unknown-key-bucket/test.txt", base_url);
+    s3_request("PUT", &object_url, b"data".to_vec()).await;
+
+    let presigned = presign_url_with_credentials(
+        &base_url,
+        "GET",
+        "/presign-unknown-key-bucket/test.txt",
+        300,
+        "unknown-access-key",
+        "unknown-secret-key",
+    );
+
+    let resp = client().get(&presigned).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>InvalidAccessKeyId</Code>"));
+}
+
+#[tokio::test]
 async fn test_presigned_expired_url() {
     let (base_url, _tmp) = start_server().await;
 

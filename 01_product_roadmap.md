@@ -151,6 +151,7 @@ From CLAUDE phased roadmap (additional context):
   - Integration coverage includes secondary-credential S3 signing and console login flows.
   - Console login now also has explicit primary/secondary/unknown credential-matrix regression coverage.
   - Presigned S3 auth now rejects excessive future `X-Amz-Date` skew (`RequestTimeTooSkewed`) with dedicated integration coverage.
+  - Presigned S3 auth now has explicit unknown-access-key regression coverage (`InvalidAccessKeyId`) in the credential matrix.
 - Distributed bootstrap groundwork advanced:
   - Runtime config now supports `MAXIO_NODE_ID` and `MAXIO_CLUSTER_PEERS` for topology bootstrap wiring.
   - `/healthz` and `/metrics` now expose standalone/distributed runtime topology context.

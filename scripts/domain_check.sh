@@ -66,6 +66,7 @@ run_domain() {
         auth_tests::test_auth_compact_header_no_spaces \
         auth_tests::test_presigned_rejects_invalid_credential_scope_service \
         auth_tests::test_presigned_rejects_future_timestamp_skew \
+        auth_tests::test_presigned_rejects_unknown_access_key \
         auth_tests::test_presigned_get_object_with_secondary_credentials \
         auth_tests::test_presigned_bad_signature \
         auth_tests::test_presigned_expired_url
