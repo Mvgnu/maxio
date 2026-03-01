@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderName, HeaderValue, StatusCode, header},
     response::Response,
 };
 
@@ -47,11 +47,7 @@ pub async fn create_multipart_upload(
     })
     .map_err(S3Error::internal)?;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml")
-        .body(Body::from(xml))
-        .unwrap())
+    Ok(xml_response(StatusCode::OK, xml))
 }
 
 pub async fn upload_part(
@@ -80,13 +76,12 @@ pub async fn upload_part(
         .await
         .map_err(map_storage_err)?;
 
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header("ETag", &part.etag);
+    let mut response = empty_response(StatusCode::OK);
+    set_header(&mut response, "ETag", &part.etag);
     if let (Some(algo), Some(val)) = (&part.checksum_algorithm, &part.checksum_value) {
-        builder = builder.header(algo.header_name(), val.as_str());
+        set_header(&mut response, algo.header_name(), val);
     }
-    Ok(builder.body(Body::empty()).unwrap())
+    Ok(response)
 }
 
 pub async fn complete_multipart_upload(
@@ -120,13 +115,11 @@ pub async fn complete_multipart_upload(
     })
     .map_err(S3Error::internal)?;
 
-    let mut builder = Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml");
+    let mut response = xml_response(StatusCode::OK, xml);
     if let (Some(algo), Some(val)) = (&result.checksum_algorithm, &result.checksum_value) {
-        builder = builder.header(algo.header_name(), val.as_str());
+        set_header(&mut response, algo.header_name(), val);
     }
-    Ok(builder.body(Body::from(xml)).unwrap())
+    Ok(response)
 }
 
 pub async fn abort_multipart_upload(
@@ -145,10 +138,7 @@ pub async fn abort_multipart_upload(
         .await
         .map_err(map_storage_err)?;
 
-    Ok(Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .body(Body::empty())
-        .unwrap())
+    Ok(empty_response(StatusCode::NO_CONTENT))
 }
 
 pub async fn list_parts(
@@ -184,11 +174,7 @@ pub async fn list_parts(
     })
     .map_err(S3Error::internal)?;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml")
-        .body(Body::from(xml))
-        .unwrap())
+    Ok(xml_response(StatusCode::OK, xml))
 }
 
 pub async fn list_multipart_uploads(
@@ -217,11 +203,32 @@ pub async fn list_multipart_uploads(
     })
     .map_err(S3Error::internal)?;
 
-    Ok(Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml")
-        .body(Body::from(xml))
-        .unwrap())
+    Ok(xml_response(StatusCode::OK, xml))
+}
+
+fn empty_response(status: StatusCode) -> Response<Body> {
+    let mut response = Response::new(Body::empty());
+    *response.status_mut() = status;
+    response
+}
+
+fn xml_response(status: StatusCode, xml: String) -> Response<Body> {
+    let mut response = Response::new(Body::from(xml));
+    *response.status_mut() = status;
+    response.headers_mut().insert(
+        header::CONTENT_TYPE,
+        HeaderValue::from_static("application/xml"),
+    );
+    response
+}
+
+fn set_header(response: &mut Response<Body>, name: &str, value: &str) {
+    if let (Ok(header_name), Ok(header_value)) = (
+        HeaderName::from_bytes(name.as_bytes()),
+        HeaderValue::from_str(value),
+    ) {
+        response.headers_mut().insert(header_name, header_value);
+    }
 }
 
 async fn ensure_bucket_exists(state: &AppState, bucket: &str) -> Result<(), S3Error> {
@@ -249,5 +256,38 @@ fn map_storage_err(err: StorageError) -> S3Error {
         }
         StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
         _ => S3Error::internal(err),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn xml_response_sets_status_and_content_type() {
+        let response = xml_response(StatusCode::CREATED, "<ok/>".to_string());
+        assert_eq!(response.status(), StatusCode::CREATED);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("application/xml")
+        );
+    }
+
+    #[test]
+    fn set_header_ignores_invalid_header_value() {
+        let mut response = empty_response(StatusCode::OK);
+        set_header(&mut response, "x-test", "valid");
+        set_header(&mut response, "x-test", "bad\r\nvalue");
+
+        assert_eq!(
+            response
+                .headers()
+                .get("x-test")
+                .and_then(|v| v.to_str().ok()),
+            Some("valid")
+        );
     }
 }

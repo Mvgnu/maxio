@@ -82,6 +82,7 @@ run_domain() {
       cargo test error::tests
       cargo test api::list::service::tests
       cargo test api::object::service::tests
+      cargo test api::multipart::tests
       for t in \
         core_tests::test_create_bucket \
         core_tests::test_list_objects \
