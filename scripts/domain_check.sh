@@ -70,6 +70,7 @@ run_domain() {
         auth_tests::test_auth_credential_matrix_primary_secondary_and_unknown \
         auth_tests::test_auth_compact_header_no_spaces \
         auth_tests::test_auth_rejects_duplicate_authorization_components \
+        auth_tests::test_auth_rejects_unknown_authorization_component \
         auth_tests::test_presigned_rejects_invalid_credential_scope_service \
         auth_tests::test_presigned_rejects_future_timestamp_skew \
         auth_tests::test_presigned_rejects_unknown_access_key \
@@ -124,6 +125,7 @@ run_domain() {
         core_tests::test_bucket_versioning_invalid_status_rejected \
         core_tests::test_bucket_versioning_suspend_preserves_existing_versions \
         core_tests::test_object_version_roundtrip_and_specific_version_delete \
+        core_tests::test_get_object_range_with_version_id_reads_specific_version \
         core_tests::test_list_object_versions_supports_max_keys_and_markers \
         core_tests::test_delete_marker_stays_current_after_deleting_older_version \
         core_tests::test_bucket_lifecycle_put_and_get \

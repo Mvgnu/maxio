@@ -162,6 +162,35 @@ async fn test_auth_rejects_duplicate_authorization_components() {
     assert!(body.contains("Duplicate Signature"));
 }
 
+#[tokio::test]
+async fn test_auth_rejects_unknown_authorization_component() {
+    let (base_url, _tmp) = start_server().await;
+    let url = format!("{}/", base_url);
+
+    let mut headers = Vec::new();
+    sign_request("GET", &url, &mut headers, &[]);
+
+    let mut saw_auth = false;
+    for (name, value) in &mut headers {
+        if name == "authorization" {
+            value.push_str(", Foo=bar");
+            saw_auth = true;
+        }
+    }
+    assert!(saw_auth, "signed request should include authorization header");
+
+    let mut req = client().get(&url);
+    for (name, value) in &headers {
+        req = req.header(name, value);
+    }
+
+    let resp = req.send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Invalid auth component"));
+}
+
 /// Generate a presigned URL for the given method/path.
 fn presign_url(base_url: &str, method: &str, path: &str, expires_secs: u64) -> String {
     presign_url_with_credentials(base_url, method, path, expires_secs, ACCESS_KEY, SECRET_KEY)

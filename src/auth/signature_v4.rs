@@ -82,6 +82,8 @@ pub fn parse_authorization_header(header: &str) -> Result<ParsedAuth, &'static s
             if signature.replace(val).is_some() {
                 return Err("Duplicate Signature");
             }
+        } else {
+            return Err("Invalid auth component");
         }
     }
 
@@ -615,6 +617,12 @@ mod tests {
     fn parse_authorization_header_rejects_duplicate_components() {
         let duplicate_credential = "AWS4-HMAC-SHA256 Credential=minioadmin/20260301/us-east-1/s3/aws4_request, Credential=minioadmin/20260301/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123";
         assert!(parse_authorization_header(duplicate_credential).is_err());
+    }
+
+    #[test]
+    fn parse_authorization_header_rejects_unrecognized_components() {
+        let with_unknown = "AWS4-HMAC-SHA256 Credential=minioadmin/20260301/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123, Foo=bar";
+        assert!(parse_authorization_header(with_unknown).is_err());
     }
 
     #[test]

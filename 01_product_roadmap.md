@@ -81,6 +81,7 @@ From CLAUDE phased roadmap (additional context):
   - Object protocol parsing (range, copy-source, HTTP-date formatting, DeleteObjects key extraction) was split into `object/parsing` with unit coverage.
   - Multipart complete XML parsing and part-number validation were split into `multipart/parsing` with unit and integration coverage for malformed, out-of-range, and non-ascending inputs.
   - Added end-to-end S3 object-version lifecycle coverage (`PUT` version IDs, `GET ?versions`, `GET ?versionId`, `DELETE ?versionId`, missing-version errors).
+  - Version-aware object reads now apply HTTP range requests against the selected `versionId` payload (instead of implicitly ranging the current version).
   - Versioning suspend transition now preserves historical versions (no destructive cleanup on suspend).
   - Added regression coverage for preserved version history after suspend.
   - Fixed delete-marker/current-version reconciliation: deleting older versions no longer resurrects tombstoned objects.
@@ -146,6 +147,7 @@ From CLAUDE phased roadmap (additional context):
   - S3 bucket handlers now delegate bucket-existence checks, storage-error mapping, and XML/empty response construction to a dedicated `bucket/service` helper module.
   - Integration coverage now includes DeleteObjects quiet-mode response semantics.
   - Integration coverage now includes versions-list marker pagination roundtrip semantics.
+  - Integration coverage now includes `GET ?versionId=...` + `Range` regression semantics for version-specific partial reads.
   - Domain check runner now executes runtime and console response-helper unit suites in domain-local cycles (`server::tests`, `api::console::response::tests`) instead of only catching them in full-suite runs.
   - Domain check runner now also executes console auth-helper unit suites (`api::console::auth::tests`) in console domain-local cycles.
   - Domain check runner now also executes console storage-helper unit suites (`api::console::storage::tests`) in console domain-local cycles.
@@ -159,6 +161,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now also executes missing-bucket CopyObject regressions (`core_tests::test_copy_object_missing_source_bucket_returns_no_such_bucket`, `core_tests::test_copy_object_missing_destination_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Domain check runner now also executes missing-bucket multipart regressions (`core_tests::test_multipart_create_upload_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_upload_part_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_complete_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_list_parts_missing_bucket_returns_no_such_bucket`, `core_tests::test_multipart_list_uploads_missing_bucket_returns_no_such_bucket`) in S3 domain-local cycles.
   - Domain check runner now also executes invalid-key delete regressions (`core_tests::test_delete_object_invalid_key_returns_invalid_argument`, `core_tests::test_delete_objects_batch_invalid_key_returns_invalid_argument_entry`) in S3 domain-local cycles.
+  - Domain check runner now also executes version-aware range regression coverage (`core_tests::test_get_object_range_with_version_id_reads_specific_version`) in S3 domain-local cycles.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Storage unit coverage now also locks multipart part-upload checksum-mismatch cleanup semantics (no orphaned part data/metadata files).
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
@@ -231,6 +234,7 @@ From CLAUDE phased roadmap (additional context):
   - SigV4 presigned-query parsing now decodes `X-Amz-*` query components consistently (including encoded `X-Amz-SignedHeaders`) and rejects invalid UTF-8 encoded query-component bytes.
   - SigV4 presigned request detection/verification now also handles percent-encoded `X-Amz-Signature` query keys consistently (middleware detection + canonical signature-filter path).
   - SigV4 header-auth and presigned-query parsers now reject duplicated auth components (`Credential`/`SignedHeaders`/`Signature`, duplicated `X-Amz-*`) to avoid ambiguous signature inputs.
+  - SigV4 header-auth parsing now rejects unrecognized `Authorization` components to avoid silent acceptance of malformed/ambiguous auth headers.
   - Integration coverage now includes duplicate-component rejection regressions for both `Authorization` header inputs and presigned `X-Amz-*` query inputs.
   - SigV4 canonical URI normalization now decodes and re-encodes path segments to avoid double-encoding already-encoded request paths in presigned verification flows.
   - Shared SigV4 presign generation now uses a typed `PresignRequest` contract instead of positional multi-argument call sites.

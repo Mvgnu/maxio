@@ -649,6 +649,7 @@ mod versioning_tests {
     use super::{BucketMeta, FilesystemStorage, ObjectMeta, StorageError, version_id_from_meta};
     use tempfile::TempDir;
     use tokio::fs;
+    use tokio::io::AsyncReadExt;
 
     fn bucket_meta(name: &str) -> BucketMeta {
         BucketMeta {
@@ -753,6 +754,57 @@ mod versioning_tests {
             StorageError::Io(io_err) => assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidData),
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn get_object_version_range_reads_selected_version_data() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        storage
+            .create_bucket(&bucket_meta("versioned"))
+            .await
+            .unwrap();
+
+        storage
+            .put_object(
+                "versioned",
+                "docs/range.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"AAAAAA".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+        storage
+            .put_object(
+                "versioned",
+                "docs/range.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"BBBBBB".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let versions = storage
+            .list_object_versions("versioned", "docs/range.txt")
+            .await
+            .unwrap();
+        let older_version_id = versions[1]
+            .version_id
+            .as_ref()
+            .expect("older version should have id")
+            .to_string();
+
+        let (mut reader, _) = storage
+            .get_object_version_range("versioned", "docs/range.txt", &older_version_id, 1, 3)
+            .await
+            .unwrap();
+        let mut body = Vec::new();
+        reader.read_to_end(&mut body).await.unwrap();
+        assert_eq!(body, b"AAA");
     }
 }
 
@@ -2374,6 +2426,51 @@ impl FilesystemStorage {
             }
         })?;
         Ok((Box::pin(BufReader::new(file)), meta))
+    }
+
+    pub async fn get_object_version_range(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<(ByteStream, ObjectMeta), StorageError> {
+        validation::validate_key(key)?;
+        let meta = self.read_version_meta(bucket, key, version_id).await?;
+        if meta.is_delete_marker {
+            return Err(StorageError::NotFound(key.to_string()));
+        }
+
+        // Check for chunked version
+        let ver_ec_dir = self.version_ec_dir(bucket, key, version_id);
+        if fs::try_exists(&ver_ec_dir).await? {
+            let manifest_path = ver_ec_dir.join("manifest.json");
+            let manifest_data = fs::read_to_string(&manifest_path).await.map_err(|e| {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    StorageError::VersionNotFound(version_id.to_string())
+                } else {
+                    StorageError::Io(e)
+                }
+            })?;
+            let manifest: ChunkManifest = serde_json::from_str(&manifest_data)?;
+            let reader = VerifiedChunkReader::with_range(ver_ec_dir, manifest, offset, length);
+            return Ok((Box::pin(reader), meta));
+        }
+
+        let ver_data_path = self.version_data_path(bucket, key, version_id);
+        let mut file = fs::File::open(&ver_data_path).await.map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                StorageError::VersionNotFound(version_id.to_string())
+            } else {
+                StorageError::Io(e)
+            }
+        })?;
+        file.seek(std::io::SeekFrom::Start(offset))
+            .await
+            .map_err(StorageError::Io)?;
+        let limited = file.take(length);
+        Ok((Box::pin(BufReader::new(limited)), meta))
     }
 
     pub async fn head_object_version(

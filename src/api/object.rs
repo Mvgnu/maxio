@@ -200,29 +200,59 @@ pub async fn get_object(
     ensure_bucket_exists(&state, &bucket).await?;
 
     let range_header = headers.get("range").and_then(|v| v.to_str().ok());
+    let requested_version_id = params.get("versionId").map(String::as_str);
 
     if let Some(range_str) = range_header {
-        let meta = state
-            .storage
-            .head_object(&bucket, &key)
-            .await
-            .map_err(|e| match e {
-                StorageError::NotFound(_) => S3Error::no_such_key(&key),
-                StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
-                _ => S3Error::internal(e),
-            })?;
+        let meta = if let Some(version_id) = requested_version_id {
+            state
+                .storage
+                .head_object_version(&bucket, &key, version_id)
+                .await
+                .map_err(|e| match e {
+                    StorageError::VersionNotFound(_) => S3Error::no_such_version(version_id),
+                    StorageError::NotFound(_) => S3Error::no_such_key(&key),
+                    StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
+                    _ => S3Error::internal(e),
+                })?
+        } else {
+            state
+                .storage
+                .head_object(&bucket, &key)
+                .await
+                .map_err(|e| match e {
+                    StorageError::NotFound(_) => S3Error::no_such_key(&key),
+                    StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
+                    _ => S3Error::internal(e),
+                })?
+        };
 
         match parse_range(range_str, meta.size) {
             Ok(Some((start, end))) => {
                 let length = end - start + 1;
-                let (reader, _) = state
-                    .storage
-                    .get_object_range(&bucket, &key, start, length)
-                    .await
-                    .map_err(|e| match e {
-                        StorageError::NotFound(_) => S3Error::no_such_key(&key),
-                        _ => S3Error::internal(e),
-                    })?;
+                let (reader, _) = if let Some(version_id) = requested_version_id {
+                    state
+                        .storage
+                        .get_object_version_range(&bucket, &key, version_id, start, length)
+                        .await
+                        .map_err(|e| match e {
+                            StorageError::VersionNotFound(_) => {
+                                S3Error::no_such_version(version_id)
+                            }
+                            StorageError::NotFound(_) => S3Error::no_such_key(&key),
+                            StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
+                            _ => S3Error::internal(e),
+                        })?
+                } else {
+                    state
+                        .storage
+                        .get_object_range(&bucket, &key, start, length)
+                        .await
+                        .map_err(|e| match e {
+                            StorageError::NotFound(_) => S3Error::no_such_key(&key),
+                            StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
+                            _ => S3Error::internal(e),
+                        })?
+                };
 
                 let stream = ReaderStream::new(reader);
                 let body = Body::from_stream(stream);

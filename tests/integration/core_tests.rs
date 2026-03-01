@@ -284,6 +284,61 @@ async fn test_object_version_roundtrip_and_specific_version_delete() {
     assert!(body.contains("<Code>NoSuchVersion</Code>"));
 }
 
+#[tokio::test]
+async fn test_get_object_range_with_version_id_reads_specific_version() {
+    let (base_url, _tmp) = start_server().await;
+    let bucket = "versioned-range";
+    let key = "docs/range.txt";
+    s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+
+    let enable_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let enable = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", base_url, bucket),
+        enable_xml,
+    )
+    .await;
+    assert_eq!(enable.status(), 200);
+
+    let put_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"abcdefghij".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+    let version_1 = put_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id for v1")
+        .to_string();
+
+    let put_v2 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"0123456789".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+
+    let ranged = s3_request_with_headers(
+        "GET",
+        &format!(
+            "{}/{}/{}?versionId={}",
+            base_url, bucket, key, version_1
+        ),
+        vec![],
+        vec![("range", "bytes=2-5")],
+    )
+    .await;
+    assert_eq!(ranged.status(), 206);
+    assert_eq!(ranged.headers()["content-length"], "4");
+    assert_eq!(ranged.headers()["content-range"], "bytes 2-5/10");
+    assert_eq!(ranged.bytes().await.unwrap().as_ref(), b"cdef");
+}
+
 fn extract_xml_tag_value(body: &str, tag: &str) -> Option<String> {
     let open = format!("<{}>", tag);
     let close = format!("</{}>", tag);
