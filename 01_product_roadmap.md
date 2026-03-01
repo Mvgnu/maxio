@@ -82,6 +82,7 @@ From CLAUDE phased roadmap (additional context):
   - Multipart complete XML parsing and part-number validation were split into `multipart/parsing` with unit and integration coverage for malformed, out-of-range, and non-ascending inputs.
   - Added end-to-end S3 object-version lifecycle coverage (`PUT` version IDs, `GET ?versions`, `GET ?versionId`, `DELETE ?versionId`, missing-version errors).
   - Version-aware object reads now apply HTTP range requests against the selected `versionId` payload (instead of implicitly ranging the current version).
+  - Storage versioned read paths now share a single internal reader helper for full-object and range reads, reducing duplicated logic in version I/O flows.
   - Versioning suspend transition now preserves historical versions (no destructive cleanup on suspend).
   - Added regression coverage for preserved version history after suspend.
   - Fixed delete-marker/current-version reconciliation: deleting older versions no longer resurrects tombstoned objects.

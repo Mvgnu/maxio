@@ -2388,11 +2388,12 @@ impl FilesystemStorage {
         Ok(())
     }
 
-    pub async fn get_object_version(
+    async fn read_object_version(
         &self,
         bucket: &str,
         key: &str,
         version_id: &str,
+        range: Option<(u64, u64)>,
     ) -> Result<(ByteStream, ObjectMeta), StorageError> {
         validation::validate_key(key)?;
         let meta = self.read_version_meta(bucket, key, version_id).await?;
@@ -2413,48 +2414,11 @@ impl FilesystemStorage {
                 }
             })?;
             let manifest: ChunkManifest = serde_json::from_str(&manifest_data)?;
-            let reader = VerifiedChunkReader::new(ver_ec_dir, manifest);
-            return Ok((Box::pin(reader), meta));
-        }
-
-        let ver_data_path = self.version_data_path(bucket, key, version_id);
-        let file = fs::File::open(&ver_data_path).await.map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                StorageError::VersionNotFound(version_id.to_string())
+            let reader = if let Some((offset, length)) = range {
+                VerifiedChunkReader::with_range(ver_ec_dir, manifest, offset, length)
             } else {
-                StorageError::Io(e)
-            }
-        })?;
-        Ok((Box::pin(BufReader::new(file)), meta))
-    }
-
-    pub async fn get_object_version_range(
-        &self,
-        bucket: &str,
-        key: &str,
-        version_id: &str,
-        offset: u64,
-        length: u64,
-    ) -> Result<(ByteStream, ObjectMeta), StorageError> {
-        validation::validate_key(key)?;
-        let meta = self.read_version_meta(bucket, key, version_id).await?;
-        if meta.is_delete_marker {
-            return Err(StorageError::NotFound(key.to_string()));
-        }
-
-        // Check for chunked version
-        let ver_ec_dir = self.version_ec_dir(bucket, key, version_id);
-        if fs::try_exists(&ver_ec_dir).await? {
-            let manifest_path = ver_ec_dir.join("manifest.json");
-            let manifest_data = fs::read_to_string(&manifest_path).await.map_err(|e| {
-                if e.kind() == std::io::ErrorKind::NotFound {
-                    StorageError::VersionNotFound(version_id.to_string())
-                } else {
-                    StorageError::Io(e)
-                }
-            })?;
-            let manifest: ChunkManifest = serde_json::from_str(&manifest_data)?;
-            let reader = VerifiedChunkReader::with_range(ver_ec_dir, manifest, offset, length);
+                VerifiedChunkReader::new(ver_ec_dir, manifest)
+            };
             return Ok((Box::pin(reader), meta));
         }
 
@@ -2466,11 +2430,37 @@ impl FilesystemStorage {
                 StorageError::Io(e)
             }
         })?;
-        file.seek(std::io::SeekFrom::Start(offset))
+        let reader: ByteStream = if let Some((offset, length)) = range {
+            file.seek(std::io::SeekFrom::Start(offset))
+                .await
+                .map_err(StorageError::Io)?;
+            let limited = file.take(length);
+            Box::pin(BufReader::new(limited))
+        } else {
+            Box::pin(BufReader::new(file))
+        };
+        Ok((reader, meta))
+    }
+
+    pub async fn get_object_version(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+    ) -> Result<(ByteStream, ObjectMeta), StorageError> {
+        self.read_object_version(bucket, key, version_id, None).await
+    }
+
+    pub async fn get_object_version_range(
+        &self,
+        bucket: &str,
+        key: &str,
+        version_id: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<(ByteStream, ObjectMeta), StorageError> {
+        self.read_object_version(bucket, key, version_id, Some((offset, length)))
             .await
-            .map_err(StorageError::Io)?;
-        let limited = file.take(length);
-        Ok((Box::pin(BufReader::new(limited)), meta))
     }
 
     pub async fn head_object_version(
