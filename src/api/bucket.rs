@@ -1,3 +1,4 @@
+mod service;
 mod validation;
 
 use std::collections::HashMap;
@@ -12,7 +13,11 @@ use axum::{
 use crate::error::S3Error;
 use crate::server::AppState;
 use crate::storage::{BucketMeta, StorageError};
-use crate::xml::{response::to_xml, types::*};
+use crate::xml::types::*;
+use service::{
+    empty_response, ensure_bucket_exists, map_bucket_storage_err, map_lifecycle_storage_err,
+    xml_response,
+};
 use validation::{
     parse_lifecycle_rules, parse_versioning_status, serialize_lifecycle_rules, validate_bucket_name,
 };
@@ -40,13 +45,7 @@ pub async fn list_buckets(State(state): State<AppState>) -> Result<Response<Body
         },
     };
 
-    let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
-
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml")
-        .body(Body::from(xml))
-        .map_err(S3Error::internal)
+    xml_response(StatusCode::OK, &result)
 }
 
 pub async fn create_bucket(
@@ -105,10 +104,7 @@ pub async fn delete_bucket(
     Path(bucket): Path<String>,
 ) -> Result<Response<Body>, S3Error> {
     match state.storage.delete_bucket(&bucket).await {
-        Ok(true) => Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .body(Body::empty())
-            .map_err(S3Error::internal),
+        Ok(true) => empty_response(StatusCode::NO_CONTENT),
         Ok(false) => Err(S3Error::no_such_bucket(&bucket)),
         Err(StorageError::BucketNotEmpty) => Err(S3Error::bucket_not_empty(&bucket)),
         Err(e) => Err(S3Error::internal(e)),
@@ -146,11 +142,7 @@ async fn put_bucket_versioning(
     Path(bucket): Path<String>,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
-        Err(e) => return Err(S3Error::internal(e)),
-    }
+    ensure_bucket_exists(&state.storage, &bucket).await?;
 
     let body_bytes = axum::body::to_bytes(body, 1024 * 64)
         .await
@@ -162,15 +154,9 @@ async fn put_bucket_versioning(
         .storage
         .set_versioning(&bucket, enabled)
         .await
-        .map_err(|e| match e {
-            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
-            other => S3Error::internal(other),
-        })?;
+        .map_err(|e| map_bucket_storage_err(&bucket, e))?;
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .body(Body::empty())
-        .map_err(S3Error::internal)
+    empty_response(StatusCode::OK)
 }
 
 async fn put_bucket_lifecycle(
@@ -178,11 +164,7 @@ async fn put_bucket_lifecycle(
     Path(bucket): Path<String>,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
-        Err(e) => return Err(S3Error::internal(e)),
-    }
+    ensure_bucket_exists(&state.storage, &bucket).await?;
 
     let body_bytes = axum::body::to_bytes(body, 1024 * 256)
         .await
@@ -194,42 +176,24 @@ async fn put_bucket_lifecycle(
         .storage
         .set_lifecycle_rules(&bucket, &rules)
         .await
-        .map_err(|e| match e {
-            StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
-            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
-            other => S3Error::internal(other),
-        })?;
+        .map_err(|e| map_lifecycle_storage_err(&bucket, e))?;
 
-    Response::builder()
-        .status(StatusCode::OK)
-        .body(Body::empty())
-        .map_err(S3Error::internal)
+    empty_response(StatusCode::OK)
 }
 
 async fn delete_bucket_lifecycle(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
 ) -> Result<Response<Body>, S3Error> {
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
-        Err(e) => return Err(S3Error::internal(e)),
-    }
+    ensure_bucket_exists(&state.storage, &bucket).await?;
 
     state
         .storage
         .set_lifecycle_rules(&bucket, &[])
         .await
-        .map_err(|e| match e {
-            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
-            StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
-            other => S3Error::internal(other),
-        })?;
+        .map_err(|e| map_lifecycle_storage_err(&bucket, e))?;
 
-    Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .body(Body::empty())
-        .map_err(S3Error::internal)
+    empty_response(StatusCode::NO_CONTENT)
 }
 
 pub async fn get_bucket_versioning(
@@ -240,10 +204,7 @@ pub async fn get_bucket_versioning(
         .storage
         .is_versioned(&bucket)
         .await
-        .map_err(|e| match e {
-            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
-            other => S3Error::internal(other),
-        })?;
+        .map_err(|e| map_bucket_storage_err(&bucket, e))?;
 
     let result = VersioningConfiguration {
         status: if versioned {
@@ -253,12 +214,7 @@ pub async fn get_bucket_versioning(
         },
     };
 
-    let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml")
-        .body(Body::from(xml))
-        .map_err(S3Error::internal)
+    xml_response(StatusCode::OK, &result)
 }
 
 pub async fn get_bucket_lifecycle(
@@ -269,20 +225,12 @@ pub async fn get_bucket_lifecycle(
         .storage
         .get_lifecycle_rules(&bucket)
         .await
-        .map_err(|e| match e {
-            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
-            other => S3Error::internal(other),
-        })?;
+        .map_err(|e| map_bucket_storage_err(&bucket, e))?;
 
     if rules.is_empty() {
         return Err(S3Error::no_such_lifecycle_configuration(&bucket));
     }
 
     let result = serialize_lifecycle_rules(rules);
-    let xml = to_xml(&result).map_err(S3Error::internal)?;
-    Response::builder()
-        .status(StatusCode::OK)
-        .header("content-type", "application/xml")
-        .body(Body::from(xml))
-        .map_err(S3Error::internal)
+    xml_response(StatusCode::OK, &result)
 }

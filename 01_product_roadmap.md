@@ -113,10 +113,12 @@ From CLAUDE phased roadmap (additional context):
   - S3 bucket/list/object transport handlers now also use fallible panic-free response construction (`map_err`) instead of `Response::builder(...).unwrap()`.
   - S3 object/multipart mutation error mapping now preserves explicit `NoSuchBucket` semantics for storage-layer missing-bucket paths (instead of collapsing to generic internal errors).
   - S3 list/versioning read paths now also preserve explicit `NoSuchBucket` semantics when storage returns missing-bucket errors in race/edge conditions.
+  - S3 bucket handlers now delegate bucket-existence checks, storage-error mapping, and XML/empty response construction to a dedicated `bucket/service` helper module.
   - Integration coverage now includes DeleteObjects quiet-mode response semantics.
   - Integration coverage now includes versions-list marker pagination roundtrip semantics.
   - Domain check runner now executes runtime and console response-helper unit suites in domain-local cycles (`server::tests`, `api::console::response::tests`) instead of only catching them in full-suite runs.
   - Domain check runner now also executes console auth-helper unit suites (`api::console::auth::tests`) in console domain-local cycles.
+  - Domain check runner now also executes S3 bucket validation/service helper unit suites (`api::bucket::validation::tests`, `api::bucket::service::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes S3 list-handler unit suites (`api::list::tests`) in S3 domain-local cycles.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
