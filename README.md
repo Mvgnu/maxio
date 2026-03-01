@@ -178,3 +178,5 @@ Run all domain checks:
 ## License
 
 [Apache-2.0](LICENSE)
+
+See [NOTICE](NOTICE) for fork attribution and modification notice.

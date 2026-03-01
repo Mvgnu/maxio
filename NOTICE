@@ -1,0 +1,14 @@
+MaxIO - Fork Modification Notice
+
+This repository is a fork of the original MaxIO project.
+
+Fork maintainer and primary modifier:
+- Magnus Ohle
+
+Notice of modifications:
+- Significant modifications have been made across most of the codebase.
+- Most, if not all, major project domains were touched during hardening,
+  refactoring, feature alignment, and production-readiness work.
+
+This NOTICE is provided for attribution and modification transparency under
+the Apache License, Version 2.0.
