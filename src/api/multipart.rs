@@ -241,6 +241,7 @@ async fn ensure_bucket_exists(state: &AppState, bucket: &str) -> Result<(), S3Er
 
 fn map_storage_err(err: StorageError) -> S3Error {
     match err {
+        StorageError::NotFound(bucket) => S3Error::no_such_bucket(&bucket),
         StorageError::ChecksumMismatch(_) => S3Error::bad_checksum("x-amz-checksum"),
         StorageError::UploadNotFound(upload_id) => S3Error::no_such_upload(&upload_id),
         StorageError::InvalidKey(msg) if msg.contains("part too small") => {
@@ -262,6 +263,7 @@ fn map_storage_err(err: StorageError) -> S3Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::S3ErrorCode;
 
     #[test]
     fn xml_response_sets_status_and_content_type() {
@@ -289,5 +291,12 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("valid")
         );
+    }
+
+    #[test]
+    fn map_storage_err_missing_bucket_maps_to_no_such_bucket() {
+        let err = map_storage_err(StorageError::NotFound("missing".to_string()));
+        assert!(matches!(err.code, S3ErrorCode::NoSuchBucket));
+        assert_eq!(err.code.status_code(), StatusCode::NOT_FOUND);
     }
 }

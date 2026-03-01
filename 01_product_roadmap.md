@@ -111,6 +111,7 @@ From CLAUDE phased roadmap (additional context):
   - S3 object checksum extraction/response-header mapping and streaming-body decoding helpers are now covered by focused object-service unit tests (`api::object::service::tests`).
   - S3 multipart transport response helpers are now covered by focused unit tests (`api::multipart::tests`) and use panic-free response construction.
   - S3 bucket/list/object transport handlers now also use fallible panic-free response construction (`map_err`) instead of `Response::builder(...).unwrap()`.
+  - S3 object/multipart mutation error mapping now preserves explicit `NoSuchBucket` semantics for storage-layer missing-bucket paths (instead of collapsing to generic internal errors).
   - Integration coverage now includes DeleteObjects quiet-mode response semantics.
   - Integration coverage now includes versions-list marker pagination roundtrip semantics.
   - Domain check runner now executes runtime and console response-helper unit suites in domain-local cycles (`server::tests`, `api::console::response::tests`) instead of only catching them in full-suite runs.
@@ -141,6 +142,7 @@ From CLAUDE phased roadmap (additional context):
   - Storage checksum-write finalization now uses typed error paths (no panic-on-invariant `unwrap` in write flows), with cleanup of staged files on checksum mismatch.
   - Flat-object writes now clean up staged data files when metadata persistence fails, with storage-unit regression coverage for no-orphan behavior.
   - Chunked and multipart-complete write flows now also clean up staged object artifacts when metadata persistence fails, with dedicated storage-unit regressions.
+  - Storage object write/delete/multipart-init paths now enforce explicit bucket existence and reject missing-bucket mutations without implicitly creating bucket directory trees.
 - Console readiness advanced:
   - Session/login/logout/rate-limit behavior now has dedicated integration coverage.
   - Console API handlers are split by concern (auth/buckets/objects/presign/versions) with `console.rs` as router entrypoint.
@@ -173,6 +175,7 @@ From CLAUDE phased roadmap (additional context):
   - Runtime config now supports `MAXIO_NODE_ID` and `MAXIO_CLUSTER_PEERS` for topology bootstrap wiring.
   - `/healthz` and `/metrics` now expose standalone/distributed runtime topology context.
   - Integration coverage includes distributed-mode health reporting when peers are configured.
+  - Runtime process shutdown now handles SIGINT and SIGTERM (Unix) via graceful-drain signal handling without panic-prone `expect` paths.
 
 ## Governance
 

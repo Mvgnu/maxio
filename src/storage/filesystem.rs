@@ -257,6 +257,67 @@ mod lifecycle_tests {
     }
 
     #[tokio::test]
+    async fn put_object_missing_bucket_returns_not_found_and_does_not_create_bucket_dir() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+
+        let result = storage
+            .put_object(
+                "missing",
+                "orphan.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"orphan".to_vec())),
+                None,
+            )
+            .await;
+        assert!(matches!(result, Err(StorageError::NotFound(ref b)) if b == "missing"));
+        assert!(!fs::try_exists(storage.buckets_dir.join("missing"))
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn put_object_chunked_missing_bucket_returns_not_found_and_does_not_create_bucket_dir() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), true, 4, 0)
+            .await
+            .unwrap();
+
+        let result = storage
+            .put_object(
+                "missing",
+                "orphan-chunked.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"orphan".to_vec())),
+                None,
+            )
+            .await;
+        assert!(matches!(result, Err(StorageError::NotFound(ref b)) if b == "missing"));
+        assert!(!fs::try_exists(storage.buckets_dir.join("missing"))
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
+    async fn create_multipart_upload_missing_bucket_returns_not_found_and_does_not_create_bucket_dir()
+    {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+
+        let result = storage
+            .create_multipart_upload("missing", "multipart.txt", "text/plain", None)
+            .await;
+        assert!(matches!(result, Err(StorageError::NotFound(ref b)) if b == "missing"));
+        assert!(!fs::try_exists(storage.buckets_dir.join("missing"))
+            .await
+            .unwrap());
+    }
+
+    #[tokio::test]
     async fn apply_lifecycle_once_ignores_disabled_rules() {
         let tmp = TempDir::new().unwrap();
         let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
@@ -315,6 +376,17 @@ mod lifecycle_tests {
                 .await
                 .is_ok()
         );
+    }
+
+    #[tokio::test]
+    async fn delete_object_missing_bucket_returns_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+
+        let result = storage.delete_object("missing", "nope.txt").await;
+        assert!(matches!(result, Err(StorageError::NotFound(ref b)) if b == "missing"));
     }
 
     #[tokio::test]
@@ -720,6 +792,13 @@ impl FilesystemStorage {
         layout::lifecycle_path(&self.buckets_dir, bucket)
     }
 
+    async fn ensure_bucket_exists(&self, bucket: &str) -> Result<(), StorageError> {
+        if !self.head_bucket(bucket).await? {
+            return Err(StorageError::NotFound(bucket.to_string()));
+        }
+        Ok(())
+    }
+
     pub async fn get_lifecycle_rules(
         &self,
         bucket: &str,
@@ -851,6 +930,7 @@ impl FilesystemStorage {
         mut body: ByteStream,
         checksum: Option<(ChecksumAlgorithm, Option<String>)>,
     ) -> Result<PutResult, StorageError> {
+        self.ensure_bucket_exists(bucket).await?;
         validation::validate_key(key)?;
 
         // Folder marker: zero-byte object with key ending in /
@@ -914,7 +994,7 @@ impl FilesystemStorage {
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string();
 
-        let versioned = self.is_versioned(bucket).await.unwrap_or(false);
+        let versioned = self.is_versioned(bucket).await?;
         let version_id = if versioned {
             Some(Self::generate_version_id())
         } else {
@@ -966,6 +1046,7 @@ impl FilesystemStorage {
         mut body: ByteStream,
         checksum_algo: Option<ChecksumAlgorithm>,
     ) -> Result<PutResult, StorageError> {
+        self.ensure_bucket_exists(bucket).await?;
         let ec_dir = self.ec_dir(bucket, key);
         if let Some(parent) = ec_dir.parent() {
             fs::create_dir_all(parent).await?;
@@ -1054,7 +1135,7 @@ impl FilesystemStorage {
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
             .to_string();
 
-        let versioned = self.is_versioned(bucket).await.unwrap_or(false);
+        let versioned = self.is_versioned(bucket).await?;
         let version_id = if versioned {
             Some(Self::generate_version_id())
         } else {
@@ -1459,7 +1540,7 @@ impl FilesystemStorage {
     ) -> Result<DeleteResult, StorageError> {
         validation::validate_key(key)?;
 
-        let versioned = self.is_versioned(bucket).await.unwrap_or(false);
+        let versioned = self.is_versioned(bucket).await?;
         if versioned {
             return self.write_delete_marker(bucket, key).await;
         }
@@ -1512,6 +1593,7 @@ impl FilesystemStorage {
         content_type: &str,
         checksum_algorithm: Option<ChecksumAlgorithm>,
     ) -> Result<MultipartUploadMeta, StorageError> {
+        self.ensure_bucket_exists(bucket).await?;
         validation::validate_key(key)?;
         let upload_id = uuid::Uuid::new_v4().to_string();
         let upload_dir = self.upload_dir(bucket, &upload_id);

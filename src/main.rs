@@ -95,10 +95,36 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn shutdown_signal() {
-    tokio::signal::ctrl_c()
-        .await
-        .expect("failed to install CTRL+C signal handler");
-    tracing::info!("Shutdown signal received, draining connections...");
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut sigterm = match signal(SignalKind::terminate()) {
+            Ok(signal) => Some(signal),
+            Err(err) => {
+                tracing::warn!("Failed to install SIGTERM handler: {}", err);
+                None
+            }
+        };
+
+        if let Some(sigterm) = sigterm.as_mut() {
+            tokio::select! {
+                ctrl_c = tokio::signal::ctrl_c() => match ctrl_c {
+                    Ok(()) => tracing::info!("Shutdown signal received (SIGINT), draining connections..."),
+                    Err(err) => tracing::warn!("Failed to install CTRL+C signal handler: {}", err),
+                },
+                _ = sigterm.recv() => {
+                    tracing::info!("Shutdown signal received (SIGTERM), draining connections...");
+                }
+            }
+            return;
+        }
+    }
+
+    match tokio::signal::ctrl_c().await {
+        Ok(()) => tracing::info!("Shutdown signal received (SIGINT), draining connections..."),
+        Err(err) => tracing::warn!("Failed to install CTRL+C signal handler: {}", err),
+    }
 }
 
 fn spawn_lifecycle_worker(state: server::AppState) {
