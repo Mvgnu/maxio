@@ -2197,6 +2197,43 @@ async fn test_copy_object_metadata_replace() {
 }
 
 #[tokio::test]
+async fn test_copy_object_metadata_directive_is_case_insensitive() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    s3_request_with_headers(
+        "PUT",
+        &format!("{}/mybucket/src.txt", base_url),
+        b"hello".to_vec(),
+        vec![("content-type", "text/plain")],
+    )
+    .await;
+
+    // Lowercase metadata directive should be treated as REPLACE.
+    s3_request_with_headers(
+        "PUT",
+        &format!("{}/mybucket/dst.txt", base_url),
+        vec![],
+        vec![
+            ("x-amz-copy-source", "/mybucket/src.txt"),
+            ("x-amz-metadata-directive", "replace"),
+            ("content-type", "application/xml"),
+        ],
+    )
+    .await;
+
+    let resp = s3_request("HEAD", &format!("{}/mybucket/dst.txt", base_url), vec![]).await;
+    assert_eq!(
+        resp.headers()
+            .get("content-type")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "application/xml"
+    );
+}
+
+#[tokio::test]
 async fn test_copy_object_source_not_found() {
     let (base_url, _tmp) = start_server().await;
     s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;

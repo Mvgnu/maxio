@@ -6,6 +6,12 @@ pub(super) struct DeleteObjectsRequest {
     pub quiet: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum MetadataDirective {
+    Copy,
+    Replace,
+}
+
 /// Convert ISO 8601 timestamp to HTTP date (RFC 7231) for Last-Modified header.
 pub(super) fn to_http_date(iso: &str) -> String {
     chrono::DateTime::parse_from_str(iso, "%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -71,6 +77,24 @@ pub(super) fn parse_copy_source(copy_source: &str) -> Result<(String, String), S
         .split_once('/')
         .ok_or_else(|| S3Error::invalid_argument("invalid x-amz-copy-source format"))?;
     Ok((src_bucket.to_string(), src_key.to_string()))
+}
+
+pub(super) fn parse_metadata_directive(
+    directive: Option<&str>,
+) -> Result<MetadataDirective, S3Error> {
+    let Some(directive) = directive else {
+        return Ok(MetadataDirective::Copy);
+    };
+    let directive = directive.trim();
+    if directive.eq_ignore_ascii_case("COPY") {
+        return Ok(MetadataDirective::Copy);
+    }
+    if directive.eq_ignore_ascii_case("REPLACE") {
+        return Ok(MetadataDirective::Replace);
+    }
+    Err(S3Error::invalid_argument(
+        "invalid x-amz-metadata-directive",
+    ))
 }
 
 pub(super) fn parse_delete_objects_request(xml: &str) -> Result<DeleteObjectsRequest, S3Error> {
@@ -166,6 +190,27 @@ mod tests {
     fn parse_copy_source_rejects_invalid_input() {
         assert!(parse_copy_source("missing-delimiter").is_err());
         assert!(parse_copy_source("/bucket/%FF").is_err());
+    }
+
+    #[test]
+    fn parse_metadata_directive_defaults_and_accepts_case_insensitive_values() {
+        assert_eq!(
+            parse_metadata_directive(None).unwrap(),
+            MetadataDirective::Copy
+        );
+        assert_eq!(
+            parse_metadata_directive(Some("copy")).unwrap(),
+            MetadataDirective::Copy
+        );
+        assert_eq!(
+            parse_metadata_directive(Some(" RePlAcE ")).unwrap(),
+            MetadataDirective::Replace
+        );
+    }
+
+    #[test]
+    fn parse_metadata_directive_rejects_unknown_values() {
+        assert!(parse_metadata_directive(Some("invalid")).is_err());
     }
 
     #[test]

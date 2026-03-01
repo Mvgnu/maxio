@@ -110,6 +110,8 @@ From CLAUDE phased roadmap (additional context):
   - Integration coverage now locks invalid-prefix list semantics for both `GET ?list-type=2` and `GET ?versions` paths.
   - CopyObject now returns explicit `NoSuchBucket` when either source or destination bucket is missing.
   - Integration coverage now locks missing-bucket CopyObject semantics for both source and destination bucket paths.
+  - CopyObject now accepts case-insensitive `x-amz-metadata-directive` values (`copy`/`replace`) for metadata-behavior compatibility across client variations.
+  - Integration coverage now locks case-insensitive metadata-directive CopyObject semantics.
   - Multipart endpoints now return explicit `NoSuchBucket` for missing-bucket paths across:
     - `POST /{bucket}/{key}?uploads=`
     - `PUT /{bucket}/{key}?partNumber=...&uploadId=...`

@@ -14,7 +14,10 @@ use crate::error::S3Error;
 use crate::server::AppState;
 use crate::storage::StorageError;
 use crate::xml::{response::to_xml, types::CopyObjectResult};
-use parsing::{parse_copy_source, parse_delete_objects_request, parse_range, to_http_date};
+use parsing::{
+    MetadataDirective, parse_copy_source, parse_delete_objects_request, parse_metadata_directive,
+    parse_range, to_http_date,
+};
 use service::{
     DeleteObjectsOutcome, add_checksum_header, build_delete_objects_response_xml,
     map_delete_objects_err, map_delete_storage_err,
@@ -131,24 +134,20 @@ async fn copy_object(
             _ => S3Error::internal(e),
         })?;
 
-    // Determine content-type based on metadata directive
-    let directive = headers
-        .get("x-amz-metadata-directive")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("COPY");
+    // Determine content-type based on metadata directive.
+    let directive = parse_metadata_directive(
+        headers
+            .get("x-amz-metadata-directive")
+            .and_then(|v| v.to_str().ok()),
+    )?;
 
     let content_type = match directive {
-        "COPY" => src_meta.content_type.clone(),
-        "REPLACE" => headers
+        MetadataDirective::Copy => src_meta.content_type.clone(),
+        MetadataDirective::Replace => headers
             .get("content-type")
             .and_then(|v| v.to_str().ok())
             .unwrap_or("application/octet-stream")
             .to_string(),
-        _ => {
-            return Err(S3Error::invalid_argument(
-                "invalid x-amz-metadata-directive",
-            ));
-        }
     };
 
     // Propagate source checksum algorithm so it's recomputed during copy
