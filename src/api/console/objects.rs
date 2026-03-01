@@ -119,6 +119,12 @@ pub(super) async fn delete_object_api(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    match state.storage.head_bucket(&bucket).await {
+        Ok(true) => {}
+        Ok(false) => return response::error(StatusCode::NOT_FOUND, "Bucket not found"),
+        Err(e) => return response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+
     match state.storage.delete_object(&bucket, &key).await {
         Ok(_) => response::ok(),
         Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
@@ -168,6 +174,12 @@ pub(super) async fn create_folder(
     Path(bucket): Path<String>,
     Json(body): Json<CreateFolderRequest>,
 ) -> impl IntoResponse {
+    match state.storage.head_bucket(&bucket).await {
+        Ok(true) => {}
+        Ok(false) => return response::error(StatusCode::NOT_FOUND, "Bucket not found"),
+        Err(e) => return response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+
     let name = body.name.trim().trim_matches('/');
     if name.is_empty() {
         return response::error(StatusCode::BAD_REQUEST, "Folder name is required");

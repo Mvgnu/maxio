@@ -202,15 +202,17 @@ async fn test_cors_preflight_includes_vary_origin_and_request_id() {
         )
         .header("origin", origin)
         .header("access-control-request-method", "GET")
+        .header("access-control-request-headers", "x-amz-date,x-amz-content-sha256")
         .send()
         .await
         .unwrap();
 
     assert_eq!(resp.status(), 204);
-    assert_eq!(
-        resp.headers().get("vary").unwrap().to_str().unwrap(),
-        "Origin"
-    );
+    let vary = resp.headers().get("vary").unwrap().to_str().unwrap();
+    let vary_values: Vec<&str> = vary.split(',').map(|v| v.trim()).collect();
+    assert!(vary_values.contains(&"Origin"));
+    assert!(vary_values.contains(&"Access-Control-Request-Method"));
+    assert!(vary_values.contains(&"Access-Control-Request-Headers"));
     let request_id = resp
         .headers()
         .get("x-amz-request-id")

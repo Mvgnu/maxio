@@ -71,6 +71,7 @@ From CLAUDE phased roadmap (additional context):
   - Global CORS middleware is active for API/S3 flows.
   - Preflight and error-path CORS behavior has integration coverage.
   - Runtime regression coverage now asserts preflight `Vary: Origin` and request-id propagation semantics.
+  - CORS middleware now merges (instead of overwriting) existing `Vary` values and includes preflight cache-key fields (`Access-Control-Request-Method`, `Access-Control-Request-Headers`) when present.
 - Versioning hardening advanced:
   - Explicit `PUT ?versioning` XML status validation now enforced.
   - Versioning/bucket protocol validation was split into an isolated `bucket/validation` module with unit coverage.
@@ -132,6 +133,8 @@ From CLAUDE phased roadmap (additional context):
   - Session/login/logout/rate-limit behavior now has dedicated integration coverage.
   - Console API handlers are split by concern (auth/buckets/objects/presign/versions) with `console.rs` as router entrypoint.
   - Console JSON success/error response shaping is centralized via shared response helpers.
+  - Console versioning/version-history endpoints now return explicit `404` for missing buckets and missing versions (instead of generic `500`), with dedicated regression coverage.
+  - Console object-management endpoints now return `404` for missing buckets on folder creation and object deletion paths (instead of implicit success/`500` drift), with dedicated regression coverage.
   - Integration coverage now locks console JSON contract shapes for bucket/object success payloads and auth/protected-route error payloads.
   - Integration coverage now includes tampered-session-cookie rejection for protected console routes.
   - Integration coverage now includes session-boundary rejection for expired and future-dated console cookies.

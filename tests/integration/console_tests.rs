@@ -902,6 +902,125 @@ async fn test_console_versions_list_remains_available_after_versioning_suspend()
 }
 
 #[tokio::test]
+async fn test_console_versioning_endpoints_return_not_found_for_missing_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+    let http = client();
+
+    let get_resp = http
+        .get(format!("{}/api/buckets/missing-bucket/versioning", base_url))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get_resp.status(), 404);
+
+    let put_resp = http
+        .put(format!("{}/api/buckets/missing-bucket/versioning", base_url))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "enabled": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(put_resp.status(), 404);
+}
+
+#[tokio::test]
+async fn test_console_list_versions_returns_not_found_for_missing_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/missing-bucket/versions?key=docs/readme.txt",
+            base_url
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn test_console_delete_version_returns_not_found_for_missing_version() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+    let bucket = "console-delete-missing-version";
+    let key = "docs/readme.txt";
+
+    let create_bucket = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create_bucket.status(), 200);
+
+    let enable_versioning = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning=", base_url, bucket),
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Status>Enabled</Status>
+</VersioningConfiguration>"#
+            .to_vec(),
+    )
+    .await;
+    assert_eq!(enable_versioning.status(), 200);
+
+    let put_object = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"data".to_vec(),
+    )
+    .await;
+    assert_eq!(put_object.status(), 200);
+
+    let resp = client()
+        .delete(format!(
+            "{}/api/buckets/{}/versions/does-not-exist/objects/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Version not found");
+}
+
+#[tokio::test]
+async fn test_console_create_folder_returns_not_found_for_missing_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .post(format!("{}/api/buckets/missing-bucket/folders", base_url))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "name": "docs" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn test_console_delete_object_returns_not_found_for_missing_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .delete(format!(
+            "{}/api/buckets/missing-bucket/objects/docs/readme.txt",
+            base_url
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
 async fn test_console_error_contract_shape_for_auth_failures() {
     let (base_url, _tmp) = start_server().await;
     let http = client();

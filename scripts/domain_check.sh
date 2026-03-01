@@ -121,6 +121,11 @@ run_domain() {
         console_tests::test_console_presign_uses_authenticated_session_identity \
         console_tests::test_console_lifecycle_roundtrip \
         console_tests::test_console_lifecycle_rejects_invalid_rules \
+        console_tests::test_console_versioning_endpoints_return_not_found_for_missing_bucket \
+        console_tests::test_console_list_versions_returns_not_found_for_missing_bucket \
+        console_tests::test_console_delete_version_returns_not_found_for_missing_version \
+        console_tests::test_console_create_folder_returns_not_found_for_missing_bucket \
+        console_tests::test_console_delete_object_returns_not_found_for_missing_bucket \
         console_tests::test_console_health_endpoint_requires_auth_and_returns_json \
         console_tests::test_console_health_endpoint_reports_distributed_mode_when_configured \
         console_tests::test_console_metrics_endpoint_requires_auth_and_returns_json \

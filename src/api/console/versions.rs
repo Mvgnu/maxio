@@ -8,6 +8,7 @@ use axum::{
 use crate::api::console::objects::sanitize_filename;
 use crate::api::console::response;
 use crate::server::AppState;
+use crate::storage::StorageError;
 
 pub(super) async fn get_versioning(
     State(state): State<AppState>,
@@ -15,6 +16,7 @@ pub(super) async fn get_versioning(
 ) -> impl IntoResponse {
     match state.storage.is_versioned(&bucket).await {
         Ok(enabled) => response::json(StatusCode::OK, serde_json::json!({"enabled": enabled})),
+        Err(StorageError::NotFound(_)) => response::error(StatusCode::NOT_FOUND, "Bucket not found"),
         Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -31,6 +33,7 @@ pub(super) async fn set_versioning(
 ) -> impl IntoResponse {
     match state.storage.set_versioning(&bucket, body.enabled).await {
         Ok(()) => response::ok(),
+        Err(StorageError::NotFound(_)) => response::error(StatusCode::NOT_FOUND, "Bucket not found"),
         Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }
@@ -45,6 +48,12 @@ pub(super) async fn list_versions(
     Path(bucket): Path<String>,
     Query(params): Query<ListVersionsParams>,
 ) -> impl IntoResponse {
+    match state.storage.head_bucket(&bucket).await {
+        Ok(true) => {}
+        Ok(false) => return response::error(StatusCode::NOT_FOUND, "Bucket not found"),
+        Err(e) => return response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    }
+
     let all = match state
         .storage
         .list_object_versions(&bucket, &params.key)
@@ -83,6 +92,9 @@ pub(super) async fn delete_version(
         .await
     {
         Ok(_) => response::ok(),
+        Err(StorageError::VersionNotFound(_) | StorageError::NotFound(_)) => {
+            response::error(StatusCode::NOT_FOUND, "Version not found")
+        }
         Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
 }

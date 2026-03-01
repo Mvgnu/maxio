@@ -162,7 +162,41 @@ fn apply_cors_headers(response_headers: &mut HeaderMap, request_headers: &Header
         header::ACCESS_CONTROL_MAX_AGE,
         HeaderValue::from_static("86400"),
     );
-    response_headers.insert(header::VARY, HeaderValue::from_static("Origin"));
+    let mut vary_fields = vec!["Origin"];
+    if request_headers.contains_key(header::ACCESS_CONTROL_REQUEST_METHOD) {
+        vary_fields.push("Access-Control-Request-Method");
+    }
+    if request_headers.contains_key(header::ACCESS_CONTROL_REQUEST_HEADERS) {
+        vary_fields.push("Access-Control-Request-Headers");
+    }
+    merge_vary_headers(response_headers, &vary_fields);
+}
+
+fn merge_vary_headers(response_headers: &mut HeaderMap, values: &[&str]) {
+    let mut combined = Vec::<String>::new();
+
+    if let Some(existing) = response_headers.get(header::VARY).and_then(|v| v.to_str().ok()) {
+        for part in existing.split(',') {
+            let token = part.trim();
+            if !token.is_empty() && !combined.iter().any(|entry| entry.eq_ignore_ascii_case(token))
+            {
+                combined.push(token.to_string());
+            }
+        }
+    }
+
+    for value in values {
+        if !combined
+            .iter()
+            .any(|entry| entry.eq_ignore_ascii_case(value))
+        {
+            combined.push((*value).to_string());
+        }
+    }
+
+    if let Ok(vary) = HeaderValue::from_str(&combined.join(", ")) {
+        response_headers.insert(header::VARY, vary);
+    }
 }
 
 async fn cors_middleware(
@@ -197,4 +231,33 @@ async fn request_id_middleware(
         response.headers_mut().insert("x-amz-request-id", value);
     }
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn merge_vary_headers_deduplicates_and_preserves_existing_values() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::VARY, HeaderValue::from_static("Accept-Encoding, Origin"));
+
+        merge_vary_headers(
+            &mut headers,
+            &[
+                "Origin",
+                "Access-Control-Request-Method",
+                "Access-Control-Request-Headers",
+            ],
+        );
+
+        let vary = headers
+            .get(header::VARY)
+            .and_then(|v| v.to_str().ok())
+            .expect("vary should be set");
+        assert_eq!(
+            vary,
+            "Accept-Encoding, Origin, Access-Control-Request-Method, Access-Control-Request-Headers"
+        );
+    }
 }
