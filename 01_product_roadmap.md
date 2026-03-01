@@ -143,6 +143,7 @@ From CLAUDE phased roadmap (additional context):
   - Flat-object writes now clean up staged data files when metadata persistence fails, with storage-unit regression coverage for no-orphan behavior.
   - Chunked and multipart-complete write flows now also clean up staged object artifacts when metadata persistence fails, with dedicated storage-unit regressions.
   - Storage object write/delete/multipart-init paths now enforce explicit bucket existence and reject missing-bucket mutations without implicitly creating bucket directory trees.
+  - Storage listing paths (`list_objects`, `list_object_versions`, `list_multipart_uploads`) now also enforce explicit missing-bucket `NotFound` semantics instead of implicit empty/IO-derived behavior.
 - Console readiness advanced:
   - Session/login/logout/rate-limit behavior now has dedicated integration coverage.
   - Console API handlers are split by concern (auth/buckets/objects/presign/versions) with `console.rs` as router entrypoint.

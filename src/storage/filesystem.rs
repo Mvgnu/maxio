@@ -257,6 +257,27 @@ mod lifecycle_tests {
     }
 
     #[tokio::test]
+    async fn list_paths_missing_bucket_return_not_found() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+
+        assert!(matches!(
+            storage.list_objects("missing", "").await,
+            Err(StorageError::NotFound(ref b)) if b == "missing"
+        ));
+        assert!(matches!(
+            storage.list_object_versions("missing", "").await,
+            Err(StorageError::NotFound(ref b)) if b == "missing"
+        ));
+        assert!(matches!(
+            storage.list_multipart_uploads("missing").await,
+            Err(StorageError::NotFound(ref b)) if b == "missing"
+        ));
+    }
+
+    #[tokio::test]
     async fn put_object_missing_bucket_returns_not_found_and_does_not_create_bucket_dir() {
         let tmp = TempDir::new().unwrap();
         let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
@@ -1578,6 +1599,7 @@ impl FilesystemStorage {
         bucket: &str,
         prefix: &str,
     ) -> Result<Vec<ObjectMeta>, StorageError> {
+        self.ensure_bucket_exists(bucket).await?;
         let bucket_dir = self.buckets_dir.join(bucket);
         let mut results = Vec::new();
         self.walk_dir(bucket, &bucket_dir, &bucket_dir, prefix, &mut results)
@@ -1860,6 +1882,7 @@ impl FilesystemStorage {
         &self,
         bucket: &str,
     ) -> Result<Vec<MultipartUploadMeta>, StorageError> {
+        self.ensure_bucket_exists(bucket).await?;
         let uploads_dir = self.uploads_dir(bucket);
         if !fs::try_exists(&uploads_dir).await? {
             return Ok(Vec::new());
@@ -2359,6 +2382,7 @@ impl FilesystemStorage {
         bucket: &str,
         prefix: &str,
     ) -> Result<Vec<ObjectMeta>, StorageError> {
+        self.ensure_bucket_exists(bucket).await?;
         let bucket_dir = self.buckets_dir.join(bucket);
         let mut results = Vec::new();
         self.walk_versions(&bucket_dir, &bucket_dir, prefix, &mut results)
