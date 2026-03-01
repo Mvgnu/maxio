@@ -41,9 +41,9 @@ async fn test_parity_write_creates_parity_chunks() {
 
     // Verify parity chunks have kind: "parity"
     let chunks = manifest["chunks"].as_array().unwrap();
-    for i in 0..4 {
+    for chunk in chunks.iter().take(4) {
         // data chunks should not have "kind" field (skipped when data) or be "data"
-        let kind = chunks[i].get("kind");
+        let kind = chunk.get("kind");
         assert!(kind.is_none() || kind.unwrap() == "data");
     }
     assert_eq!(chunks[4]["kind"], "parity");
@@ -165,7 +165,7 @@ async fn test_parity_range_read_degraded() {
     let mut data = Vec::new();
     for i in 0u8..4 {
         let chunk_len = if i < 3 { 100 } else { 50 };
-        data.extend(std::iter::repeat(i + 1).take(chunk_len));
+        data.extend(std::iter::repeat_n(i + 1, chunk_len));
     }
     assert_eq!(data.len(), 350);
     s3_request(

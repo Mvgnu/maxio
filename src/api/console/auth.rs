@@ -39,6 +39,12 @@ pub struct LoginRateLimiter {
     buckets: std::sync::Mutex<HashMap<String, Bucket>>,
 }
 
+impl Default for LoginRateLimiter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LoginRateLimiter {
     pub fn new() -> Self {
         Self {
@@ -110,19 +116,11 @@ fn authenticated_session(
     credentials: &HashMap<String, String>,
 ) -> Option<AuthenticatedSession> {
     let mut parts = token.splitn(3, '.');
-    let Some(access_key) = parts.next() else {
-        return None;
-    };
-    let Some(issued_hex) = parts.next() else {
-        return None;
-    };
-    let Some(signature) = parts.next() else {
-        return None;
-    };
+    let access_key = parts.next()?;
+    let issued_hex = parts.next()?;
+    let signature = parts.next()?;
 
-    let Some(secret_key) = credentials.get(access_key) else {
-        return None;
-    };
+    let secret_key = credentials.get(access_key)?;
 
     let Ok(issued_at) = i64::from_str_radix(issued_hex, 16) else {
         return None;

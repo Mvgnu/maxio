@@ -182,8 +182,7 @@ async fn try_reconstruct_data_chunk(
     let m = manifest.parity_shards.unwrap_or(0) as usize;
     let shard_size = manifest.shard_size.unwrap_or(manifest.chunk_size) as usize;
 
-    let rs = ReedSolomon::new(k, m)
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("RS init error: {e}")))?;
+    let rs = ReedSolomon::new(k, m).map_err(|e| io::Error::other(format!("RS init error: {e}")))?;
 
     // Load all shards as Option<Vec<u8>>.
     let total_shards = k + m;
@@ -225,20 +224,13 @@ async fn try_reconstruct_data_chunk(
     }
 
     // Reconstruct.
-    rs.reconstruct(&mut shards).map_err(|e| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("RS reconstruction failed: {e}"),
-        )
-    })?;
+    rs.reconstruct(&mut shards)
+        .map_err(|e| io::Error::other(format!("RS reconstruction failed: {e}")))?;
 
     // Extract the target data chunk and truncate to its real size.
-    let reconstructed = shards[target_index as usize].take().ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            "reconstruction produced None for target shard",
-        )
-    })?;
+    let reconstructed = shards[target_index as usize]
+        .take()
+        .ok_or_else(|| io::Error::other("reconstruction produced None for target shard"))?;
 
     let real_size = manifest.chunks[target_index as usize].size as usize;
     let mut result = reconstructed;

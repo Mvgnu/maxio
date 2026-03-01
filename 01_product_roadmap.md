@@ -158,6 +158,8 @@ From CLAUDE phased roadmap (additional context):
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
   - Web console hash-route parsing/building is now centralized in a shared helper module (`ui/src/lib/navigation.ts`) with focused unit coverage (`ui/src/lib/navigation.test.ts`).
   - Frontend verification (`bun run check`, `bun run build`) remains green after backend refactors.
+  - Repository-wide strict lint verification now passes with `cargo clippy --all-targets -- -D warnings` (including integration test targets).
+  - Integration helper/test harness signing and parity fixtures were lint-hardened (array-based sortable header sets, iterator/repeat helpers) with no behavior drift.
   - CI includes non-release backend/frontend verification.
   - AWS CLI and mc compatibility scripts now include lifecycle regression flows.
 - Metrics groundwork advanced:
@@ -219,6 +221,7 @@ From CLAUDE phased roadmap (additional context):
   - SigV4 verify/presign signing flow now avoids panic-prone HMAC `unwrap` paths and uses explicit fallible helper handling.
   - SigV4 presigned-query parsing now decodes `X-Amz-*` query components consistently (including encoded `X-Amz-SignedHeaders`) and rejects invalid UTF-8 encoded query-component bytes.
   - SigV4 canonical URI normalization now decodes and re-encodes path segments to avoid double-encoding already-encoded request paths in presigned verification flows.
+  - Shared SigV4 presign generation now uses a typed `PresignRequest` contract instead of positional multi-argument call sites.
   - Auth domain verification now explicitly includes `auth::signature_v4::tests` in domain-local checks.
 - Distributed bootstrap groundwork advanced:
   - Runtime config now supports `MAXIO_NODE_ID` and `MAXIO_CLUSTER_PEERS` for topology bootstrap wiring.

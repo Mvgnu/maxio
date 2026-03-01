@@ -152,9 +152,7 @@ pub(crate) async fn body_to_reader(
         == Some("STREAMING-AWS4-HMAC-SHA256-PAYLOAD");
 
     let stream = body.into_data_stream();
-    let raw_reader = tokio_util::io::StreamReader::new(
-        stream.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
-    );
+    let raw_reader = tokio_util::io::StreamReader::new(stream.map_err(std::io::Error::other));
 
     if is_aws_chunked {
         let framing_err = || S3Error::invalid_argument("invalid aws-chunked payload framing");

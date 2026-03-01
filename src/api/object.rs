@@ -420,7 +420,7 @@ pub async fn delete_objects(
 
     let bytes = axum::body::to_bytes(body, DELETE_BODY_MAX)
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(S3Error::internal)?;
     let body_str = std::str::from_utf8(&bytes).map_err(|_| S3Error::malformed_xml())?;
     let request = parse_delete_objects_request(body_str)?;
 

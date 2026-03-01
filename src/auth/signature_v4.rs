@@ -249,18 +249,32 @@ pub fn verify_presigned_signature(
     constant_time_eq(computed.as_bytes(), parsed.signature.as_bytes())
 }
 
+pub struct PresignRequest<'a> {
+    pub method: &'a str,
+    pub scheme: &'a str,
+    pub host: &'a str,
+    pub path: &'a str,
+    pub access_key: &'a str,
+    pub secret_key: &'a str,
+    pub region: &'a str,
+    pub now: DateTime<Utc>,
+    pub expires_secs: u64,
+}
+
 /// Generate a SigV4 presigned URL for a single request.
-pub fn generate_presigned_url(
-    method: &str,
-    scheme: &str,
-    host: &str,
-    path: &str,
-    access_key: &str,
-    secret_key: &str,
-    region: &str,
-    now: DateTime<Utc>,
-    expires_secs: u64,
-) -> Result<String, &'static str> {
+pub fn generate_presigned_url(request: PresignRequest<'_>) -> Result<String, &'static str> {
+    let PresignRequest {
+        method,
+        scheme,
+        host,
+        path,
+        access_key,
+        secret_key,
+        region,
+        now,
+        expires_secs,
+    } = request;
+
     if expires_secs > 604800 {
         return Err("X-Amz-Expires exceeds maximum of 604800 seconds");
     }
@@ -269,7 +283,7 @@ pub fn generate_presigned_url(
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let credential = format!("{}/{}/{}/s3/aws4_request", access_key, date_stamp, region);
 
-    let mut params = vec![
+    let mut params = [
         ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
         ("X-Amz-Credential", credential),
         ("X-Amz-Date", amz_date.clone()),
@@ -610,17 +624,17 @@ mod tests {
     #[test]
     fn generate_presigned_url_rejects_expires_over_max() {
         let now = DateTime::<Utc>::from_str("2026-03-01T12:00:00Z").unwrap();
-        let res = generate_presigned_url(
-            "GET",
-            "http",
-            "localhost:9000",
-            "/bucket/object",
-            "minioadmin",
-            "minioadmin",
-            "us-east-1",
+        let res = generate_presigned_url(PresignRequest {
+            method: "GET",
+            scheme: "http",
+            host: "localhost:9000",
+            path: "/bucket/object",
+            access_key: "minioadmin",
+            secret_key: "minioadmin",
+            region: "us-east-1",
             now,
-            604801,
-        );
+            expires_secs: 604801,
+        });
         assert!(res.is_err());
     }
 
@@ -628,17 +642,17 @@ mod tests {
     fn presigned_roundtrip_verifies_signature() {
         let now = DateTime::<Utc>::from_str("2026-03-01T12:00:00Z").unwrap();
         let path = "/bucket/object name.txt";
-        let url = generate_presigned_url(
-            "GET",
-            "http",
-            "localhost:9000",
+        let url = generate_presigned_url(PresignRequest {
+            method: "GET",
+            scheme: "http",
+            host: "localhost:9000",
             path,
-            "minioadmin",
-            "minioadmin",
-            "us-east-1",
+            access_key: "minioadmin",
+            secret_key: "minioadmin",
+            region: "us-east-1",
             now,
-            300,
-        )
+            expires_secs: 300,
+        })
         .unwrap();
 
         let query = url.split('?').nth(1).unwrap();

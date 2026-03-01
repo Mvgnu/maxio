@@ -57,17 +57,17 @@ pub(super) async fn presign_object(
         return response::error(StatusCode::UNAUTHORIZED, "Not authenticated");
     };
 
-    let presigned_url = match signature_v4::generate_presigned_url(
-        "GET",
+    let presigned_url = match signature_v4::generate_presigned_url(signature_v4::PresignRequest {
+        method: "GET",
         scheme,
         host,
-        &path,
-        &principal.access_key,
+        path: &path,
+        access_key: &principal.access_key,
         secret_key,
-        &state.config.region,
-        chrono::Utc::now(),
+        region: &state.config.region,
+        now: chrono::Utc::now(),
         expires_secs,
-    ) {
+    }) {
         Ok(url) => url,
         Err(msg) => {
             return response::error(StatusCode::BAD_REQUEST, msg);

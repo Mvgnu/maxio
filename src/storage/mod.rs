@@ -107,17 +107,12 @@ pub struct PartMeta {
     pub checksum_value: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ChunkKind {
+    #[default]
     Data,
     Parity,
-}
-
-impl Default for ChunkKind {
-    fn default() -> Self {
-        ChunkKind::Data
-    }
 }
 
 impl ChunkKind {

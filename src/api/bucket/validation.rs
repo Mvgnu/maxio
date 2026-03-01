@@ -152,13 +152,13 @@ mod tests {
     #[test]
     fn parse_versioning_status_enabled() {
         let xml = "<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>";
-        assert_eq!(parse_versioning_status(xml).unwrap(), true);
+        assert!(parse_versioning_status(xml).unwrap());
     }
 
     #[test]
     fn parse_versioning_status_suspended() {
         let xml = "<VersioningConfiguration><Status>Suspended</Status></VersioningConfiguration>";
-        assert_eq!(parse_versioning_status(xml).unwrap(), false);
+        assert!(!parse_versioning_status(xml).unwrap());
     }
 
     #[test]

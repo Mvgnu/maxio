@@ -144,10 +144,10 @@ pub(super) fn filter_objects_after<'a>(
         .collect()
 }
 
-pub(super) fn paginate_objects<'a>(
-    filtered_objects: Vec<&'a ObjectMeta>,
+pub(super) fn paginate_objects(
+    filtered_objects: Vec<&ObjectMeta>,
     max_keys: usize,
-) -> (Vec<&'a ObjectMeta>, bool) {
+) -> (Vec<&ObjectMeta>, bool) {
     let is_truncated = filtered_objects.len() > max_keys;
     let page = filtered_objects.into_iter().take(max_keys).collect();
     (page, is_truncated)
@@ -235,10 +235,10 @@ pub(super) fn filter_versions_after<'a>(
         .collect()
 }
 
-pub(super) fn paginate_versions<'a>(
-    filtered_versions: Vec<&'a ObjectMeta>,
+pub(super) fn paginate_versions(
+    filtered_versions: Vec<&ObjectMeta>,
     max_keys: usize,
-) -> (Vec<&'a ObjectMeta>, bool, Option<(String, String)>) {
+) -> (Vec<&ObjectMeta>, bool, Option<(String, String)>) {
     let is_truncated = filtered_versions.len() > max_keys;
     let page: Vec<&ObjectMeta> = filtered_versions.into_iter().take(max_keys).collect();
     let next_markers = if is_truncated {

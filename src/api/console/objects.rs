@@ -90,9 +90,7 @@ pub(super) async fn upload_object(
         .unwrap_or("application/octet-stream");
 
     let stream = body.into_data_stream();
-    let reader = tokio_util::io::StreamReader::new(
-        stream.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e)),
-    );
+    let reader = tokio_util::io::StreamReader::new(stream.map_err(std::io::Error::other));
 
     match state
         .storage

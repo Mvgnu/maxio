@@ -106,7 +106,7 @@ async fn list_objects_v2(
         start_after: query.start_after,
     };
 
-    let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
+    let xml = to_xml(&result).map_err(S3Error::internal)?;
 
     Response::builder()
         .status(StatusCode::OK)
@@ -152,7 +152,7 @@ async fn list_objects_v1(
         delimiter: query.delimiter,
     };
 
-    let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
+    let xml = to_xml(&result).map_err(S3Error::internal)?;
 
     Response::builder()
         .status(StatusCode::OK)
@@ -198,7 +198,7 @@ async fn list_object_versions(
         delete_markers,
     };
 
-    let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
+    let xml = to_xml(&result).map_err(S3Error::internal)?;
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/xml")

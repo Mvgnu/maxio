@@ -829,7 +829,7 @@ impl FilesystemStorage {
             return Ok(false);
         }
 
-        let has_objects = self.has_objects(&bucket_dir).await?;
+        let has_objects = Self::has_objects(&bucket_dir).await?;
         if has_objects {
             return Err(StorageError::BucketNotEmpty);
         }
@@ -1970,7 +1970,6 @@ impl FilesystemStorage {
     // --- Internal helpers ---
 
     fn has_objects<'a>(
-        &'a self,
         dir: &'a Path,
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, StorageError>> + Send + 'a>>
     {
@@ -1990,7 +1989,7 @@ impl FilesystemStorage {
                     return Ok(true);
                 }
                 if entry.file_type().await?.is_dir() {
-                    if self.has_objects(&entry.path()).await? {
+                    if Self::has_objects(&entry.path()).await? {
                         return Ok(true);
                     }
                 } else {
@@ -2073,13 +2072,11 @@ impl FilesystemStorage {
                         }
                     }
                     self.walk_dir(bucket, base, &path, prefix, results).await?;
-                } else {
-                    if let Ok(rel) = path.strip_prefix(base) {
-                        let key = rel.to_string_lossy().to_string();
-                        if key.starts_with(prefix) {
-                            if let Ok(meta) = self.read_object_meta(bucket, &key).await {
-                                results.push(meta);
-                            }
+                } else if let Ok(rel) = path.strip_prefix(base) {
+                    let key = rel.to_string_lossy().to_string();
+                    if key.starts_with(prefix) {
+                        if let Ok(meta) = self.read_object_meta(bucket, &key).await {
+                            results.push(meta);
                         }
                     }
                 }
@@ -2428,8 +2425,7 @@ impl FilesystemStorage {
         self.ensure_bucket_exists(bucket).await?;
         let bucket_dir = self.buckets_dir.join(bucket);
         let mut results = Vec::new();
-        self.walk_versions(&bucket_dir, &bucket_dir, prefix, &mut results)
-            .await?;
+        Self::walk_versions(&bucket_dir, &bucket_dir, prefix, &mut results).await?;
         // Sort by key, then by version_id descending (newest first per key)
         results.sort_by(|a, b| {
             a.key.cmp(&b.key).then_with(|| {
@@ -2442,7 +2438,6 @@ impl FilesystemStorage {
     }
 
     fn walk_versions<'a>(
-        &'a self,
         base: &'a Path,
         dir: &'a Path,
         prefix: &'a str,
@@ -2503,7 +2498,7 @@ impl FilesystemStorage {
                         }
                     }
                 } else if fname != ".uploads" && fname != ".bucket.json" {
-                    self.walk_versions(base, &path, prefix, results).await?;
+                    Self::walk_versions(base, &path, prefix, results).await?;
                 }
             }
             Ok(())

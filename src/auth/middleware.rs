@@ -41,8 +41,8 @@ pub async fn auth_middleware(
 
     tracing::debug!("Authorization: {}", auth_header);
 
-    let parsed = signature_v4::parse_authorization_header(auth_header)
-        .map_err(|e| S3Error::access_denied(e))?;
+    let parsed =
+        signature_v4::parse_authorization_header(auth_header).map_err(S3Error::access_denied)?;
 
     tracing::debug!(
         "Parsed: access_key={}, date={}, region={}, signed_headers={:?}",
@@ -130,7 +130,7 @@ async fn handle_presigned(
     tracing::debug!("Presigned URL detected");
 
     let (parsed, timestamp, expires_secs) =
-        signature_v4::parse_presigned_query(query).map_err(|e| S3Error::access_denied(e))?;
+        signature_v4::parse_presigned_query(query).map_err(S3Error::access_denied)?;
 
     let Some(secret_key) = state.credentials.get(&parsed.access_key) else {
         return Err(S3Error::invalid_access_key());

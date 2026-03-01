@@ -27,7 +27,7 @@ pub async fn list_buckets(State(state): State<AppState>) -> Result<Response<Body
         .storage
         .list_buckets()
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(S3Error::internal)?;
 
     let result = ListAllMyBucketsResult {
         owner: Owner {
@@ -69,7 +69,7 @@ pub async fn create_bucket(
         .storage
         .create_bucket(&meta)
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(S3Error::internal)?;
 
     if !created {
         return Err(S3Error::bucket_already_owned(&bucket));
@@ -146,7 +146,7 @@ async fn put_bucket_versioning(
 
     let body_bytes = axum::body::to_bytes(body, 1024 * 64)
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(S3Error::internal)?;
     let body_str = String::from_utf8_lossy(&body_bytes);
     let enabled = parse_versioning_status(&body_str)?;
 

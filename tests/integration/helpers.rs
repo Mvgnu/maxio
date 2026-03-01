@@ -468,7 +468,7 @@ pub(crate) async fn s3_put_chunked(url: &str, data: &[u8]) -> reqwest::Response 
     // For streaming, the payload hash is the literal string
     let payload_hash = "STREAMING-AWS4-HMAC-SHA256-PAYLOAD";
 
-    let mut sign_headers = vec![
+    let mut sign_headers = [
         ("host".to_string(), host_header.clone()),
         ("x-amz-content-sha256".to_string(), payload_hash.to_string()),
         ("x-amz-date".to_string(), amz_date.clone()),
