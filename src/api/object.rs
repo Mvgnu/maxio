@@ -100,7 +100,7 @@ pub async fn put_object(
     if let (Some(algo), Some(val)) = (&result.checksum_algorithm, &result.checksum_value) {
         builder = builder.header(algo.header_name(), val.as_str());
     }
-    Ok(builder.body(Body::empty()).unwrap())
+    builder.body(Body::empty()).map_err(S3Error::internal)
 }
 
 async fn copy_object(
@@ -185,7 +185,7 @@ async fn copy_object(
     if let Some(vid) = &result.version_id {
         builder = builder.header("x-amz-version-id", vid.as_str());
     }
-    Ok(builder.body(Body::from(xml)).unwrap())
+    builder.body(Body::from(xml)).map_err(S3Error::internal)
 }
 
 pub async fn get_object(
@@ -226,7 +226,7 @@ pub async fn get_object(
                 let stream = ReaderStream::new(reader);
                 let body = Body::from_stream(stream);
 
-                return Ok(Response::builder()
+                return Response::builder()
                     .status(StatusCode::PARTIAL_CONTENT)
                     .header("Content-Type", &meta.content_type)
                     .header("Content-Length", length.to_string())
@@ -238,7 +238,7 @@ pub async fn get_object(
                     .header("ETag", &meta.etag)
                     .header("Last-Modified", to_http_date(&meta.last_modified))
                     .body(body)
-                    .unwrap());
+                    .map_err(S3Error::internal);
             }
             Ok(None) => {
                 // Unparseable or multi-range — fall through to full 200
@@ -286,7 +286,7 @@ pub async fn get_object(
         builder = builder.header("x-amz-version-id", vid.as_str());
     }
     builder = add_checksum_header(builder, &meta);
-    Ok(builder.body(body).unwrap())
+    builder.body(body).map_err(S3Error::internal)
 }
 
 pub async fn head_object(
@@ -328,7 +328,7 @@ pub async fn head_object(
         builder = builder.header("x-amz-version-id", vid.as_str());
     }
     builder = add_checksum_header(builder, &meta);
-    Ok(builder.body(Body::empty()).unwrap())
+    builder.body(Body::empty()).map_err(S3Error::internal)
 }
 
 pub async fn delete_object(
@@ -363,7 +363,7 @@ pub async fn delete_object(
         if deleted_meta.is_delete_marker {
             builder = builder.header("x-amz-delete-marker", "true");
         }
-        return Ok(builder.body(Body::empty()).unwrap());
+        return builder.body(Body::empty()).map_err(S3Error::internal);
     }
 
     match state.storage.head_bucket(&bucket).await {
@@ -385,7 +385,7 @@ pub async fn delete_object(
     if result.is_delete_marker {
         builder = builder.header("x-amz-delete-marker", "true");
     }
-    Ok(builder.body(Body::empty()).unwrap())
+    builder.body(Body::empty()).map_err(S3Error::internal)
 }
 
 pub async fn post_object(
@@ -452,9 +452,9 @@ pub async fn delete_objects(
 
     let response_xml = build_delete_objects_response_xml(&outcomes, request.quiet);
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header("Content-Type", "application/xml")
         .body(Body::from(response_xml))
-        .unwrap())
+        .map_err(S3Error::internal)
 }

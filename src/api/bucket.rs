@@ -42,11 +42,11 @@ pub async fn list_buckets(State(state): State<AppState>) -> Result<Response<Body
 
     let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/xml")
         .body(Body::from(xml))
-        .unwrap())
+        .map_err(S3Error::internal)
 }
 
 pub async fn create_bucket(
@@ -76,11 +76,11 @@ pub async fn create_bucket(
         return Err(S3Error::bucket_already_owned(&bucket));
     }
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header("Location", format!("/{}", bucket))
         .body(Body::empty())
-        .unwrap())
+        .map_err(S3Error::internal)
 }
 
 pub async fn head_bucket(
@@ -93,11 +93,11 @@ pub async fn head_bucket(
         Err(e) => return Err(S3Error::internal(e)),
     }
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header("x-amz-bucket-region", &*state.config.region)
         .body(Body::empty())
-        .unwrap())
+        .map_err(S3Error::internal)
 }
 
 pub async fn delete_bucket(
@@ -105,10 +105,10 @@ pub async fn delete_bucket(
     Path(bucket): Path<String>,
 ) -> Result<Response<Body>, S3Error> {
     match state.storage.delete_bucket(&bucket).await {
-        Ok(true) => Ok(Response::builder()
+        Ok(true) => Response::builder()
             .status(StatusCode::NO_CONTENT)
             .body(Body::empty())
-            .unwrap()),
+            .map_err(S3Error::internal),
         Ok(false) => Err(S3Error::no_such_bucket(&bucket)),
         Err(StorageError::BucketNotEmpty) => Err(S3Error::bucket_not_empty(&bucket)),
         Err(e) => Err(S3Error::internal(e)),
@@ -164,10 +164,10 @@ async fn put_bucket_versioning(
         .await
         .map_err(|e| S3Error::internal(e))?;
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .body(Body::empty())
-        .unwrap())
+        .map_err(S3Error::internal)
 }
 
 async fn put_bucket_lifecycle(
@@ -197,10 +197,10 @@ async fn put_bucket_lifecycle(
             other => S3Error::internal(other),
         })?;
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .body(Body::empty())
-        .unwrap())
+        .map_err(S3Error::internal)
 }
 
 async fn delete_bucket_lifecycle(
@@ -223,10 +223,10 @@ async fn delete_bucket_lifecycle(
             other => S3Error::internal(other),
         })?;
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::NO_CONTENT)
         .body(Body::empty())
-        .unwrap())
+        .map_err(S3Error::internal)
 }
 
 pub async fn get_bucket_versioning(
@@ -248,11 +248,11 @@ pub async fn get_bucket_versioning(
     };
 
     let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/xml")
         .body(Body::from(xml))
-        .unwrap())
+        .map_err(S3Error::internal)
 }
 
 pub async fn get_bucket_lifecycle(
@@ -274,9 +274,9 @@ pub async fn get_bucket_lifecycle(
 
     let result = serialize_lifecycle_rules(rules);
     let xml = to_xml(&result).map_err(S3Error::internal)?;
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/xml")
         .body(Body::from(xml))
-        .unwrap())
+        .map_err(S3Error::internal)
 }

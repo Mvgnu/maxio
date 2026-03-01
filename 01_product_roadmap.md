@@ -110,9 +110,11 @@ From CLAUDE phased roadmap (additional context):
   - S3 listing pagination/token/delimiter/version shaping helpers are now covered by focused list-service unit tests (`api::list::service::tests`).
   - S3 object checksum extraction/response-header mapping and streaming-body decoding helpers are now covered by focused object-service unit tests (`api::object::service::tests`).
   - S3 multipart transport response helpers are now covered by focused unit tests (`api::multipart::tests`) and use panic-free response construction.
+  - S3 bucket/list/object transport handlers now also use fallible panic-free response construction (`map_err`) instead of `Response::builder(...).unwrap()`.
   - Integration coverage now includes DeleteObjects quiet-mode response semantics.
   - Integration coverage now includes versions-list marker pagination roundtrip semantics.
   - Domain check runner now executes runtime and console response-helper unit suites in domain-local cycles (`server::tests`, `api::console::response::tests`) instead of only catching them in full-suite runs.
+  - Domain check runner now also executes console auth-helper unit suites (`api::console::auth::tests`) in console domain-local cycles.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
   - Web console API-client regressions now run through automated UI tests (`ui/src/lib/api.test.ts`) in domain verification.
   - Frontend verification (`bun run check`, `bun run build`) remains green after backend refactors.
@@ -162,6 +164,7 @@ From CLAUDE phased roadmap (additional context):
   - Web console now hydrates auth identity from `/api/auth/check` and surfaces session expiry context in the shell UI.
   - Integration coverage includes secondary-credential S3 signing and console login flows.
   - Console login now also has explicit primary/secondary/unknown credential-matrix regression coverage.
+  - Console auth/session internals now avoid panic-prone lock/HMAC/cookie parsing paths and return explicit error responses on internal token/cookie failures.
   - Presigned S3 auth now rejects excessive future `X-Amz-Date` skew (`RequestTimeTooSkewed`) with dedicated integration coverage.
   - Presigned S3 auth now has explicit unknown-access-key regression coverage (`InvalidAccessKeyId`) in the credential matrix.
   - SigV4 verify/presign signing flow now avoids panic-prone HMAC `unwrap` paths and uses explicit fallible helper handling.

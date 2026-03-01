@@ -51,11 +51,11 @@ pub async fn handle_bucket_get(
              <LocationConstraint>{}</LocationConstraint>",
             state.config.region
         );
-        return Ok(Response::builder()
+        return Response::builder()
             .status(StatusCode::OK)
             .header("content-type", "application/xml")
             .body(Body::from(xml))
-            .unwrap());
+            .map_err(S3Error::internal);
     }
 
     if params.get("list-type").map(|v| v.as_str()) == Some("2") {
@@ -106,11 +106,11 @@ async fn list_objects_v2(
 
     let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/xml")
         .body(Body::from(xml))
-        .unwrap())
+        .map_err(S3Error::internal)
 }
 
 async fn list_objects_v1(
@@ -151,11 +151,11 @@ async fn list_objects_v1(
 
     let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
 
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/xml")
         .body(Body::from(xml))
-        .unwrap())
+        .map_err(S3Error::internal)
 }
 
 async fn list_object_versions(
@@ -195,9 +195,9 @@ async fn list_object_versions(
     };
 
     let xml = to_xml(&result).map_err(|e| S3Error::internal(e))?;
-    Ok(Response::builder()
+    Response::builder()
         .status(StatusCode::OK)
         .header("content-type", "application/xml")
         .body(Body::from(xml))
-        .unwrap())
+        .map_err(S3Error::internal)
 }

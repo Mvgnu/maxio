@@ -49,7 +49,10 @@ impl LoginRateLimiter {
     /// Returns `Some(retry_after_secs)` if the IP is rate-limited, `None` if allowed.
     /// Increments the counter on every call (success and failure both count).
     pub fn check_and_increment(&self, ip: &str) -> Option<u64> {
-        let mut map = self.buckets.lock().unwrap();
+        let mut map = match self.buckets.lock() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
         let now = Instant::now();
 
         map.retain(|_, b| {
@@ -87,13 +90,12 @@ fn extract_client_ip(headers: &HeaderMap, addr: &SocketAddr) -> String {
         .unwrap_or_else(|| addr.ip().to_string())
 }
 
-fn generate_token(access_key: &str, secret_key: &str, issued_at: i64) -> String {
+fn generate_token(access_key: &str, secret_key: &str, issued_at: i64) -> Option<String> {
     let issued_hex = format!("{:x}", issued_at);
-    let mut mac =
-        HmacSha256::new_from_slice(secret_key.as_bytes()).expect("HMAC can take key of any size");
+    let mut mac = HmacSha256::new_from_slice(secret_key.as_bytes()).ok()?;
     mac.update(format!("{}:{}", access_key, issued_hex).as_bytes());
     let sig = hex::encode(mac.finalize().into_bytes());
-    format!("{}.{}.{}", access_key, issued_hex, sig)
+    Some(format!("{}.{}.{}", access_key, issued_hex, sig))
 }
 
 #[derive(Clone, Debug)]
@@ -132,8 +134,7 @@ fn authenticated_session(
     }
     let expires_at = issued_at + TOKEN_MAX_AGE_SECS;
 
-    let mut mac =
-        HmacSha256::new_from_slice(secret_key.as_bytes()).expect("HMAC can take key of any size");
+    let mut mac = HmacSha256::new_from_slice(secret_key.as_bytes()).ok()?;
     mac.update(format!("{}:{}", access_key, issued_hex).as_bytes());
     let expected = hex::encode(mac.finalize().into_bytes());
 
@@ -185,6 +186,14 @@ fn make_cookie(value: &str, max_age: i64, request_headers: &HeaderMap) -> String
         "{}={}; Path=/; HttpOnly; SameSite=Strict; Max-Age={}{}",
         COOKIE_NAME, value, max_age, secure_flag
     )
+}
+
+fn set_cookie_header(headers: &mut HeaderMap, cookie: &str) -> bool {
+    let Ok(value) = cookie.parse() else {
+        return false;
+    };
+    headers.insert("Set-Cookie", value);
+    true
 }
 
 pub(super) async fn console_auth_middleware(
@@ -240,12 +249,16 @@ pub(super) async fn login(
     }
 
     let now = chrono::Utc::now().timestamp();
-    let token = generate_token(&body.access_key, secret_key, now);
+    let Some(token) = generate_token(&body.access_key, secret_key, now) else {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+    };
     let cookie = make_cookie(&token, TOKEN_MAX_AGE_SECS, &headers);
     let expires_at = now + TOKEN_MAX_AGE_SECS;
 
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert("Set-Cookie", cookie.parse().unwrap());
+    if !set_cookie_header(&mut resp_headers, &cookie) {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+    }
 
     axum::response::IntoResponse::into_response((
         StatusCode::OK,
@@ -280,7 +293,9 @@ pub(super) async fn check(State(state): State<AppState>, headers: HeaderMap) -> 
 pub(super) async fn logout(headers: HeaderMap) -> Response {
     let cookie = make_cookie("", 0, &headers);
     let mut resp_headers = HeaderMap::new();
-    resp_headers.insert("Set-Cookie", cookie.parse().unwrap());
+    if !set_cookie_header(&mut resp_headers, &cookie) {
+        return response::error(StatusCode::INTERNAL_SERVER_ERROR, "Internal server error");
+    }
     axum::response::IntoResponse::into_response((
         StatusCode::OK,
         resp_headers,
@@ -301,4 +316,39 @@ pub(super) async fn me(request: Request) -> Response {
             "sessionExpiresAt": principal.session_expires_at
         }),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_cookie_header_rejects_invalid_header_value() {
+        let mut headers = HeaderMap::new();
+        assert!(!set_cookie_header(&mut headers, "bad\r\ncookie"));
+        assert!(headers.get("set-cookie").is_none());
+    }
+
+    #[test]
+    fn generate_token_roundtrip_authenticates_session() {
+        let mut credentials = HashMap::new();
+        credentials.insert("ak".to_string(), "sk".to_string());
+
+        let issued_at = chrono::Utc::now().timestamp();
+        let token = generate_token("ak", "sk", issued_at).expect("token should be generated");
+        let session = authenticated_session(&token, &credentials).expect("session should validate");
+        assert_eq!(session.access_key, "ak");
+        assert_eq!(session.issued_at, issued_at);
+        assert_eq!(session.expires_at, issued_at + TOKEN_MAX_AGE_SECS);
+    }
+
+    #[test]
+    fn authenticated_session_rejects_future_issued_timestamp() {
+        let mut credentials = HashMap::new();
+        credentials.insert("ak".to_string(), "sk".to_string());
+
+        let issued_at = chrono::Utc::now().timestamp() + 120;
+        let token = generate_token("ak", "sk", issued_at).expect("token should be generated");
+        assert!(authenticated_session(&token, &credentials).is_none());
+    }
 }
