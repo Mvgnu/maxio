@@ -162,7 +162,10 @@ async fn put_bucket_versioning(
         .storage
         .set_versioning(&bucket, enabled)
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(|e| match e {
+            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
+            other => S3Error::internal(other),
+        })?;
 
     Response::builder()
         .status(StatusCode::OK)
@@ -237,7 +240,10 @@ pub async fn get_bucket_versioning(
         .storage
         .is_versioned(&bucket)
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(|e| match e {
+            StorageError::NotFound(_) => S3Error::no_such_bucket(&bucket),
+            other => S3Error::internal(other),
+        })?;
 
     let result = VersioningConfiguration {
         status: if versioned {

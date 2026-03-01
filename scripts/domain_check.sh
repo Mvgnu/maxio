@@ -80,6 +80,7 @@ run_domain() {
     s3_api_surface)
       cargo check
       cargo test error::tests
+      cargo test api::list::tests
       cargo test api::list::service::tests
       cargo test api::object::service::tests
       cargo test api::multipart::tests

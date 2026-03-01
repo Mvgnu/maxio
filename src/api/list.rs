@@ -12,6 +12,7 @@ use http::StatusCode;
 use super::multipart;
 use crate::error::S3Error;
 use crate::server::AppState;
+use crate::storage::StorageError;
 use crate::xml::{response::to_xml, types::*};
 
 pub async fn handle_bucket_get(
@@ -76,7 +77,7 @@ async fn list_objects_v2(
         .storage
         .list_objects(&bucket, &query.prefix)
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(|e| map_bucket_storage_err(&bucket, e))?;
 
     let filtered = service::filter_objects_after(&all_objects, query.effective_start.as_deref());
     let (page, is_truncated) = service::paginate_objects(filtered, query.max_keys);
@@ -124,7 +125,7 @@ async fn list_objects_v1(
         .storage
         .list_objects(&bucket, &query.prefix)
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(|e| map_bucket_storage_err(&bucket, e))?;
 
     let filtered = service::filter_objects_after(&all_objects, query.marker.as_deref());
     let (page, is_truncated) = service::paginate_objects(filtered, query.max_keys);
@@ -169,7 +170,7 @@ async fn list_object_versions(
         .storage
         .list_object_versions(&bucket, &query.prefix)
         .await
-        .map_err(|e| S3Error::internal(e))?;
+        .map_err(|e| map_bucket_storage_err(&bucket, e))?;
 
     let latest_per_key = service::latest_version_per_key(&all_versions);
     let filtered = service::filter_versions_after(
@@ -200,4 +201,23 @@ async fn list_object_versions(
         .header("content-type", "application/xml")
         .body(Body::from(xml))
         .map_err(S3Error::internal)
+}
+
+fn map_bucket_storage_err(bucket: &str, err: StorageError) -> S3Error {
+    match err {
+        StorageError::NotFound(_) => S3Error::no_such_bucket(bucket),
+        other => S3Error::internal(other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::S3ErrorCode;
+
+    #[test]
+    fn map_bucket_storage_err_maps_not_found_to_no_such_bucket() {
+        let err = map_bucket_storage_err("missing", StorageError::NotFound("missing".to_string()));
+        assert!(matches!(err.code, S3ErrorCode::NoSuchBucket));
+    }
 }
