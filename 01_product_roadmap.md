@@ -144,6 +144,7 @@ From CLAUDE phased roadmap (additional context):
   - Chunked and multipart-complete write flows now also clean up staged object artifacts when metadata persistence fails, with dedicated storage-unit regressions.
   - Storage object write/delete/multipart-init paths now enforce explicit bucket existence and reject missing-bucket mutations without implicitly creating bucket directory trees.
   - Storage listing paths (`list_objects`, `list_object_versions`, `list_multipart_uploads`) now also enforce explicit missing-bucket `NotFound` semantics instead of implicit empty/IO-derived behavior.
+  - Storage version-restore/version-read and recursive folder-marker traversal paths now propagate filesystem probe errors instead of silently coercing failed probes to "not found".
 - Console readiness advanced:
   - Session/login/logout/rate-limit behavior now has dedicated integration coverage.
   - Console API handlers are split by concern (auth/buckets/objects/presign/versions) with `console.rs` as router entrypoint.

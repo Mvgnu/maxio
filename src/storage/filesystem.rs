@@ -1995,7 +1995,7 @@ impl FilesystemStorage {
                 if entry.file_type().await?.is_dir() {
                     // Check for folder marker inside this directory
                     let marker = path.join(".folder.meta.json");
-                    if fs::try_exists(&marker).await.unwrap_or(false) {
+                    if fs::try_exists(&marker).await? {
                         if let Ok(rel) = path.strip_prefix(base) {
                             let key = format!("{}/", rel.to_string_lossy());
                             if key.starts_with(prefix) {
@@ -2200,7 +2200,7 @@ impl FilesystemStorage {
     /// Scan versions for a key and update the top-level files to reflect the latest non-delete-marker.
     async fn update_current_version(&self, bucket: &str, key: &str) -> Result<(), StorageError> {
         let ver_dir = self.versions_dir(bucket, key);
-        if !fs::try_exists(&ver_dir).await.unwrap_or(false) {
+        if !fs::try_exists(&ver_dir).await? {
             return Ok(());
         }
 
@@ -2242,7 +2242,7 @@ impl FilesystemStorage {
         let vid = version_id_from_meta(&latest_meta, "restoring current version")?;
         let obj_meta_path = self.meta_path(bucket, key);
         let ver_ec = ver_dir.join(format!("{}.ec", vid));
-        if fs::try_exists(&ver_ec).await.unwrap_or(false) {
+        if fs::try_exists(&ver_ec).await? {
             let dst_ec = self.ec_dir(bucket, key);
             if let Some(parent) = dst_ec.parent() {
                 fs::create_dir_all(parent).await?;
@@ -2294,7 +2294,7 @@ impl FilesystemStorage {
         let ver_ec_dir = self
             .versions_dir(bucket, key)
             .join(format!("{}.ec", version_id));
-        if fs::try_exists(&ver_ec_dir).await.unwrap_or(false) {
+        if fs::try_exists(&ver_ec_dir).await? {
             let manifest_path = ver_ec_dir.join("manifest.json");
             let manifest_data = fs::read_to_string(&manifest_path).await.map_err(|e| {
                 if e.kind() == std::io::ErrorKind::NotFound {
