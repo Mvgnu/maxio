@@ -189,6 +189,43 @@ async fn test_cors_preflight_s3_without_auth() {
             .unwrap()
             .contains("PUT")
     );
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-credentials")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "true"
+    );
+}
+
+#[tokio::test]
+async fn test_cors_preflight_without_origin_uses_wildcard_without_credentials() {
+    let (base_url, _tmp) = start_server().await;
+    let resp = client()
+        .request(
+            reqwest::Method::OPTIONS,
+            format!("{}/mybucket/object.txt", base_url),
+        )
+        .header("access-control-request-method", "PUT")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 204);
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-origin")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "*"
+    );
+    assert!(
+        resp.headers()
+            .get("access-control-allow-credentials")
+            .is_none()
+    );
 }
 
 #[tokio::test]
@@ -244,6 +281,14 @@ async fn test_cors_headers_present_on_s3_error_response() {
             .unwrap(),
         origin
     );
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-credentials")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "true"
+    );
     assert!(
         resp.headers()
             .get("access-control-expose-headers")
@@ -274,6 +319,14 @@ async fn test_cors_origin_reflection_on_successful_s3_response() {
             .to_str()
             .unwrap(),
         origin
+    );
+    assert_eq!(
+        resp.headers()
+            .get("access-control-allow-credentials")
+            .unwrap()
+            .to_str()
+            .unwrap(),
+        "true"
     );
 
     let request_id = resp

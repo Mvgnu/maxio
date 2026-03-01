@@ -149,11 +149,22 @@ fn apply_cors_headers(response_headers: &mut HeaderMap, request_headers: &Header
     let origin = request_headers
         .get(header::ORIGIN)
         .and_then(|v| v.to_str().ok())
-        .filter(|v| !v.is_empty())
-        .unwrap_or("*");
+        .filter(|v| !v.is_empty());
 
-    if let Ok(value) = HeaderValue::from_str(origin) {
-        response_headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+    if let Some(origin) = origin {
+        if let Ok(value) = HeaderValue::from_str(origin) {
+            response_headers.insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, value);
+            response_headers.insert(
+                header::ACCESS_CONTROL_ALLOW_CREDENTIALS,
+                HeaderValue::from_static("true"),
+            );
+        }
+    } else {
+        response_headers.insert(
+            header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            HeaderValue::from_static("*"),
+        );
+        response_headers.remove(header::ACCESS_CONTROL_ALLOW_CREDENTIALS);
     }
     response_headers.insert(
         header::ACCESS_CONTROL_ALLOW_METHODS,
@@ -295,6 +306,51 @@ mod tests {
                 .get(header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok()),
             Some("application/json")
+        );
+    }
+
+    #[test]
+    fn apply_cors_headers_reflected_origin_sets_allow_credentials() {
+        let mut request_headers = HeaderMap::new();
+        request_headers.insert(
+            header::ORIGIN,
+            HeaderValue::from_static("https://example.com"),
+        );
+        let mut response_headers = HeaderMap::new();
+
+        apply_cors_headers(&mut response_headers, &request_headers);
+
+        assert_eq!(
+            response_headers
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok()),
+            Some("https://example.com")
+        );
+        assert_eq!(
+            response_headers
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+                .and_then(|v| v.to_str().ok()),
+            Some("true")
+        );
+    }
+
+    #[test]
+    fn apply_cors_headers_without_origin_uses_wildcard_without_credentials() {
+        let request_headers = HeaderMap::new();
+        let mut response_headers = HeaderMap::new();
+
+        apply_cors_headers(&mut response_headers, &request_headers);
+
+        assert_eq!(
+            response_headers
+                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .and_then(|v| v.to_str().ok()),
+            Some("*")
+        );
+        assert!(
+            response_headers
+                .get(header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+                .is_none()
         );
     }
 }
