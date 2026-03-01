@@ -118,6 +118,7 @@ run_domain() {
     console_api)
       cargo check
       cargo test api::console::auth::tests
+      cargo test api::console::storage::tests
       cargo test api::console::response::tests
       for t in \
         console_tests::test_console_auth_login_check_logout_flow \

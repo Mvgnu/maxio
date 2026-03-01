@@ -5,7 +5,7 @@ use axum::{
     response::IntoResponse,
 };
 
-use crate::api::console::response;
+use crate::api::console::{response, storage};
 use crate::server::AppState;
 use crate::storage::{StorageError, lifecycle::LifecycleRule};
 
@@ -57,10 +57,7 @@ pub(super) async fn get_lifecycle(
                 "rules": rules.into_iter().map(LifecycleRuleDto::from).collect::<Vec<_>>()
             }),
         ),
-        Err(StorageError::NotFound(_)) => {
-            response::error(StatusCode::NOT_FOUND, "Bucket not found")
-        }
-        Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => storage::map_bucket_storage_err(e),
     }
 }
 
@@ -72,10 +69,8 @@ pub(super) async fn set_lifecycle(
     let rules: Vec<LifecycleRule> = body.rules.into_iter().map(LifecycleRule::from).collect();
     match state.storage.set_lifecycle_rules(&bucket, &rules).await {
         Ok(()) => response::ok(),
-        Err(StorageError::NotFound(_)) => {
-            response::error(StatusCode::NOT_FOUND, "Bucket not found")
-        }
+        Err(StorageError::NotFound(_)) => storage::bucket_not_found(),
         Err(StorageError::InvalidKey(msg)) => response::error(StatusCode::BAD_REQUEST, msg),
-        Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => storage::internal_err(e),
     }
 }

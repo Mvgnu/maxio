@@ -118,6 +118,7 @@ From CLAUDE phased roadmap (additional context):
   - Integration coverage now includes versions-list marker pagination roundtrip semantics.
   - Domain check runner now executes runtime and console response-helper unit suites in domain-local cycles (`server::tests`, `api::console::response::tests`) instead of only catching them in full-suite runs.
   - Domain check runner now also executes console auth-helper unit suites (`api::console::auth::tests`) in console domain-local cycles.
+  - Domain check runner now also executes console storage-helper unit suites (`api::console::storage::tests`) in console domain-local cycles.
   - Domain check runner now also executes S3 bucket validation/service helper unit suites (`api::bucket::validation::tests`, `api::bucket::service::tests`) in S3 domain-local cycles.
   - Domain check runner now also executes S3 list-handler unit suites (`api::list::tests`) in S3 domain-local cycles.
   - Integration checksum regression now asserts failed checksum uploads do not leave retrievable object remnants.
@@ -156,6 +157,7 @@ From CLAUDE phased roadmap (additional context):
   - Console JSON success/error response shaping is centralized via shared response helpers.
   - Console versioning/version-history endpoints now return explicit `404` for missing buckets and missing versions (instead of generic `500`), with dedicated regression coverage.
   - Console object-management endpoints now return `404` for missing buckets on folder creation and object deletion paths (instead of implicit success/`500` drift), with dedicated regression coverage.
+  - Console object/version/lifecycle handlers now share a centralized storage-error helper module for consistent bucket/version `404` semantics and internal error shaping.
   - Console object/version download handlers now use panic-free response construction for streamed responses, with safe fallback headers for malformed metadata values.
   - Integration coverage now asserts console object and version download header/body contracts.
   - Integration coverage now locks console JSON contract shapes for bucket/object success payloads and auth/protected-route error payloads.

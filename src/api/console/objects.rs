@@ -8,7 +8,7 @@ use axum::{
 };
 use futures::TryStreamExt;
 
-use super::response;
+use super::{response, storage};
 use crate::server::AppState;
 
 #[derive(serde::Deserialize)]
@@ -22,10 +22,8 @@ pub(super) async fn list_objects(
     Path(bucket): Path<String>,
     Query(params): Query<ListObjectsParams>,
 ) -> impl IntoResponse {
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return response::error(StatusCode::NOT_FOUND, "Bucket not found"),
-        Err(e) => return response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+        return resp;
     }
 
     let prefix = params.prefix.unwrap_or_default();
@@ -33,7 +31,7 @@ pub(super) async fn list_objects(
 
     let all_objects = match state.storage.list_objects(&bucket, &prefix).await {
         Ok(objects) => objects,
-        Err(e) => return response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => return storage::map_bucket_storage_err(e),
     };
 
     let mut files = Vec::new();
@@ -82,10 +80,8 @@ pub(super) async fn upload_object(
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> impl IntoResponse {
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return response::error(StatusCode::NOT_FOUND, "Bucket not found"),
-        Err(e) => return response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+        return resp;
     }
 
     let content_type = headers
@@ -111,7 +107,7 @@ pub(super) async fn upload_object(
                 "size": result.size,
             }),
         ),
-        Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => storage::map_bucket_storage_err(e),
     }
 }
 
@@ -119,15 +115,13 @@ pub(super) async fn delete_object_api(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return response::error(StatusCode::NOT_FOUND, "Bucket not found"),
-        Err(e) => return response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+        return resp;
     }
 
     match state.storage.delete_object(&bucket, &key).await {
         Ok(_) => response::ok(),
-        Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => storage::map_bucket_storage_err(e),
     }
 }
 
@@ -137,7 +131,10 @@ pub(super) async fn download_object(
 ) -> Response {
     let (reader, meta) = match state.storage.get_object(&bucket, &key).await {
         Ok(r) => r,
-        Err(_) => return response::error(StatusCode::NOT_FOUND, "Object not found"),
+        Err(crate::storage::StorageError::NotFound(_)) => {
+            return response::error(StatusCode::NOT_FOUND, "Object not found");
+        }
+        Err(err) => return storage::internal_err(err),
     };
 
     let filename = key.rsplit('/').next().unwrap_or(&key);
@@ -164,10 +161,8 @@ pub(super) async fn create_folder(
     Path(bucket): Path<String>,
     Json(body): Json<CreateFolderRequest>,
 ) -> impl IntoResponse {
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return response::error(StatusCode::NOT_FOUND, "Bucket not found"),
-        Err(e) => return response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+        return resp;
     }
 
     let name = body.name.trim().trim_matches('/');
@@ -188,6 +183,6 @@ pub(super) async fn create_folder(
         .await
     {
         Ok(_) => response::ok(),
-        Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+        Err(e) => storage::map_bucket_storage_err(e),
     }
 }

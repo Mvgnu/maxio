@@ -4,6 +4,7 @@ mod lifecycle;
 mod objects;
 mod presign;
 mod response;
+mod storage;
 mod system;
 mod versions;
 
