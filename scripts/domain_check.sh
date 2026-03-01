@@ -176,7 +176,9 @@ run_domain() {
         console_tests::test_console_topology_endpoint_reports_distributed_mode_when_configured \
         console_tests::test_console_buckets_and_objects_json_contract_shapes \
         console_tests::test_console_download_object_returns_expected_headers_and_body \
+        console_tests::test_console_object_routes_support_percent_encoded_key_path \
         console_tests::test_console_download_version_returns_expected_headers_and_body \
+        console_tests::test_console_download_version_supports_percent_encoded_key_path \
         console_tests::test_console_versions_list_remains_available_after_versioning_suspend \
         console_tests::test_console_error_contract_shape_for_auth_failures
       do

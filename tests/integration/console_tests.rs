@@ -978,6 +978,87 @@ async fn test_console_download_object_returns_expected_headers_and_body() {
 }
 
 #[tokio::test]
+async fn test_console_object_routes_support_percent_encoded_key_path() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+    let bucket = "console-download-encoded-bucket";
+    let encoded_key = "reports/Jan%202026/qa%2Bnotes%20%231.txt";
+    let decoded_key = "reports/Jan 2026/qa+notes #1.txt";
+    let payload = b"console encoded payload".to_vec();
+
+    let create_bucket = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create_bucket.status(), 200);
+
+    let upload = client()
+        .put(format!(
+            "{}/api/buckets/{}/upload/{}",
+            base_url, bucket, encoded_key
+        ))
+        .header("cookie", &cookie)
+        .header("content-type", "text/plain")
+        .body(payload.clone())
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), 200);
+
+    let list = client()
+        .get(format!(
+            "{}/api/buckets/{}/objects?prefix=reports/Jan%202026/&delimiter=/",
+            base_url, bucket
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), 200);
+    let list_body: serde_json::Value = list.json().await.unwrap();
+    let files = list_body["files"]
+        .as_array()
+        .expect("files should be an array");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0]["key"], decoded_key);
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/download/{}",
+            base_url, bucket, encoded_key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 200);
+    assert_eq!(download.bytes().await.unwrap().as_ref(), payload.as_slice());
+
+    let delete = client()
+        .delete(format!(
+            "{}/api/buckets/{}/objects/{}",
+            base_url, bucket, encoded_key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), 200);
+    let delete_body: serde_json::Value = delete.json().await.unwrap();
+    assert_eq!(delete_body, serde_json::json!({ "ok": true }));
+
+    let redownload = client()
+        .get(format!(
+            "{}/api/buckets/{}/download/{}",
+            base_url, bucket, encoded_key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(redownload.status(), 404);
+    let redownload_body: serde_json::Value = redownload.json().await.unwrap();
+    assert_eq!(redownload_body["error"], "Object not found");
+}
+
+#[tokio::test]
 async fn test_console_download_version_returns_expected_headers_and_body() {
     let (base_url, _tmp) = start_server().await;
     let cookie = console_login_cookie(&base_url).await;
@@ -1057,6 +1138,98 @@ async fn test_console_download_version_returns_expected_headers_and_body() {
     assert_eq!(
         download.bytes().await.unwrap().as_ref(),
         first_payload.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn test_console_download_version_supports_percent_encoded_key_path() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+    let bucket = "console-version-encoded-bucket";
+    let encoded_key = "reports/Jan%202026/qa%2Bnotes%20%231.txt";
+    let decoded_key = "reports/Jan 2026/qa+notes #1.txt";
+
+    let create_bucket = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create_bucket.status(), 200);
+
+    let enable_versioning = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning=", base_url, bucket),
+        br#"<?xml version="1.0" encoding="UTF-8"?>
+<VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">
+  <Status>Enabled</Status>
+</VersioningConfiguration>"#
+            .to_vec(),
+    )
+    .await;
+    assert_eq!(enable_versioning.status(), 200);
+
+    let first_payload = b"encoded-v1".to_vec();
+    let put_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, encoded_key),
+        first_payload.clone(),
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+    let v1_id = put_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id on first upload")
+        .to_string();
+
+    let put_v2 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, encoded_key),
+        b"encoded-v2".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+
+    let versions_response = client()
+        .get(format!(
+            "{}/api/buckets/{}/versions?key={}",
+            base_url, bucket, encoded_key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(versions_response.status(), 200);
+    let versions_body: serde_json::Value = versions_response.json().await.unwrap();
+    let versions = versions_body["versions"]
+        .as_array()
+        .expect("versions should be an array");
+    assert_eq!(versions.len(), 2);
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/versions/{}/download/{}",
+            base_url, bucket, v1_id, encoded_key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 200);
+    assert_eq!(
+        download
+            .headers()
+            .get("content-disposition")
+            .and_then(|v| v.to_str().ok()),
+        Some("attachment; filename=\"qa+notes #1.txt\"")
+    );
+    assert_eq!(
+        download.bytes().await.unwrap().as_ref(),
+        first_payload.as_slice()
+    );
+
+    assert!(
+        versions
+            .iter()
+            .all(|entry| entry["versionId"].is_string() && entry["size"].as_u64().is_some()),
+        "versions should include typed entries for decoded key path: {decoded_key}"
     );
 }
 
