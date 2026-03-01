@@ -154,7 +154,7 @@ From CLAUDE phased roadmap (additional context):
   - Domain check runner now executes runtime and console response-helper unit suites in domain-local cycles (`server::tests`, `api::console::response::tests`) instead of only catching them in full-suite runs.
   - Domain check runner now also executes console auth-helper unit suites (`api::console::auth::tests`) in console domain-local cycles.
   - Domain check runner now also executes console storage-helper unit suites (`api::console::storage::tests`) in console domain-local cycles.
-  - Domain check runner now also executes console invalid-key list regressions (`console_tests::test_console_list_objects_returns_bad_request_for_invalid_prefix`, `console_tests::test_console_list_versions_returns_bad_request_for_invalid_key`) in console domain-local cycles.
+  - Domain check runner now also executes console list-input validation regressions (`console_tests::test_console_list_objects_returns_bad_request_for_invalid_prefix`, `console_tests::test_console_list_objects_returns_bad_request_for_empty_delimiter`, `console_tests::test_console_list_versions_returns_bad_request_for_invalid_key`) in console domain-local cycles.
   - Domain check runner now also executes console presign missing-bucket/missing-object regressions (`console_tests::test_console_presign_returns_not_found_for_missing_bucket`, `console_tests::test_console_presign_returns_not_found_for_missing_object`) in console domain-local cycles.
   - Domain check runner now also executes console presign key-encoding regression (`console_tests::test_console_presign_encodes_object_keys_with_spaces_and_utf8`) in console domain-local cycles.
   - Domain check runner now also executes console encoded-key route regressions for object delete/download and version download paths (`console_tests::test_console_object_routes_support_percent_encoded_key_path`, `console_tests::test_console_download_version_supports_percent_encoded_key_path`) in console domain-local cycles.
@@ -221,6 +221,7 @@ From CLAUDE phased roadmap (additional context):
   - Console presign endpoint now has dedicated regression coverage for percent-encoded object-key signing/URL generation (spaces + UTF-8 segments).
   - Console object/version/lifecycle handlers now share a centralized storage-error helper module for consistent bucket/version `404` semantics and internal error shaping.
   - Console object/version list paths now map invalid key/prefix inputs to explicit `400` responses (instead of generic `500`/silent empty responses), with dedicated regression coverage.
+  - Console object-listing now also rejects empty `delimiter` query values with explicit `400` responses to avoid ambiguous folder-grouping behavior.
   - Console object/version download handlers now use panic-free response construction for streamed responses, with safe fallback headers for malformed metadata values.
   - Integration coverage now asserts console object and version download header/body contracts.
   - Integration coverage now also asserts console object delete/download and version-download behavior for percent-encoded key paths (spaces/`+`/`#`), aligning console route handling with UI key-path encoding.

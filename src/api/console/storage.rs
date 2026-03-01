@@ -67,6 +67,13 @@ pub(super) fn validate_list_prefix(prefix: &str) -> Option<Response> {
     None
 }
 
+pub(super) fn validate_list_delimiter(delimiter: &str) -> Option<Response> {
+    if delimiter.is_empty() {
+        return Some(invalid_key("Delimiter must not be empty"));
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -134,5 +141,11 @@ mod tests {
     fn validate_list_prefix_accepts_empty_and_regular_prefixes() {
         assert!(validate_list_prefix("").is_none());
         assert!(validate_list_prefix("docs/").is_none());
+    }
+
+    #[test]
+    fn validate_list_delimiter_rejects_empty_values() {
+        assert!(validate_list_delimiter("").is_some());
+        assert!(validate_list_delimiter("/").is_none());
     }
 }

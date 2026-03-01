@@ -1385,6 +1385,26 @@ async fn test_console_list_objects_returns_bad_request_for_invalid_prefix() {
 }
 
 #[tokio::test]
+async fn test_console_list_objects_returns_bad_request_for_empty_delimiter() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+    let bucket = "console-invalid-delimiter";
+    let create_bucket = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create_bucket.status(), 200);
+
+    let resp = client()
+        .get(format!("{}/api/buckets/{}/objects", base_url, bucket))
+        .query(&[("prefix", "docs/"), ("delimiter", "")])
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 400);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Delimiter must not be empty");
+}
+
+#[tokio::test]
 async fn test_console_list_versions_returns_bad_request_for_invalid_key() {
     let (base_url, _tmp) = start_server().await;
     let cookie = console_login_cookie(&base_url).await;

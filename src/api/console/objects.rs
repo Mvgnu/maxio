@@ -31,6 +31,9 @@ pub(super) async fn list_objects(
     if let Some(resp) = storage::validate_list_prefix(&prefix) {
         return resp;
     }
+    if let Some(resp) = storage::validate_list_delimiter(&delimiter) {
+        return resp;
+    }
 
     let all_objects = match state.storage.list_objects(&bucket, &prefix).await {
         Ok(objects) => objects,
