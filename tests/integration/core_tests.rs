@@ -1343,6 +1343,21 @@ async fn test_multipart_create_upload() {
 }
 
 #[tokio::test]
+async fn test_multipart_create_upload_missing_bucket_returns_no_such_bucket() {
+    let (base_url, _tmp) = start_server().await;
+
+    let resp = s3_request(
+        "POST",
+        &format!("{}/missing-bucket/large.bin?uploads=", base_url),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>NoSuchBucket</Code>"));
+}
+
+#[tokio::test]
 async fn test_multipart_upload_part() {
     let (base_url, _tmp) = start_server().await;
     s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
@@ -1366,6 +1381,24 @@ async fn test_multipart_upload_part() {
     assert_eq!(resp.status(), 200);
     let etag = resp.headers().get("etag").unwrap().to_str().unwrap();
     assert!(etag.starts_with('"') && etag.ends_with('"'));
+}
+
+#[tokio::test]
+async fn test_multipart_upload_part_missing_bucket_returns_no_such_bucket() {
+    let (base_url, _tmp) = start_server().await;
+
+    let resp = s3_request(
+        "PUT",
+        &format!(
+            "{}/missing-bucket/large.bin?partNumber=1&uploadId=some-upload-id",
+            base_url
+        ),
+        b"part-one".to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>NoSuchBucket</Code>"));
 }
 
 #[tokio::test]
@@ -1461,6 +1494,30 @@ async fn test_multipart_complete() {
     let mut expected = p1;
     expected.extend_from_slice(&p2);
     assert_eq!(body.as_ref(), expected.as_slice());
+}
+
+#[tokio::test]
+async fn test_multipart_complete_missing_bucket_returns_no_such_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    let complete_xml = br#"
+        <CompleteMultipartUpload>
+            <Part><PartNumber>1</PartNumber><ETag>\"etag-one\"</ETag></Part>
+        </CompleteMultipartUpload>
+    "#
+    .to_vec();
+
+    let resp = s3_request(
+        "POST",
+        &format!(
+            "{}/missing-bucket/large.bin?uploadId=some-upload-id",
+            base_url
+        ),
+        complete_xml,
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>NoSuchBucket</Code>"));
 }
 
 #[tokio::test]
@@ -1598,6 +1655,24 @@ async fn test_multipart_abort() {
 }
 
 #[tokio::test]
+async fn test_multipart_list_parts_missing_bucket_returns_no_such_bucket() {
+    let (base_url, _tmp) = start_server().await;
+
+    let list = s3_request(
+        "GET",
+        &format!(
+            "{}/missing-bucket/large.bin?uploadId=some-upload-id",
+            base_url
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(list.status(), 404);
+    let body = list.text().await.unwrap();
+    assert!(body.contains("<Code>NoSuchBucket</Code>"));
+}
+
+#[tokio::test]
 async fn test_multipart_list_parts() {
     let (base_url, _tmp) = start_server().await;
     s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
@@ -1647,6 +1722,21 @@ async fn test_multipart_list_uploads() {
     let body = list.text().await.unwrap();
     assert!(body.contains(&upload_id));
     assert!(body.contains("<Key>large.bin</Key>"));
+}
+
+#[tokio::test]
+async fn test_multipart_list_uploads_missing_bucket_returns_no_such_bucket() {
+    let (base_url, _tmp) = start_server().await;
+
+    let list = s3_request(
+        "GET",
+        &format!("{}/missing-bucket?uploads=", base_url),
+        vec![],
+    )
+    .await;
+    assert_eq!(list.status(), 404);
+    let body = list.text().await.unwrap();
+    assert!(body.contains("<Code>NoSuchBucket</Code>"));
 }
 
 #[tokio::test]

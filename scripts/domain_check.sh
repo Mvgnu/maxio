@@ -100,6 +100,11 @@ run_domain() {
         core_tests::test_copy_object_basic \
         core_tests::test_copy_object_missing_source_bucket_returns_no_such_bucket \
         core_tests::test_copy_object_missing_destination_bucket_returns_no_such_bucket \
+        core_tests::test_multipart_create_upload_missing_bucket_returns_no_such_bucket \
+        core_tests::test_multipart_upload_part_missing_bucket_returns_no_such_bucket \
+        core_tests::test_multipart_complete_missing_bucket_returns_no_such_bucket \
+        core_tests::test_multipart_list_parts_missing_bucket_returns_no_such_bucket \
+        core_tests::test_multipart_list_uploads_missing_bucket_returns_no_such_bucket \
         core_tests::test_multipart_complete \
         core_tests::test_multipart_upload_part_rejects_out_of_range_part_number \
         core_tests::test_multipart_complete_rejects_non_ascending_part_order \
