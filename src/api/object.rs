@@ -1421,6 +1421,13 @@ fn forwarded_delete_objects_outcome(
     response: &Response<Body>,
 ) -> DeleteObjectsOutcome {
     if response.status().is_success() {
+        if let Some((ack_count, quorum_size, quorum_reached)) =
+            parse_write_quorum_headers(response.headers())
+        {
+            if !quorum_reached {
+                return delete_objects_quorum_outcome_error(key, ack_count, quorum_size);
+            }
+        }
         let version_id = parse_header_string(response.headers(), "x-amz-version-id");
         let is_delete_marker =
             parse_header_bool(response.headers(), "x-amz-delete-marker").unwrap_or(false);
@@ -1447,6 +1454,20 @@ fn forwarded_delete_objects_outcome(
                 )
             });
         DeleteObjectsOutcome::Error { key, code, message }
+    }
+}
+
+fn delete_objects_quorum_outcome_error(
+    key: String,
+    ack_count: usize,
+    quorum_size: usize,
+) -> DeleteObjectsOutcome {
+    DeleteObjectsOutcome::Error {
+        key,
+        code: "InternalError",
+        message: format!(
+            "Delete quorum not reached (acked {ack_count} of required quorum {quorum_size})"
+        ),
     }
 }
 
@@ -1582,28 +1603,37 @@ pub async fn delete_objects(
             continue;
         }
 
-        let delete_result = state.storage.delete_object(&bucket, &entry.key).await;
+        let key = entry.key;
+        let delete_result = state.storage.delete_object(&bucket, &key).await;
         match delete_result {
             Ok(dr) => {
                 if entry.routing_hint.distributed && entry.routing_hint.is_local_primary_owner {
                     let outcome = replicate_delete_to_replica_owners(
                         &state,
                         &bucket,
-                        &entry.key,
+                        &key,
                         &empty_params,
                         &headers,
                         &placement,
                     )
                     .await;
                     quorum_aggregate.record_outcome(&outcome);
+                    if !outcome.quorum_reached {
+                        outcomes.push(delete_objects_quorum_outcome_error(
+                            key,
+                            outcome.ack_count,
+                            outcome.quorum_size,
+                        ));
+                        continue;
+                    }
                 }
                 outcomes.push(DeleteObjectsOutcome::Deleted {
-                    key: entry.key,
+                    key,
                     version_id: dr.version_id,
                     is_delete_marker: dr.is_delete_marker,
                 });
             }
-            Err(e) => outcomes.push(map_delete_objects_err(&bucket, entry.key, e)),
+            Err(e) => outcomes.push(map_delete_objects_err(&bucket, key, e)),
         }
     }
 

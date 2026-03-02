@@ -25,7 +25,7 @@ MaxIO is a lightweight, single-binary S3-compatible object storage server writte
 - **Range Requests** — HTTP 206 Partial Content support via `Range` header on GetObject
 - **Versioning** — Object version creation, list/get/delete by `versionId`, marker-aware `?versions` pagination, suspend-with-history-preservation semantics
 - **Lifecycle Rules** — Bucket lifecycle rule set/get/delete plus background lifecycle sweep execution
-- **Distributed Routing Foundation** — Placement-aware forwarding for non-owner reads/writes, replica fanout for primary writes (`PUT`/`CopyObject`/multipart complete/`DELETE`), quorum diagnostics headers, placement epoch/view wiring
+- **Distributed Routing Foundation** — Placement-aware forwarding for non-owner reads/writes, replica fanout for primary writes (`PUT`/`CopyObject`/multipart complete/`DELETE`), quorum diagnostics headers (including per-entry degraded-quorum surfacing in `DeleteObjects`), placement epoch/view wiring
 - **Read-Repair Foundation** — Primary-owner `GET`/`HEAD` read-repair (current-version and `versionId`-targeted) with trusted replica probes and replica repair fanout
 - **Runtime Observability** — Prometheus metrics at `/metrics` and probe-backed health/readiness status at `/healthz`
 - **Checksum Verification** — CRC32, CRC32C, SHA-1, and SHA-256 checksums on upload with automatic validation and persistent storage
