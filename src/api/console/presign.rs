@@ -69,6 +69,7 @@ pub(super) async fn presign_object(
         scheme,
         host,
         path: &path,
+        extra_query_params: &[],
         access_key: &principal.access_key,
         secret_key,
         region: &state.config.region,

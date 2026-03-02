@@ -361,6 +361,7 @@ pub struct PresignRequest<'a> {
     pub scheme: &'a str,
     pub host: &'a str,
     pub path: &'a str,
+    pub extra_query_params: &'a [(&'a str, &'a str)],
     pub access_key: &'a str,
     pub secret_key: &'a str,
     pub region: &'a str,
@@ -375,6 +376,7 @@ pub fn generate_presigned_url(request: PresignRequest<'_>) -> Result<String, &'s
         scheme,
         host,
         path,
+        extra_query_params,
         access_key,
         secret_key,
         region,
@@ -393,14 +395,20 @@ pub fn generate_presigned_url(request: PresignRequest<'_>) -> Result<String, &'s
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let credential = format!("{}/{}/{}/s3/aws4_request", access_key, date_stamp, region);
 
-    let mut params = [
-        ("X-Amz-Algorithm", "AWS4-HMAC-SHA256".to_string()),
-        ("X-Amz-Credential", credential),
-        ("X-Amz-Date", amz_date.clone()),
-        ("X-Amz-Expires", expires_secs.to_string()),
-        ("X-Amz-SignedHeaders", "host".to_string()),
+    let mut params = vec![
+        (
+            "X-Amz-Algorithm".to_string(),
+            "AWS4-HMAC-SHA256".to_string(),
+        ),
+        ("X-Amz-Credential".to_string(), credential),
+        ("X-Amz-Date".to_string(), amz_date.clone()),
+        ("X-Amz-Expires".to_string(), expires_secs.to_string()),
+        ("X-Amz-SignedHeaders".to_string(), "host".to_string()),
     ];
-    params.sort_by(|a, b| a.0.cmp(b.0));
+    for (key, value) in extra_query_params {
+        params.push(((*key).to_string(), (*value).to_string()));
+    }
+    params.sort_by(|a, b| a.0.cmp(&b.0));
 
     let canonical_qs = params
         .iter()
@@ -975,6 +983,7 @@ mod tests {
             scheme: "http",
             host: "localhost:9000",
             path: "/bucket/object",
+            extra_query_params: &[],
             access_key: "minioadmin",
             secret_key: "minioadmin",
             region: "us-east-1",
@@ -992,6 +1001,7 @@ mod tests {
             scheme: "http",
             host: "localhost:9000",
             path: "/bucket/object",
+            extra_query_params: &[],
             access_key: "minioadmin",
             secret_key: "minioadmin",
             region: "us-east-1",
@@ -1010,6 +1020,7 @@ mod tests {
             scheme: "http",
             host: "localhost:9000",
             path,
+            extra_query_params: &[],
             access_key: "minioadmin",
             secret_key: "minioadmin",
             region: "us-east-1",
@@ -1026,6 +1037,42 @@ mod tests {
 
         assert!(verify_presigned_signature(
             "GET",
+            path,
+            query,
+            &headers,
+            &parsed,
+            &timestamp,
+            "minioadmin"
+        ));
+    }
+
+    #[test]
+    fn presigned_roundtrip_with_extra_query_params_verifies_signature() {
+        let now = DateTime::<Utc>::from_str("2026-03-01T12:00:00Z").unwrap();
+        let path = "/bucket/object.txt";
+        let url = generate_presigned_url(PresignRequest {
+            method: "HEAD",
+            scheme: "http",
+            host: "localhost:9000",
+            path,
+            extra_query_params: &[("versionId", "ver-123")],
+            access_key: "minioadmin",
+            secret_key: "minioadmin",
+            region: "us-east-1",
+            now,
+            expires_secs: 300,
+        })
+        .unwrap();
+
+        let query = url.split('?').nth(1).unwrap();
+        assert!(query.contains("versionId=ver-123"));
+        let (parsed, timestamp, _expires) = parse_presigned_query(query).unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("host", HeaderValue::from_static("localhost:9000"));
+
+        assert!(verify_presigned_signature(
+            "HEAD",
             path,
             query,
             &headers,

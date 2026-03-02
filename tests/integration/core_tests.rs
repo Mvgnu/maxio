@@ -986,7 +986,6 @@ async fn test_get_object_distributed_primary_read_repairs_missing_replica() {
     )
     .await;
     assert_eq!(versioning.status(), 200);
-
     let key = distributed_local_owner_key_for(
         "routing-read-repair-get",
         DISTRIBUTED_LOCAL_NODE,
@@ -1126,6 +1125,223 @@ async fn test_head_object_distributed_primary_read_repairs_missing_replica() {
     assert_eq!(
         owner_repaired.bytes().await.unwrap().as_ref(),
         b"repair-on-read-head"
+    );
+}
+
+#[tokio::test]
+async fn test_get_object_version_distributed_primary_read_repairs_missing_replica() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-version-get", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-version-get", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let versioning_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let versioning = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-read-repair-version-get?versioning",
+            pair.coordinator_url
+        ),
+        versioning_xml,
+    )
+    .await;
+    assert_eq!(versioning.status(), 200);
+
+    let key = distributed_local_owner_key_for(
+        "routing-read-repair-version-get",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+
+    let put_v1 = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-read-repair-version-get/{}",
+            pair.coordinator_url, key
+        ),
+        b"repair-on-read-version-old".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+    let version_id_v1 = put_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("version id should be present")
+        .to_string();
+    let put_v2 = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-read-repair-version-get/{}",
+            pair.coordinator_url, key
+        ),
+        b"repair-on-read-version-new".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+
+    let owner_delete = s3_request(
+        "DELETE",
+        &format!("{}/routing-read-repair-version-get/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_delete.status(), 204);
+
+    let owner_missing_before = s3_request(
+        "GET",
+        &format!("{}/routing-read-repair-version-get/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_missing_before.status(), 404);
+
+    let get = s3_request(
+        "GET",
+        &format!(
+            "{}/routing-read-repair-version-get/{}?versionId={}",
+            pair.coordinator_url, key, version_id_v1
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(get.status(), 200);
+    assert_eq!(
+        get.bytes().await.unwrap().as_ref(),
+        b"repair-on-read-version-old"
+    );
+
+    let owner_repaired = s3_request(
+        "GET",
+        &format!("{}/routing-read-repair-version-get/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_repaired.status(), 200);
+    assert_eq!(
+        owner_repaired.bytes().await.unwrap().as_ref(),
+        b"repair-on-read-version-old"
+    );
+}
+
+#[tokio::test]
+async fn test_head_object_version_distributed_primary_read_repairs_missing_replica() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-version-head", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-version-head", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let versioning_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let versioning = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-read-repair-version-head?versioning",
+            pair.coordinator_url
+        ),
+        versioning_xml,
+    )
+    .await;
+    assert_eq!(versioning.status(), 200);
+
+    let key = distributed_local_owner_key_for(
+        "routing-read-repair-version-head",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+
+    let put_v1 = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-read-repair-version-head/{}",
+            pair.coordinator_url, key
+        ),
+        b"repair-on-read-version-head-old".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+    let version_id_v1 = put_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|value| value.to_str().ok())
+        .expect("version id should be present")
+        .to_string();
+    let put_v2 = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-read-repair-version-head/{}",
+            pair.coordinator_url, key
+        ),
+        b"repair-on-read-version-head-new".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+
+    let owner_delete = s3_request(
+        "DELETE",
+        &format!(
+            "{}/routing-read-repair-version-head/{}",
+            pair.owner_url, key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_delete.status(), 204);
+
+    let owner_missing_before = s3_request(
+        "HEAD",
+        &format!(
+            "{}/routing-read-repair-version-head/{}",
+            pair.owner_url, key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_missing_before.status(), 404);
+
+    let head = s3_request(
+        "HEAD",
+        &format!(
+            "{}/routing-read-repair-version-head/{}?versionId={}",
+            pair.coordinator_url, key, version_id_v1
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(head.status(), 200);
+
+    let owner_repaired = s3_request(
+        "GET",
+        &format!(
+            "{}/routing-read-repair-version-head/{}",
+            pair.owner_url, key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_repaired.status(), 200);
+    assert_eq!(
+        owner_repaired.bytes().await.unwrap().as_ref(),
+        b"repair-on-read-version-head-old"
     );
 }
 

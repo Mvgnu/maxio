@@ -300,6 +300,7 @@ fn presigned_replica_put_path_and_query(
         scheme: "http",
         host: signed_host,
         path: &format!("/{bucket}/{key}"),
+        extra_query_params: &[],
         access_key: state.config.access_key.as_str(),
         secret_key: state.config.secret_key.as_str(),
         region: state.config.region.as_str(),

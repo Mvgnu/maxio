@@ -77,7 +77,7 @@ From CLAUDE phased roadmap (additional context):
   - promote stateless placement helpers to an epoch-backed placement state model (`placementViewId` + persisted epoch semantics). (foundation now landed in storage with typed placement state helpers)
   - define handoff coordination state and transfer lifecycle between previous and next owner sets. (deterministic handoff plan/role model now landed in storage)
   - implement the forwarded-write wire protocol (request/ack/failure contract) so any-node writes route to the correct owner/quorum path. (typed forwarding envelope + S3 header wiring + persisted runtime epoch integration now landed; distributed `PUT` + `CopyObject` + multipart-complete + single-object `DELETE` including version-specific delete replica fanout + quorum observation are active, multipart operation-family forwarding is active across create/upload/list/abort/complete, and mixed-owner `DeleteObjects` multi-target forwarding/quorum aggregation is now active)
-  - read-repair runtime wiring is active for primary-owner current-version `GET`/`HEAD` paths (trusted replica-head probes + replica upsert/delete repairs), with explicit execution-policy modeling to avoid implicit quorum-bypass behavior.
+  - read-repair runtime wiring is active for primary-owner `GET`/`HEAD` paths (current-version and `versionId`-targeted) with trusted replica-head probes + replica upsert/delete repairs, and explicit execution-policy modeling to avoid implicit quorum-bypass behavior.
   - add split-brain safeguards for conflicting membership views and stale forwarding epochs.
 - Health readiness accuracy (`runtime_platform` + `quality_harness`):
   - `/healthz` now includes probe-backed degraded readiness for data-dir access/writeability, storage data-path readability, configurable disk headroom thresholds, membership-protocol readiness, and static-bootstrap peer-connectivity probing; extend with deeper dependency probes (membership convergence/split-brain health) and keep regression coverage current as readiness contracts evolve.
@@ -89,7 +89,7 @@ From CLAUDE phased roadmap (additional context):
 | Consistent hashing / placement | Medium | Done | `storage::placement` rendezvous ownership, write plans/quorum evaluation, read-repair planning, rebalance planning, typed placement view/epoch contracts |
 | Write forwarding / quorum | Hard | In progress (~97%) | Non-owner `PUT`/`CopyObject`/`DELETE` and `DeleteObjects` (single-target + mixed-owner multi-target) forwarding are active with loop/epoch/view guards and spoofed-header hardening; non-owner `GET`/`HEAD` forwarding is active; multipart operation-family non-owner forwarding (`create/upload/list/abort/complete`) is active; distributed primary-owner `PUT`, `CopyObject`, multipart-complete, and single-object `DELETE` (including version-specific delete) perform replica fanout with quorum ack diagnostics (`x-maxio-write-ack-count`, `x-maxio-write-quorum-size`, `x-maxio-write-quorum-reached`); mixed-owner `DeleteObjects` now aggregates available quorum diagnostics at batch level, with remaining gap on per-entry quorum diagnostics surfacing |
 | Placement state / epochs | Medium | Done | `PlacementViewState` epoch/view state wired to runtime persistence (`placement-state.json`) and surfaced in `/healthz`, `/metrics`, console system APIs |
-| Read repair | Medium | In progress (~70%) | Typed read-repair planning/execution is implemented; primary-owner current-version `GET`/`HEAD` read paths now execute runtime read-repair with trusted replica probes and repair fanout; remaining scope is broader read-family wiring and hardening |
+| Read repair | Medium | In progress (~80%) | Typed read-repair planning/execution is implemented; primary-owner `GET`/`HEAD` read paths now execute runtime read-repair for both current-version and `versionId`-targeted reads with trusted replica probes and repair fanout; remaining scope is broader failure-mode/scale hardening |
 | Rebalancing on topology change | Very hard | Planning done | Typed `ObjectRebalancePlan`/`RebalanceTransfer` plus console preview endpoint exist; runtime transfer executor is not yet implemented |
 | Gossip / Raft membership | Hard | Config only | `MembershipProtocol` enum/config exists, `/healthz` + startup warnings mark unimplemented protocols as degraded, no live membership engine yet |
 
@@ -429,6 +429,7 @@ From CLAUDE phased roadmap (additional context):
   - Integration coverage now includes duplicate-component rejection regressions for both `Authorization` header inputs and presigned `X-Amz-*` query inputs.
   - SigV4 canonical URI normalization now decodes and re-encodes path segments to avoid double-encoding already-encoded request paths in presigned verification flows.
   - Shared SigV4 presign generation now uses a typed `PresignRequest` contract instead of positional multi-argument call sites.
+  - SigV4 presign generation now also supports typed signed extra query parameters (`PresignRequest.extra_query_params`) for internal/auth-safe version-targeted probe routes.
   - SigV4 presigned-query parsing and presigned URL generation now enforce strict lower-bound expiry semantics (`X-Amz-Expires > 0`) in addition to max-expiry checks.
   - Auth domain verification now explicitly includes `auth::signature_v4::tests` in domain-local checks.
   - Auth domain verification now also executes duplicate SigV4 component rejection integration regressions in domain-local cycles.
@@ -460,10 +461,11 @@ From CLAUDE phased roadmap (additional context):
   - Storage placement now also exposes typed read-repair planning helpers (`ReplicaObservation`, `ObjectReadRepairPlan`, `object_read_repair_plan`) for deterministic version-majority/quorum diagnostics and stale/missing replica targeting.
   - Storage placement now also exposes typed read-repair execution helpers (`ReadRepairAction`, `ObjectReadRepairExecutionPlan`, `object_read_repair_execution_plan`) for quorum-gated stale/missing replica action planning.
   - Storage placement read-repair execution now also exposes explicit policy controls (`ReadRepairExecutionPolicy`, `object_read_repair_execution_plan_with_policy`) so runtime/API layers can opt into primary-authoritative repair semantics without implicit quorum-size overrides.
-  - S3 primary-owner current-version read paths now execute runtime read-repair:
+  - S3 primary-owner read paths now execute runtime read-repair:
     - trusted internal replica-head probes (`replicate-head-object`) collect replica-version observations.
     - stale/missing replicas are repaired via internal replica put/delete fanout actions.
-    - integration regressions now lock `GET` and `HEAD` missing-replica repair behavior.
+    - runtime wiring now covers both current-version and `versionId`-targeted `GET`/`HEAD` paths.
+    - integration regressions now lock missing-replica repair behavior for both current-version and version-targeted reads.
   - Storage placement now also exposes typed rebalance planning helpers (`ObjectRebalancePlan`, `RebalanceTransfer`, `object_rebalance_plan`, `chunk_rebalance_plan`) for deterministic owner-transition and transfer-source planning across join/leave/bootstrap membership changes.
   - Placement foundation now has focused unit coverage for deterministic ownership, replica clamping, and order-insensitive membership fingerprints.
   - Placement foundation coverage now also locks rendezvous monotonicity invariants on topology change (node join and non-owner removal) for safer rebalancing and forwarding evolution.

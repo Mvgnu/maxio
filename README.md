@@ -26,7 +26,7 @@ MaxIO is a lightweight, single-binary S3-compatible object storage server writte
 - **Versioning** — Object version creation, list/get/delete by `versionId`, marker-aware `?versions` pagination, suspend-with-history-preservation semantics
 - **Lifecycle Rules** — Bucket lifecycle rule set/get/delete plus background lifecycle sweep execution
 - **Distributed Routing Foundation** — Placement-aware forwarding for non-owner reads/writes, replica fanout for primary writes (`PUT`/`CopyObject`/multipart complete/`DELETE`), quorum diagnostics headers, placement epoch/view wiring
-- **Read-Repair Foundation** — Primary-owner current-version `GET`/`HEAD` read-repair with trusted replica probes and replica repair fanout
+- **Read-Repair Foundation** — Primary-owner `GET`/`HEAD` read-repair (current-version and `versionId`-targeted) with trusted replica probes and replica repair fanout
 - **Runtime Observability** — Prometheus metrics at `/metrics` and probe-backed health/readiness status at `/healthz`
 - **Checksum Verification** — CRC32, CRC32C, SHA-1, and SHA-256 checksums on upload with automatic validation and persistent storage
 - **Erasure Coding** — Optional chunked storage with per-chunk SHA-256 integrity verification and Reed-Solomon parity for automatic recovery from corrupted or missing data
@@ -147,7 +147,7 @@ aws --endpoint-url http://localhost:9000 s3 rb s3://my-bucket
 
 - Done: multipart upload, presigned URLs, CopyObject, CORS, range headers, lifecycle rules, metrics baseline, erasure coding
 - Done: versioning foundation (version lifecycle APIs/flows, versions pagination, version-aware range reads)
-- In progress: distributed mode foundations (placement/epoch state, non-owner forwarding, primary replica fanout + quorum diagnostics, primary read-repair for current-version GET/HEAD)
+- In progress: distributed mode foundations (placement/epoch state, non-owner forwarding, primary replica fanout + quorum diagnostics, primary read-repair for current-version and `versionId`-targeted GET/HEAD)
 - In progress: replication hardening, read-repair expansion, rebalance executor, dynamic membership engines (gossip/raft), multi-user policy/authorization layers
 
 ## Contributing

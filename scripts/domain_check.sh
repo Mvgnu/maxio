@@ -140,6 +140,8 @@ run_domain() {
         core_tests::test_head_object_distributed_forwards_non_owner_read_to_primary_owner \
         core_tests::test_get_object_distributed_primary_read_repairs_missing_replica \
         core_tests::test_head_object_distributed_primary_read_repairs_missing_replica \
+        core_tests::test_get_object_version_distributed_primary_read_repairs_missing_replica \
+        core_tests::test_head_object_version_distributed_primary_read_repairs_missing_replica \
         core_tests::test_get_object_distributed_non_owner_read_returns_access_denied_when_forward_target_unreachable \
         core_tests::test_copy_object_distributed_sets_routing_headers \
         core_tests::test_copy_object_distributed_forwards_non_owner_destination_write_to_primary_owner \

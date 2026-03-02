@@ -410,12 +410,14 @@ fn presigned_replica_path_and_query(
     signed_host: &str,
     bucket: &str,
     key: &str,
+    extra_query_params: &[(&str, &str)],
 ) -> Option<String> {
     let url = generate_presigned_url(PresignRequest {
         method,
         scheme: "http",
         host: signed_host,
         path: &format!("/{bucket}/{key}"),
+        extra_query_params,
         access_key: state.config.access_key.as_str(),
         secret_key: state.config.secret_key.as_str(),
         region: state.config.region.as_str(),
@@ -437,8 +439,20 @@ fn presigned_replica_delete_path_and_query(
     signed_host: &str,
     bucket: &str,
     key: &str,
+    version_id: Option<&str>,
 ) -> Option<String> {
-    presigned_replica_path_and_query(state, "DELETE", signed_host, bucket, key)
+    if let Some(version_id) = version_id {
+        presigned_replica_path_and_query(
+            state,
+            "DELETE",
+            signed_host,
+            bucket,
+            key,
+            &[("versionId", version_id)],
+        )
+    } else {
+        presigned_replica_path_and_query(state, "DELETE", signed_host, bucket, key, &[])
+    }
 }
 
 fn presigned_replica_put_path_and_query(
@@ -447,7 +461,7 @@ fn presigned_replica_put_path_and_query(
     bucket: &str,
     key: &str,
 ) -> Option<String> {
-    presigned_replica_path_and_query(state, "PUT", signed_host, bucket, key)
+    presigned_replica_path_and_query(state, "PUT", signed_host, bucket, key, &[])
 }
 
 fn presigned_replica_head_path_and_query(
@@ -455,8 +469,20 @@ fn presigned_replica_head_path_and_query(
     signed_host: &str,
     bucket: &str,
     key: &str,
+    version_id: Option<&str>,
 ) -> Option<String> {
-    presigned_replica_path_and_query(state, "HEAD", signed_host, bucket, key)
+    if let Some(version_id) = version_id {
+        presigned_replica_path_and_query(
+            state,
+            "HEAD",
+            signed_host,
+            bucket,
+            key,
+            &[("versionId", version_id)],
+        )
+    } else {
+        presigned_replica_path_and_query(state, "HEAD", signed_host, bucket, key, &[])
+    }
 }
 
 fn replica_put_headers_for_copy(
@@ -540,7 +566,7 @@ async fn replicate_delete_to_replica_owners(
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or(target.as_str());
             let Some(path_and_query) =
-                presigned_replica_delete_path_and_query(state, signed_host, bucket, key)
+                presigned_replica_delete_path_and_query(state, signed_host, bucket, key, None)
             else {
                 observations.push(WriteAckObservation {
                     node: target.clone(),
@@ -607,6 +633,7 @@ async fn execute_primary_read_repair(
     headers: &HeaderMap,
     placement: &PlacementViewState,
     local_meta: &ObjectMeta,
+    requested_version_id: Option<&str>,
 ) {
     let replica_count = write_replica_count_for_membership_count(placement.members.len());
     let write_plan = object_write_plan_with_self(
@@ -647,9 +674,13 @@ async fn execute_primary_read_repair(
             .and_then(|value| value.to_str().ok())
             .filter(|value| !value.trim().is_empty())
             .unwrap_or(target.as_str());
-        let Some(path_and_query) =
-            presigned_replica_head_path_and_query(state, signed_host, bucket, key)
-        else {
+        let Some(path_and_query) = presigned_replica_head_path_and_query(
+            state,
+            signed_host,
+            bucket,
+            key,
+            requested_version_id,
+        ) else {
             observations.push(ReplicaObservation {
                 node: target.clone(),
                 version: None,
@@ -756,7 +787,15 @@ async fn execute_primary_read_repair(
         match action {
             ReadRepairAction::UpsertVersion { node, .. } => {
                 if repair_payload.is_none() {
-                    let Ok((mut reader, _)) = state.storage.get_object(bucket, key).await else {
+                    let read_result = if let Some(version_id) = requested_version_id {
+                        state
+                            .storage
+                            .get_object_version(bucket, key, version_id)
+                            .await
+                    } else {
+                        state.storage.get_object(bucket, key).await
+                    };
+                    let Ok((mut reader, _)) = read_result else {
                         tracing::warn!(
                             operation = "read-repair-upsert",
                             target_node = %node,
@@ -836,9 +875,13 @@ async fn execute_primary_read_repair(
                     .and_then(|value| value.to_str().ok())
                     .filter(|value| !value.trim().is_empty())
                     .unwrap_or(node.as_str());
-                let Some(path_and_query) =
-                    presigned_replica_delete_path_and_query(state, signed_host, bucket, key)
-                else {
+                let Some(path_and_query) = presigned_replica_delete_path_and_query(
+                    state,
+                    signed_host,
+                    bucket,
+                    key,
+                    requested_version_id,
+                ) else {
                     tracing::warn!(
                         operation = "read-repair-delete",
                         target_node = %node,
@@ -1109,12 +1152,17 @@ pub async fn get_object(
                 let stream = ReaderStream::new(reader);
                 let body = Body::from_stream(stream);
 
-                if requested_version_id.is_none()
-                    && routing_hint.distributed
-                    && routing_hint.is_local_primary_owner
-                {
-                    execute_primary_read_repair(&state, &bucket, &key, &headers, &placement, &meta)
-                        .await;
+                if routing_hint.distributed && routing_hint.is_local_primary_owner {
+                    execute_primary_read_repair(
+                        &state,
+                        &bucket,
+                        &key,
+                        &headers,
+                        &placement,
+                        &meta,
+                        requested_version_id,
+                    )
+                    .await;
                 }
 
                 return object_response(
@@ -1148,11 +1196,17 @@ pub async fn get_object(
             .map_err(|e| map_object_get_err(&key, e))?
     };
 
-    if !params.contains_key("versionId")
-        && routing_hint.distributed
-        && routing_hint.is_local_primary_owner
-    {
-        execute_primary_read_repair(&state, &bucket, &key, &headers, &placement, &meta).await;
+    if routing_hint.distributed && routing_hint.is_local_primary_owner {
+        execute_primary_read_repair(
+            &state,
+            &bucket,
+            &key,
+            &headers,
+            &placement,
+            &meta,
+            requested_version_id,
+        )
+        .await;
     }
 
     let stream = ReaderStream::new(reader);
@@ -1197,7 +1251,8 @@ pub async fn head_object(
 
     ensure_bucket_exists(&state, &bucket).await?;
 
-    let meta = if let Some(version_id) = params.get("versionId") {
+    let requested_version_id = params.get("versionId").map(String::as_str);
+    let meta = if let Some(version_id) = requested_version_id {
         state
             .storage
             .head_object_version(&bucket, &key, version_id)
@@ -1211,11 +1266,17 @@ pub async fn head_object(
             .map_err(|e| map_object_get_err(&key, e))?
     };
 
-    if !params.contains_key("versionId")
-        && routing_hint.distributed
-        && routing_hint.is_local_primary_owner
-    {
-        execute_primary_read_repair(&state, &bucket, &key, &headers, &placement, &meta).await;
+    if routing_hint.distributed && routing_hint.is_local_primary_owner {
+        execute_primary_read_repair(
+            &state,
+            &bucket,
+            &key,
+            &headers,
+            &placement,
+            &meta,
+            requested_version_id,
+        )
+        .await;
     }
 
     object_response(&meta, StatusCode::OK, Body::empty(), meta.size, None)
@@ -1475,9 +1536,13 @@ pub async fn delete_objects(
                 .and_then(|value| value.to_str().ok())
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or(forward.target.as_str());
-            let Some(path_and_query) =
-                presigned_replica_delete_path_and_query(&state, signed_host, &bucket, &entry.key)
-            else {
+            let Some(path_and_query) = presigned_replica_delete_path_and_query(
+                &state,
+                signed_host,
+                &bucket,
+                &entry.key,
+                None,
+            ) else {
                 outcomes.push(DeleteObjectsOutcome::Error {
                     key: entry.key,
                     code: "AccessDenied",
