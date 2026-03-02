@@ -547,6 +547,11 @@ fn health_payload(
     let (membership_protocol_ready, protocol_warning) =
         membership_protocol_readiness(topology.membership_protocol);
 
+    let self_peer_misconfigured = topology
+        .cluster_peers
+        .iter()
+        .any(|peer| peer.trim() == topology.node_id.trim());
+
     let mut warnings = Vec::new();
     if let Some(warning) = data_dir_probe.warning {
         warnings.push(warning);
@@ -563,13 +568,19 @@ fn health_payload(
     if let Some(warning) = peer_connectivity_probe.warning {
         warnings.push(warning);
     }
+    if self_peer_misconfigured {
+        warnings.push(format!(
+            "Cluster peer configuration includes local node id '{}' which can cause split-brain or forwarding loops.",
+            topology.node_id
+        ));
+    }
 
     let checks = HealthChecksPayload {
         data_dir_accessible: data_dir_probe.accessible,
         data_dir_writable: data_dir_probe.writable,
         storage_data_path_readable: storage_probe.readable,
         disk_headroom_sufficient: disk_headroom_probe.sufficient,
-        peer_connectivity_ready: peer_connectivity_probe.ready,
+        peer_connectivity_ready: peer_connectivity_probe.ready && !self_peer_misconfigured,
         membership_protocol_ready,
     };
     let peer_connectivity_required = topology.is_distributed()

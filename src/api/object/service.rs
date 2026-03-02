@@ -1344,7 +1344,7 @@ mod tests {
 
     #[test]
     fn object_write_routing_hint_shapes_distributed_forwarding_state() {
-        let peers = vec!["node-b:9000".to_string()];
+        let peers = ["node-b:9000".to_string()];
         let hint = object_write_routing_hint("docs/object.txt", "node-a:9000", &peers);
         assert!(hint.distributed);
         assert!(hint.primary_owner.is_some());
@@ -1491,7 +1491,7 @@ mod tests {
             "tampered-idempotency".parse().expect("header"),
         );
 
-        let peers = vec!["node-b:9000".to_string()];
+        let peers = ["node-b:9000".to_string()];
         let placement =
             PlacementViewState::from_membership(TEST_PLACEMENT_EPOCH, "node-a:9000", &peers);
         let envelope = forwarded_write_envelope_from_headers(
@@ -1514,7 +1514,7 @@ mod tests {
     fn write_forward_target_rejects_looped_non_owner_request() {
         let mut headers = HeaderMap::new();
         headers.insert(INTERNAL_FORWARDED_BY_HEADER, "node-a:9000".parse().unwrap());
-        let peers = vec!["node-b:9000".to_string()];
+        let peers = ["node-b:9000".to_string()];
         let placement =
             PlacementViewState::from_membership(TEST_PLACEMENT_EPOCH, "node-a:9000", &peers);
 
@@ -1535,7 +1535,7 @@ mod tests {
     #[test]
     fn write_forward_target_returns_envelope_for_non_primary_owner() {
         let headers = HeaderMap::new();
-        let peers = vec!["node-b:9000".to_string(), "node-c:9000".to_string()];
+        let peers = ["node-b:9000".to_string(), "node-c:9000".to_string()];
         let local_node = "node-a:9000";
 
         let (key, hint) = (0..4096)
@@ -1584,7 +1584,7 @@ mod tests {
 
     #[test]
     fn write_forward_target_rejects_view_mismatch() {
-        let peers = vec!["node-b:9000".to_string(), "node-c:9000".to_string()];
+        let peers = ["node-b:9000".to_string(), "node-c:9000".to_string()];
         let local_node = "node-a:9000";
         let (key, hint) = (0..4096)
             .find_map(|idx| {

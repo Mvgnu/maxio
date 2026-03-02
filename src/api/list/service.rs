@@ -404,7 +404,7 @@ mod tests {
 
     #[test]
     fn split_by_delimiter_groups_common_prefixes() {
-        let objects = vec![
+        let objects = [
             object_meta("docs/a.txt", None, false),
             object_meta("docs/folder/one.txt", None, false),
             object_meta("docs/folder/two.txt", None, false),
@@ -423,7 +423,7 @@ mod tests {
 
     #[test]
     fn split_by_delimiter_without_delimiter_returns_all_objects() {
-        let objects = vec![
+        let objects = [
             object_meta("one.txt", None, false),
             object_meta("nested/two.txt", None, false),
         ];
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn split_version_entries_marks_latest_and_delete_markers() {
-        let versions = vec![
+        let versions = [
             object_meta("a.txt", Some("v3"), true),
             object_meta("a.txt", Some("v2"), false),
             object_meta("a.txt", Some("v1"), false),
@@ -481,7 +481,7 @@ mod tests {
 
     #[test]
     fn filter_versions_after_key_and_version_markers() {
-        let versions = vec![
+        let versions = [
             object_meta("a.txt", Some("v3"), false),
             object_meta("a.txt", Some("v2"), false),
             object_meta("a.txt", Some("v1"), false),
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn filter_versions_after_key_marker_without_version_skips_marker_key() {
-        let versions = vec![
+        let versions = [
             object_meta("a.txt", Some("v2"), false),
             object_meta("a.txt", Some("v1"), false),
             object_meta("b.txt", Some("b1"), false),
@@ -528,7 +528,7 @@ mod tests {
 
     #[test]
     fn paginate_versions_returns_next_markers_when_truncated() {
-        let versions = vec![
+        let versions = [
             object_meta("a.txt", Some("v3"), false),
             object_meta("a.txt", Some("v2"), false),
             object_meta("b.txt", Some("b1"), false),

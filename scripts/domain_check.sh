@@ -34,6 +34,7 @@ run_domain() {
         runtime_tests::test_healthz_reports_degraded_when_storage_data_path_probe_fails \
         runtime_tests::test_healthz_reports_degraded_when_disk_headroom_threshold_not_met \
         runtime_tests::test_healthz_reports_degraded_when_static_peer_connectivity_probe_fails \
+        runtime_tests::test_healthz_reports_degraded_when_cluster_peers_include_local_node_id \
         runtime_tests::test_placement_epoch_persists_and_increments_when_membership_view_changes \
         runtime_tests::test_cors_preflight_s3_without_auth \
         runtime_tests::test_cors_preflight_without_origin_uses_wildcard_without_credentials \

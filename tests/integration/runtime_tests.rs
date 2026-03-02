@@ -317,6 +317,37 @@ async fn test_healthz_reports_degraded_when_static_peer_connectivity_probe_fails
 }
 
 #[tokio::test]
+async fn test_healthz_reports_degraded_when_cluster_peers_include_local_node_id() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "127.0.0.1:1".to_string();
+    config.cluster_peers = vec!["127.0.0.1:1".to_string()];
+    config.membership_protocol = MembershipProtocol::StaticBootstrap;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let resp = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["checks"]["membershipProtocolReady"], true);
+    assert_eq!(body["checks"]["peerConnectivityReady"], false);
+    assert!(
+        body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("includes local node id"))))
+    );
+}
+
+#[tokio::test]
 async fn test_placement_epoch_persists_and_increments_when_membership_view_changes() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();

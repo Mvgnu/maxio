@@ -422,12 +422,15 @@ impl FilesystemStorage {
                         };
                         while let Some(ve) = ver_entries.next_entry().await? {
                             let vf = ve.file_name().to_string_lossy().to_string();
-                            if vf.ends_with(".meta.json") {
-                                if let Ok(data) = fs::read_to_string(ve.path()).await {
-                                    if let Ok(meta) = serde_json::from_str::<ObjectMeta>(&data) {
-                                        results.push(meta);
-                                    }
-                                }
+                            if !vf.ends_with(".meta.json") {
+                                continue;
+                            }
+                            if let Some(meta) = fs::read_to_string(ve.path())
+                                .await
+                                .ok()
+                                .and_then(|data| serde_json::from_str::<ObjectMeta>(&data).ok())
+                            {
+                                results.push(meta);
                             }
                         }
                     }

@@ -648,12 +648,16 @@ impl FilesystemStorage {
                     if fs::try_exists(&marker).await? {
                         if let Ok(rel) = path.strip_prefix(base) {
                             let key = format!("{}/", rel.to_string_lossy());
-                            if key.starts_with(prefix) {
-                                if let Ok(data) = fs::read_to_string(&marker).await {
-                                    if let Ok(meta) = serde_json::from_str::<ObjectMeta>(&data) {
-                                        results.push(meta);
-                                    }
-                                }
+                            if !key.starts_with(prefix) {
+                                self.walk_dir(bucket, base, &path, prefix, results).await?;
+                                continue;
+                            }
+                            if let Some(meta) = fs::read_to_string(&marker)
+                                .await
+                                .ok()
+                                .and_then(|data| serde_json::from_str::<ObjectMeta>(&data).ok())
+                            {
+                                results.push(meta);
                             }
                         }
                     }

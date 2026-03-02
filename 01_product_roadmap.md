@@ -80,7 +80,7 @@ From CLAUDE phased roadmap (additional context):
   - read-repair runtime wiring is active for primary-owner `GET`/`HEAD` paths (current-version and `versionId`-targeted) with trusted replica-head probes + replica upsert/delete repairs, and explicit execution-policy modeling to avoid implicit quorum-bypass behavior.
   - add split-brain safeguards for conflicting membership views and stale forwarding epochs.
 - Health readiness accuracy (`runtime_platform` + `quality_harness`):
-  - `/healthz` now includes probe-backed degraded readiness for data-dir access/writeability, storage data-path readability, configurable disk headroom thresholds, membership-protocol readiness, and static-bootstrap peer-connectivity probing; extend with deeper dependency probes (membership convergence/split-brain health) and keep regression coverage current as readiness contracts evolve.
+  - `/healthz` now includes probe-backed degraded readiness for data-dir access/writeability, storage data-path readability, configurable disk headroom thresholds, membership-protocol readiness, static-bootstrap peer-connectivity probing, and static-bootstrap self-peer misconfiguration detection (`clusterPeers` containing local `nodeId`); extend with deeper dependency probes (membership convergence/split-brain health) and keep regression coverage current as readiness contracts evolve.
 
 ## Distributed Foundation Scorecard (March 2, 2026)
 
@@ -448,6 +448,7 @@ From CLAUDE phased roadmap (additional context):
   - `/healthz` now also exposes probe-backed readiness diagnostics (`status`, `checks`, `warnings`) instead of unconditional `ok: true` behavior.
   - `/healthz` readiness checks now also include storage metadata traversal viability (`checks.storageDataPathReadable`) and degrade when storage data-path probing fails.
   - `/healthz` readiness checks now also include configurable disk-headroom threshold gating (`checks.diskHeadroomSufficient`) from `MAXIO_MIN_DISK_HEADROOM_BYTES` / `--min-disk-headroom-bytes`.
+  - `/healthz` readiness checks now also degrade `checks.peerConnectivityReady` and emit warnings when static-bootstrap peers include the local `nodeId`, preventing silent self-peer bootstrap misconfiguration.
   - `/healthz` now marks unimplemented membership-protocol selections (`gossip`, `raft`) as degraded readiness with explicit operator-facing warnings.
   - Startup logs now also emit explicit warnings when unimplemented membership-protocol selections (`gossip`, `raft`) are configured, mirroring `/healthz` readiness warning semantics.
   - Integration coverage includes distributed-mode health reporting when peers are configured.

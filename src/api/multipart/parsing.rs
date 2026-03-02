@@ -66,12 +66,12 @@ pub(super) fn parse_complete_parts(xml: &str) -> Result<Vec<(u32, String)>, S3Er
                 b"ETag" => in_etag = false,
                 b"Part" => {
                     let current_part = part_number.ok_or_else(S3Error::malformed_xml)?;
-                    if let Some(previous_part) = previous_part_number {
-                        if current_part <= previous_part {
-                            return Err(S3Error::invalid_part(
-                                "parts must be in strictly ascending part-number order",
-                            ));
-                        }
+                    if previous_part_number
+                        .is_some_and(|previous_part| current_part <= previous_part)
+                    {
+                        return Err(S3Error::invalid_part(
+                            "parts must be in strictly ascending part-number order",
+                        ));
                     }
                     let tag = etag.clone().ok_or_else(S3Error::malformed_xml)?;
                     parts.push((current_part, tag));

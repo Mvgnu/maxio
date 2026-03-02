@@ -17,7 +17,7 @@ struct ForwardingPair {
 }
 
 fn distributed_local_owner_key(seed: &str) -> String {
-    let peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    let peers = [DISTRIBUTED_PEER_NODE.to_string()];
     distributed_local_owner_key_for(seed, DISTRIBUTED_LOCAL_NODE, &peers)
 }
 
@@ -33,7 +33,7 @@ fn distributed_local_owner_key_for(seed: &str, local_node: &str, peers: &[String
 }
 
 fn distributed_non_owner_key(seed: &str) -> String {
-    let peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    let peers = [DISTRIBUTED_PEER_NODE.to_string()];
     distributed_non_owner_key_for(seed, DISTRIBUTED_LOCAL_NODE, &peers)
 }
 
