@@ -203,6 +203,11 @@ export interface RuntimePlacement {
   writeQuorumSize: number | null
   writeAckPolicy: string | null
   nonOwnerMutationPolicy: string | null
+  nonOwnerReadPolicy: string | null
+  nonOwnerBatchMutationPolicy: string | null
+  mixedOwnerBatchMutationPolicy: string | null
+  replicaFanoutOperations: string[]
+  pendingReplicaFanoutOperations: string[]
   owners: string[]
   primaryOwner: string | null
   forwardTarget: string | null
@@ -904,6 +909,11 @@ export async function getRuntimePlacementApi(args: {
     writeQuorumSize?: number
     writeAckPolicy?: string
     nonOwnerMutationPolicy?: string
+    nonOwnerReadPolicy?: string
+    nonOwnerBatchMutationPolicy?: string
+    mixedOwnerBatchMutationPolicy?: string
+    replicaFanoutOperations?: unknown
+    pendingReplicaFanoutOperations?: unknown
     owners?: unknown
     primaryOwner?: string | null
     forwardTarget?: string | null
@@ -922,6 +932,8 @@ export async function getRuntimePlacementApi(args: {
   }
 
   const topology = normalizeRuntimeTopology(result.data)
+  const parseStringArray = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
   const owners = Array.isArray(result.data.owners)
     ? result.data.owners.filter((owner): owner is string => typeof owner === 'string')
     : []
@@ -951,6 +963,22 @@ export async function getRuntimePlacementApi(args: {
         typeof result.data.nonOwnerMutationPolicy === 'string'
           ? result.data.nonOwnerMutationPolicy
           : null,
+      nonOwnerReadPolicy:
+        typeof result.data.nonOwnerReadPolicy === 'string'
+          ? result.data.nonOwnerReadPolicy
+          : null,
+      nonOwnerBatchMutationPolicy:
+        typeof result.data.nonOwnerBatchMutationPolicy === 'string'
+          ? result.data.nonOwnerBatchMutationPolicy
+          : null,
+      mixedOwnerBatchMutationPolicy:
+        typeof result.data.mixedOwnerBatchMutationPolicy === 'string'
+          ? result.data.mixedOwnerBatchMutationPolicy
+          : null,
+      replicaFanoutOperations: parseStringArray(result.data.replicaFanoutOperations),
+      pendingReplicaFanoutOperations: parseStringArray(
+        result.data.pendingReplicaFanoutOperations
+      ),
       owners,
       primaryOwner: typeof result.data.primaryOwner === 'string' ? result.data.primaryOwner : null,
       forwardTarget: typeof result.data.forwardTarget === 'string' ? result.data.forwardTarget : null,

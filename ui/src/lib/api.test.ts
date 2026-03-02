@@ -463,6 +463,11 @@ describe('api client', () => {
           writeQuorumSize: 2,
           writeAckPolicy: 'majority',
           nonOwnerMutationPolicy: 'forward-single-write',
+          nonOwnerReadPolicy: 'forward-single-read',
+          nonOwnerBatchMutationPolicy: 'forward-multi-target-batch',
+          mixedOwnerBatchMutationPolicy: 'forward-mixed-owner-batch',
+          replicaFanoutOperations: ['put-object', 'copy-object'],
+          pendingReplicaFanoutOperations: [],
           owners: ['node-a:9000', 'node-b:9000'],
           primaryOwner: 'node-b:9000',
           forwardTarget: 'node-b:9000',
@@ -496,6 +501,11 @@ describe('api client', () => {
       expect(result.data.writeQuorumSize).toBe(2)
       expect(result.data.writeAckPolicy).toBe('majority')
       expect(result.data.nonOwnerMutationPolicy).toBe('forward-single-write')
+      expect(result.data.nonOwnerReadPolicy).toBe('forward-single-read')
+      expect(result.data.nonOwnerBatchMutationPolicy).toBe('forward-multi-target-batch')
+      expect(result.data.mixedOwnerBatchMutationPolicy).toBe('forward-mixed-owner-batch')
+      expect(result.data.replicaFanoutOperations).toEqual(['put-object', 'copy-object'])
+      expect(result.data.pendingReplicaFanoutOperations).toEqual([])
       expect(result.data.owners).toEqual(['node-a:9000', 'node-b:9000'])
       expect(result.data.primaryOwner).toBe('node-b:9000')
       expect(result.data.forwardTarget).toBe('node-b:9000')

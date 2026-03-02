@@ -44,6 +44,11 @@
   let placementWriteQuorumSize = $state<number | null>(null);
   let placementWriteAckPolicy = $state<string | null>(null);
   let placementNonOwnerMutationPolicy = $state<string | null>(null);
+  let placementNonOwnerReadPolicy = $state<string | null>(null);
+  let placementNonOwnerBatchMutationPolicy = $state<string | null>(null);
+  let placementMixedOwnerBatchMutationPolicy = $state<string | null>(null);
+  let placementReplicaFanoutOperations = $state<string[]>([]);
+  let placementPendingReplicaFanoutOperations = $state<string[]>([]);
   let placementMembershipViewId = $state<string | null>(null);
   let placementPrimaryOwner = $state<string | null>(null);
   let placementForwardTarget = $state<string | null>(null);
@@ -136,6 +141,11 @@
     placementWriteQuorumSize = result.data.writeQuorumSize;
     placementWriteAckPolicy = result.data.writeAckPolicy;
     placementNonOwnerMutationPolicy = result.data.nonOwnerMutationPolicy;
+    placementNonOwnerReadPolicy = result.data.nonOwnerReadPolicy;
+    placementNonOwnerBatchMutationPolicy = result.data.nonOwnerBatchMutationPolicy;
+    placementMixedOwnerBatchMutationPolicy = result.data.mixedOwnerBatchMutationPolicy;
+    placementReplicaFanoutOperations = result.data.replicaFanoutOperations;
+    placementPendingReplicaFanoutOperations = result.data.pendingReplicaFanoutOperations;
     placementMembershipViewId = result.data.membershipViewId;
     placementPrimaryOwner = result.data.primaryOwner;
     placementForwardTarget = result.data.forwardTarget;
@@ -333,6 +343,21 @@
         <p>Write ack policy: {placementWriteAckPolicy ?? "--"}</p>
         <p>
           Non-owner mutation policy: {placementNonOwnerMutationPolicy ?? "--"}
+        </p>
+        <p>
+          Non-owner read policy: {placementNonOwnerReadPolicy ?? "--"}
+        </p>
+        <p>
+          Non-owner batch mutation policy: {placementNonOwnerBatchMutationPolicy ?? "--"}
+        </p>
+        <p>
+          Mixed-owner batch mutation policy: {placementMixedOwnerBatchMutationPolicy ?? "--"}
+        </p>
+        <p>
+          Replica fanout operations: {placementReplicaFanoutOperations.length === 0 ? "--" : placementReplicaFanoutOperations.join(", ")}
+        </p>
+        <p>
+          Pending fanout operations: {placementPendingReplicaFanoutOperations.length === 0 ? "--" : placementPendingReplicaFanoutOperations.join(", ")}
         </p>
         <p class="truncate" title={placementPrimaryOwner ?? undefined}>
           Primary owner: {placementPrimaryOwner ?? "--"}
