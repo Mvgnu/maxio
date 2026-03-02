@@ -16,8 +16,9 @@ use crate::server::{
 use crate::storage::StorageError;
 use crate::storage::placement::{
     chunk_forward_target_with_self, chunk_rebalance_plan, membership_fingerprint,
-    membership_with_self, object_forward_target_with_self, object_rebalance_plan,
-    primary_chunk_owner_with_self, primary_object_owner_with_self, quorum_size,
+    membership_with_self, local_rebalance_actions, object_forward_target_with_self,
+    object_rebalance_plan, primary_chunk_owner_with_self, primary_object_owner_with_self,
+    quorum_size,
     select_chunk_owners_with_self, select_object_owners_with_self,
 };
 use crate::storage::validation::validate_key;
@@ -120,6 +121,14 @@ struct RebalanceTransferPayload {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct RebalanceLocalActionPayload {
+    action: String,
+    from: Option<String>,
+    to: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct RebalancePlanPayload {
     previous_owners: Vec<String>,
     next_owners: Vec<String>,
@@ -127,6 +136,7 @@ struct RebalancePlanPayload {
     removed_owners: Vec<String>,
     added_owners: Vec<String>,
     transfer_count: usize,
+    local_actions: Vec<RebalanceLocalActionPayload>,
     transfers: Vec<RebalanceTransferPayload>,
 }
 
@@ -391,12 +401,31 @@ pub(super) async fn get_rebalance(
     };
 
     let transfer_count = plan.transfers.len();
+    let local_actions = local_rebalance_actions(&plan, local_node)
+        .into_iter()
+        .map(|action| match action {
+            crate::storage::placement::LocalRebalanceAction::Receive { from, to } => {
+                RebalanceLocalActionPayload {
+                    action: "receive".to_string(),
+                    from,
+                    to,
+                }
+            }
+            crate::storage::placement::LocalRebalanceAction::Send { from, to } => {
+                RebalanceLocalActionPayload {
+                    action: "send".to_string(),
+                    from: Some(from),
+                    to,
+                }
+            }
+        })
+        .collect::<Vec<_>>();
     let transfers = plan
         .transfers
-        .into_iter()
+        .iter()
         .map(|transfer| RebalanceTransferPayload {
-            from: transfer.from,
-            to: transfer.to,
+            from: transfer.from.clone(),
+            to: transfer.to.clone(),
         })
         .collect::<Vec<_>>();
 
@@ -428,6 +457,7 @@ pub(super) async fn get_rebalance(
             removed_owners: plan.removed_owners,
             added_owners: plan.added_owners,
             transfer_count,
+            local_actions,
             transfers,
         },
         topology: topology_payload(&topology),

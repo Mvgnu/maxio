@@ -1455,10 +1455,19 @@ async fn test_console_rebalance_endpoint_requires_auth_and_reports_join_preview(
     let transfers = body["plan"]["transfers"]
         .as_array()
         .expect("rebalance response should include transfers array");
+    let local_actions = body["plan"]["localActions"]
+        .as_array()
+        .expect("rebalance response should include localActions array");
     assert_eq!(
         body["plan"]["transferCount"].as_u64(),
         Some(transfers.len() as u64)
     );
+    assert!(local_actions.iter().all(|entry| {
+        entry["action"]
+            .as_str()
+            .is_some_and(|value| value == "send" || value == "receive")
+            && entry["to"].as_str().is_some_and(|value| !value.is_empty())
+    }));
 }
 
 #[tokio::test]
@@ -1494,6 +1503,15 @@ async fn test_console_rebalance_endpoint_reports_distributed_leave_preview() {
     assert!(body["plan"]["nextOwners"].is_array());
     assert!(body["plan"]["removedOwners"].is_array());
     assert!(body["plan"]["addedOwners"].is_array());
+    let local_actions = body["plan"]["localActions"]
+        .as_array()
+        .expect("rebalance response should include localActions array");
+    assert!(local_actions.iter().all(|entry| {
+        entry["action"]
+            .as_str()
+            .is_some_and(|value| value == "send" || value == "receive")
+            && entry["to"].as_str().is_some_and(|value| !value.is_empty())
+    }));
 }
 
 #[tokio::test]
