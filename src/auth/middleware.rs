@@ -1,5 +1,6 @@
 use axum::{
     extract::{Request, State},
+    http::header::AUTHORIZATION,
     middleware::Next,
     response::Response,
 };
@@ -23,6 +24,13 @@ pub async fn auth_middleware(
     tracing::debug!("{} {}", method, uri);
 
     let query = request.uri().query().unwrap_or("").to_string();
+    let auth_header_count = request.headers().get_all(AUTHORIZATION).iter().count();
+    if auth_header_count > 1 {
+        tracing::debug!("Rejecting request with duplicate Authorization headers");
+        return Err(S3Error::access_denied(
+            "Multiple Authorization headers are not allowed",
+        ));
+    }
 
     // Detect presigned URL by presence of X-Amz-Signature in query string.
     // Query keys may be percent-encoded by some clients/proxies.

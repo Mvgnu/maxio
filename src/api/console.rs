@@ -59,6 +59,10 @@ pub fn console_router(state: AppState) -> Router<AppState> {
         .route("/system/health", get(system::get_health))
         .route("/system/metrics", get(system::get_metrics))
         .route("/system/topology", get(system::get_topology))
+        .route("/system/membership", get(system::get_membership))
+        .route("/system/placement", get(system::get_placement))
+        .route("/system/rebalance", get(system::get_rebalance))
+        .route("/system/summary", get(system::get_summary))
         .route("/buckets/{bucket}/versions", get(versions::list_versions))
         .route(
             "/buckets/{bucket}/versions/{version_id}/objects/{*key}",

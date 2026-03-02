@@ -35,6 +35,51 @@ pub struct ParsedAuth {
     pub signature: String,
 }
 
+fn is_valid_header_name_token(token: &str) -> bool {
+    !token.is_empty()
+        && token.bytes().all(|b| {
+            b.is_ascii_alphanumeric()
+                || matches!(
+                    b,
+                    b'!' | b'#'
+                        | b'$'
+                        | b'%'
+                        | b'&'
+                        | b'\''
+                        | b'*'
+                        | b'+'
+                        | b'-'
+                        | b'.'
+                        | b'^'
+                        | b'_'
+                        | b'`'
+                        | b'|'
+                        | b'~'
+                )
+        })
+}
+
+fn parse_signed_headers(value: &str) -> Result<Vec<String>, &'static str> {
+    let mut signed_headers = Vec::<String>::new();
+
+    for raw_token in value.split(';') {
+        let token = raw_token.trim().to_ascii_lowercase();
+        if token.is_empty() || !is_valid_header_name_token(&token) {
+            return Err("Invalid SignedHeaders");
+        }
+        if signed_headers.iter().any(|h| h == &token) {
+            return Err("Duplicate SignedHeaders entry");
+        }
+        signed_headers.push(token);
+    }
+
+    if !signed_headers.iter().any(|header| header == "host") {
+        return Err("SignedHeaders must include host");
+    }
+
+    Ok(signed_headers)
+}
+
 fn decode_query_component(input: &str) -> Result<String, &'static str> {
     percent_encoding::percent_decode_str(input)
         .decode_utf8()
@@ -97,11 +142,13 @@ pub fn parse_authorization_header(header: &str) -> Result<ParsedAuth, &'static s
     }
     validate_credential_scope_parts(&cred_parts)?;
 
+    let signed_headers = parse_signed_headers(signed_headers)?;
+
     Ok(ParsedAuth {
         access_key: cred_parts[0].to_string(),
         date: cred_parts[1].to_string(),
         region: cred_parts[2].to_string(),
-        signed_headers: signed_headers.split(';').map(|s| s.to_string()).collect(),
+        signed_headers,
         signature: signature.to_string(),
     })
 }
@@ -114,7 +161,11 @@ pub fn verify_signature(
     parsed: &ParsedAuth,
     secret_key: &str,
 ) -> bool {
-    let canonical_request = build_canonical_request(method, uri, query_string, headers, parsed);
+    let canonical_request =
+        match build_canonical_request(method, uri, query_string, headers, parsed) {
+            Some(request) => request,
+            None => return false,
+        };
 
     tracing::debug!("Canonical request:\n{}", canonical_request);
 
@@ -205,6 +256,9 @@ pub fn parse_presigned_query(query: &str) -> Result<(ParsedAuth, String, u64), &
     let signature = signature.ok_or("Missing X-Amz-Signature")?;
 
     let expires_secs: u64 = expires_str.parse().map_err(|_| "Invalid X-Amz-Expires")?;
+    if expires_secs == 0 {
+        return Err("X-Amz-Expires must be greater than 0 seconds");
+    }
     if expires_secs > 604800 {
         return Err("X-Amz-Expires exceeds maximum of 604800 seconds");
     }
@@ -216,11 +270,13 @@ pub fn parse_presigned_query(query: &str) -> Result<(ParsedAuth, String, u64), &
     }
     validate_credential_scope_parts(&cred_parts)?;
 
+    let signed_headers = parse_signed_headers(&signed_headers)?;
+
     let parsed = ParsedAuth {
         access_key: cred_parts[0].to_string(),
         date: cred_parts[1].to_string(),
         region: cred_parts[2].to_string(),
-        signed_headers: signed_headers.split(';').map(|s| s.to_string()).collect(),
+        signed_headers,
         signature: signature.to_string(),
     };
 
@@ -268,7 +324,10 @@ pub fn verify_presigned_signature(
 
     let canonical_uri = canonical_uri(uri);
     let canonical_qs = canonical_query_string(&filtered_qs);
-    let canonical_hdrs = canonical_headers(headers, &parsed.signed_headers);
+    let canonical_hdrs = match canonical_headers(headers, &parsed.signed_headers) {
+        Some(headers) => headers,
+        None => return false,
+    };
     let signed_headers = parsed.signed_headers.join(";");
 
     let canonical_request = format!(
@@ -323,6 +382,9 @@ pub fn generate_presigned_url(request: PresignRequest<'_>) -> Result<String, &'s
         expires_secs,
     } = request;
 
+    if expires_secs == 0 {
+        return Err("X-Amz-Expires must be greater than 0 seconds");
+    }
     if expires_secs > 604800 {
         return Err("X-Amz-Expires exceeds maximum of 604800 seconds");
     }
@@ -387,10 +449,10 @@ fn build_canonical_request(
     query_string: &str,
     headers: &HeaderMap,
     parsed: &ParsedAuth,
-) -> String {
+) -> Option<String> {
     let canonical_uri = canonical_uri(uri);
     let canonical_qs = canonical_query_string(query_string);
-    let canonical_headers = canonical_headers(headers, &parsed.signed_headers);
+    let canonical_headers = canonical_headers(headers, &parsed.signed_headers)?;
     let signed_headers = parsed.signed_headers.join(";");
 
     let payload_hash = headers
@@ -398,10 +460,10 @@ fn build_canonical_request(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("UNSIGNED-PAYLOAD");
 
-    format!(
+    Some(format!(
         "{}\n{}\n{}\n{}\n{}\n{}",
         method, canonical_uri, canonical_qs, canonical_headers, signed_headers, payload_hash
-    )
+    ))
 }
 
 fn canonical_uri(uri: &str) -> String {
@@ -459,23 +521,28 @@ fn canonical_query_string(qs: &str) -> String {
         .join("&")
 }
 
-fn canonical_headers(headers: &HeaderMap, signed_headers: &[String]) -> String {
+fn canonical_headers(headers: &HeaderMap, signed_headers: &[String]) -> Option<String> {
     let mut result = String::new();
     for name in signed_headers {
-        // Collect all values for this header (there can be multiple)
-        let values: Vec<String> = headers
-            .get_all(name.as_str())
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .map(normalize_header_value)
-            .collect();
-        let value = values.join(",");
+        // Collect all values for this header (there can be multiple).
+        // SigV4 requires every signed header to be present in the request.
+        let values = headers.get_all(name.as_str());
+        let mut normalized_values = Vec::<String>::new();
+        for value in values {
+            let value = value.to_str().ok()?;
+            normalized_values.push(normalize_header_value(value));
+        }
+
+        if normalized_values.is_empty() {
+            return None;
+        }
+
         result.push_str(name);
         result.push(':');
-        result.push_str(&value);
+        result.push_str(&normalized_values.join(","));
         result.push('\n');
     }
-    result
+    Some(result)
 }
 
 fn normalize_header_value(value: &str) -> String {
@@ -584,8 +651,143 @@ mod tests {
         );
 
         let signed = vec!["x-amz-meta-foo".to_string()];
-        let canonical = canonical_headers(&headers, &signed);
+        let canonical = canonical_headers(&headers, &signed).expect("canonical headers");
         assert_eq!(canonical, "x-amz-meta-foo:one two,three four\n");
+    }
+
+    #[test]
+    fn canonical_headers_rejects_missing_signed_header() {
+        let headers = HeaderMap::new();
+        let signed = vec!["x-amz-meta-missing".to_string()];
+        assert!(canonical_headers(&headers, &signed).is_none());
+    }
+
+    #[test]
+    fn verify_signature_rejects_missing_signed_header() {
+        let method = "GET";
+        let uri = "/bucket/object";
+        let query_string = "";
+
+        let mut full_headers = HeaderMap::new();
+        full_headers.insert("host", HeaderValue::from_static("localhost:9000"));
+        full_headers.insert("x-amz-date", HeaderValue::from_static("20260301T120000Z"));
+        full_headers.insert(
+            "x-amz-content-sha256",
+            HeaderValue::from_static("UNSIGNED-PAYLOAD"),
+        );
+        full_headers.insert("x-amz-meta-probe", HeaderValue::from_static(""));
+
+        let mut parsed = ParsedAuth {
+            access_key: "minioadmin".to_string(),
+            date: "20260301".to_string(),
+            region: "us-east-1".to_string(),
+            signed_headers: vec![
+                "host".to_string(),
+                "x-amz-content-sha256".to_string(),
+                "x-amz-date".to_string(),
+                "x-amz-meta-probe".to_string(),
+            ],
+            signature: String::new(),
+        };
+
+        let canonical_request =
+            build_canonical_request(method, uri, query_string, &full_headers, &parsed)
+                .expect("full signed headers should canonicalize");
+        let timestamp = full_headers
+            .get("x-amz-date")
+            .and_then(|v| v.to_str().ok())
+            .expect("x-amz-date should be present");
+        let string_to_sign = build_string_to_sign(&canonical_request, timestamp, &parsed);
+        let signing_key = derive_signing_key("minioadmin", &parsed.date, &parsed.region);
+        parsed.signature = hmac_sha256_hex(&signing_key, string_to_sign.as_bytes())
+            .expect("signature should compute");
+
+        assert!(verify_signature(
+            method,
+            uri,
+            query_string,
+            &full_headers,
+            &parsed,
+            "minioadmin"
+        ));
+
+        let mut missing_headers = full_headers.clone();
+        missing_headers.remove("x-amz-meta-probe");
+        assert!(!verify_signature(
+            method,
+            uri,
+            query_string,
+            &missing_headers,
+            &parsed,
+            "minioadmin"
+        ));
+    }
+
+    #[test]
+    fn verify_presigned_signature_rejects_missing_signed_header() {
+        let method = "GET";
+        let path = "/bucket/object";
+        let timestamp = "20260301T120000Z";
+        let mut parsed = ParsedAuth {
+            access_key: "minioadmin".to_string(),
+            date: "20260301".to_string(),
+            region: "us-east-1".to_string(),
+            signed_headers: vec!["host".to_string(), "x-amz-meta-probe".to_string()],
+            signature: String::new(),
+        };
+
+        let filtered_qs = concat!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
+            "X-Amz-Credential=minioadmin%2F20260301%2Fus-east-1%2Fs3%2Faws4_request&",
+            "X-Amz-Date=20260301T120000Z&",
+            "X-Amz-Expires=300&",
+            "X-Amz-SignedHeaders=host%3Bx-amz-meta-probe"
+        );
+
+        let mut full_headers = HeaderMap::new();
+        full_headers.insert("host", HeaderValue::from_static("localhost:9000"));
+        full_headers.insert("x-amz-meta-probe", HeaderValue::from_static(""));
+
+        let canonical_uri = canonical_uri(path);
+        let canonical_qs = canonical_query_string(filtered_qs);
+        let canonical_hdrs = canonical_headers(&full_headers, &parsed.signed_headers)
+            .expect("full signed headers should canonicalize");
+        let canonical_request = format!(
+            "{}\n{}\n{}\n{}\n{}\nUNSIGNED-PAYLOAD",
+            method,
+            canonical_uri,
+            canonical_qs,
+            canonical_hdrs,
+            parsed.signed_headers.join(";")
+        );
+        let string_to_sign = build_string_to_sign(&canonical_request, timestamp, &parsed);
+        let signing_key = derive_signing_key("minioadmin", &parsed.date, &parsed.region);
+        let signature = hmac_sha256_hex(&signing_key, string_to_sign.as_bytes())
+            .expect("signature should compute");
+        parsed.signature = signature.clone();
+        let query = format!("{}&X-Amz-Signature={}", filtered_qs, signature);
+
+        assert!(verify_presigned_signature(
+            method,
+            path,
+            &query,
+            &full_headers,
+            &parsed,
+            timestamp,
+            "minioadmin"
+        ));
+
+        let mut missing_headers = full_headers.clone();
+        missing_headers.remove("x-amz-meta-probe");
+        assert!(!verify_presigned_signature(
+            method,
+            path,
+            &query,
+            &missing_headers,
+            &parsed,
+            timestamp,
+            "minioadmin"
+        ));
     }
 
     #[test]
@@ -595,6 +797,19 @@ mod tests {
             "X-Amz-Credential=minioadmin%2F20260301%2Fus-east-1%2Fs3%2Faws4_request&",
             "X-Amz-Date=20260301T120000Z&",
             "X-Amz-Expires=604801&",
+            "X-Amz-SignedHeaders=host&",
+            "X-Amz-Signature=deadbeef"
+        );
+        assert!(parse_presigned_query(query).is_err());
+    }
+
+    #[test]
+    fn parse_presigned_query_rejects_zero_expires() {
+        let query = concat!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
+            "X-Amz-Credential=minioadmin%2F20260301%2Fus-east-1%2Fs3%2Faws4_request&",
+            "X-Amz-Date=20260301T120000Z&",
+            "X-Amz-Expires=0&",
             "X-Amz-SignedHeaders=host&",
             "X-Amz-Signature=deadbeef"
         );
@@ -623,6 +838,18 @@ mod tests {
     fn parse_authorization_header_rejects_unrecognized_components() {
         let with_unknown = "AWS4-HMAC-SHA256 Credential=minioadmin/20260301/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-date, Signature=abc123, Foo=bar";
         assert!(parse_authorization_header(with_unknown).is_err());
+    }
+
+    #[test]
+    fn parse_authorization_header_rejects_invalid_signed_headers() {
+        let duplicate = "AWS4-HMAC-SHA256 Credential=minioadmin/20260301/us-east-1/s3/aws4_request, SignedHeaders=host;host, Signature=abc123";
+        assert!(parse_authorization_header(duplicate).is_err());
+
+        let missing_host = "AWS4-HMAC-SHA256 Credential=minioadmin/20260301/us-east-1/s3/aws4_request, SignedHeaders=x-amz-date, Signature=abc123";
+        assert!(parse_authorization_header(missing_host).is_err());
+
+        let invalid_token = "AWS4-HMAC-SHA256 Credential=minioadmin/20260301/us-east-1/s3/aws4_request, SignedHeaders=host;bad header, Signature=abc123";
+        assert!(parse_authorization_header(invalid_token).is_err());
     }
 
     #[test]
@@ -660,6 +887,39 @@ mod tests {
             "X-Amz-Signature=deadbeef"
         );
         assert!(parse_presigned_query(duplicate_date).is_err());
+    }
+
+    #[test]
+    fn parse_presigned_query_rejects_invalid_signed_headers() {
+        let duplicate_signed_headers = concat!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
+            "X-Amz-Credential=minioadmin%2F20260301%2Fus-east-1%2Fs3%2Faws4_request&",
+            "X-Amz-Date=20260301T120000Z&",
+            "X-Amz-Expires=60&",
+            "X-Amz-SignedHeaders=host%3Bhost&",
+            "X-Amz-Signature=deadbeef",
+        );
+        assert!(parse_presigned_query(duplicate_signed_headers).is_err());
+
+        let missing_host = concat!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
+            "X-Amz-Credential=minioadmin%2F20260301%2Fus-east-1%2Fs3%2Faws4_request&",
+            "X-Amz-Date=20260301T120000Z&",
+            "X-Amz-Expires=60&",
+            "X-Amz-SignedHeaders=x-amz-date&",
+            "X-Amz-Signature=deadbeef",
+        );
+        assert!(parse_presigned_query(missing_host).is_err());
+
+        let invalid_token = concat!(
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256&",
+            "X-Amz-Credential=minioadmin%2F20260301%2Fus-east-1%2Fs3%2Faws4_request&",
+            "X-Amz-Date=20260301T120000Z&",
+            "X-Amz-Expires=60&",
+            "X-Amz-SignedHeaders=host%3Bbad%20header&",
+            "X-Amz-Signature=deadbeef",
+        );
+        assert!(parse_presigned_query(invalid_token).is_err());
     }
 
     #[test]
@@ -720,6 +980,23 @@ mod tests {
             region: "us-east-1",
             now,
             expires_secs: 604801,
+        });
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn generate_presigned_url_rejects_zero_expires() {
+        let now = DateTime::<Utc>::from_str("2026-03-01T12:00:00Z").unwrap();
+        let res = generate_presigned_url(PresignRequest {
+            method: "GET",
+            scheme: "http",
+            host: "localhost:9000",
+            path: "/bucket/object",
+            access_key: "minioadmin",
+            secret_key: "minioadmin",
+            region: "us-east-1",
+            now,
+            expires_secs: 0,
         });
         assert!(res.is_err());
     }

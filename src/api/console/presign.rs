@@ -15,6 +15,13 @@ pub(super) struct PresignParams {
     expires: Option<u64>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PresignResponse {
+    url: String,
+    expires_in: u64,
+}
+
 pub(super) async fn presign_object(
     State(state): State<AppState>,
     Extension(principal): Extension<ConsolePrincipal>,
@@ -76,9 +83,9 @@ pub(super) async fn presign_object(
 
     response::json(
         StatusCode::OK,
-        serde_json::json!({
-            "url": presigned_url,
-            "expiresIn": expires_secs,
-        }),
+        PresignResponse {
+            url: presigned_url,
+            expires_in: expires_secs,
+        },
     )
 }

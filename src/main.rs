@@ -1,14 +1,5 @@
-mod api;
-mod auth;
-mod config;
-mod embedded;
-mod error;
-mod server;
-mod storage;
-mod xml;
-
 use clap::Parser;
-use config::Config;
+use maxio::{config::Config, server, storage};
 use std::net::SocketAddr;
 use std::time::Duration;
 use tracing_subscriber::EnvFilter;
@@ -26,9 +17,12 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::parse();
 
     let state = server::AppState::from_config(config.clone()).await?;
-    let node_id = state.node_id.as_ref().clone();
-    let cluster_peer_count = state.cluster_peers.len();
-    let distributed_mode = cluster_peer_count > 0;
+    let topology = server::runtime_topology_snapshot(&state);
+    let node_id = topology.node_id.clone();
+    let cluster_peer_count = topology.cluster_peer_count();
+    let membership_node_count = topology.membership_node_count();
+    let distributed_mode = topology.is_distributed();
+    let placement_epoch = topology.placement_epoch;
 
     spawn_lifecycle_worker(state.clone());
 
@@ -60,6 +54,14 @@ async fn main() -> anyhow::Result<()> {
         cluster_peer_count,
         if cluster_peer_count == 1 { "" } else { "s" }
     );
+    tracing::info!("Members:    {} (self + peers)", membership_node_count);
+    tracing::info!("Membership: {}", config.membership_protocol.as_str());
+    let (_membership_protocol_ready, membership_protocol_warning) =
+        server::membership_protocol_readiness(config.membership_protocol);
+    if let Some(warning) = membership_protocol_warning {
+        tracing::warn!("{}", warning);
+    }
+    tracing::info!("Placement:  epoch={}", placement_epoch);
     tracing::info!("Data dir:   {}", config.data_dir);
     tracing::info!("Region:     {}", config.region);
     if config.erasure_coding {

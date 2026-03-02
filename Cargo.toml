@@ -49,6 +49,8 @@ anyhow = "1"
 tokio-util = { version = "0.7", features = ["io"] }
 futures = "0.3"
 base64 = "0.22"
+reqwest = { version = "0.12", features = ["json"] }
+fs2 = "0.4"
 
 # Embedded UI assets
 rust-embed = "8"
@@ -57,5 +59,4 @@ rand = "0.10.0"
 reed-solomon-erasure = "6"
 
 [dev-dependencies]
-reqwest = { version = "0.12", features = ["json"] }
 tempfile = "3"

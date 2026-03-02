@@ -6,7 +6,11 @@ import {
   buildVersionDownloadUrl,
   deleteObjectApi,
   getRuntimeHealthApi,
+  getRuntimeMembershipApi,
   getRuntimeMetricsApi,
+  getRuntimePlacementApi,
+  getRuntimeRebalanceApi,
+  getRuntimeSummaryApi,
   getRuntimeTopologyApi,
   presignObjectApi,
   uploadObjectApi,
@@ -66,6 +70,8 @@ describe('api client', () => {
           nodeId: 'node-a',
           clusterPeerCount: 2,
           clusterPeers: ['node-b:9000', 'node-c:9000'],
+          membershipProtocol: 'gossip',
+          placementEpoch: 7,
         }),
         {
           status: 200,
@@ -84,6 +90,8 @@ describe('api client', () => {
       expect(result.data.nodeId).toBe('node-a')
       expect(result.data.clusterPeerCount).toBe(2)
       expect(result.data.clusterPeers).toEqual(['node-b:9000', 'node-c:9000'])
+      expect(result.data.membershipProtocol).toBe('gossip')
+      expect(result.data.placementEpoch).toBe(7)
     }
   })
 
@@ -101,6 +109,11 @@ describe('api client', () => {
           'maxio_uptime_seconds 9.25',
           '# HELP maxio_build_info Build and version information for MaxIO.',
           'maxio_build_info{version="0.9.9"} 1',
+          '# HELP maxio_membership_protocol_info Membership protocol configuration for runtime topology convergence.',
+          '# TYPE maxio_membership_protocol_info gauge',
+          'maxio_membership_protocol_info{protocol="gossip"} 1',
+          '# TYPE maxio_placement_epoch gauge',
+          'maxio_placement_epoch 9',
         ].join('\n'),
         {
           status: 200,
@@ -118,6 +131,8 @@ describe('api client', () => {
       expect(result.data.version).toBe('0.9.9')
       expect(result.data.mode).toBeNull()
       expect(result.data.clusterPeers).toEqual([])
+      expect(result.data.membershipProtocol).toBe('gossip')
+      expect(result.data.placementEpoch).toBe(9)
     }
   })
 
@@ -149,6 +164,8 @@ describe('api client', () => {
           nodeId: 'node-a',
           clusterPeerCount: 3,
           clusterPeers: ['node-b:9000', 'node-c:9000', 'node-d:9000'],
+          membershipProtocol: 'raft',
+          placementEpoch: 11,
         }),
         {
           status: 200,
@@ -168,6 +185,8 @@ describe('api client', () => {
         'node-c:9000',
         'node-d:9000',
       ])
+      expect(result.data.membershipProtocol).toBe('raft')
+      expect(result.data.placementEpoch).toBe(11)
     }
   })
 
@@ -192,11 +211,23 @@ describe('api client', () => {
       new Response(
         JSON.stringify({
           ok: true,
+          status: 'degraded',
           version: '0.1.0',
           uptimeSeconds: 42.5,
           mode: 'distributed',
           nodeId: 'node-a',
           clusterPeers: ['node-b:9000', 'node-c:9000'],
+          membershipProtocol: 'gossip',
+          placementEpoch: 3,
+          checks: {
+            dataDirAccessible: true,
+            dataDirWritable: false,
+            storageDataPathReadable: false,
+            diskHeadroomSufficient: false,
+            peerConnectivityReady: false,
+            membershipProtocolReady: false,
+          },
+          warnings: ['Data directory write probe failed'],
         }),
         {
           status: 200,
@@ -216,6 +247,18 @@ describe('api client', () => {
       // clusterPeerCount should be derived from peers when omitted.
       expect(result.data.clusterPeerCount).toBe(2)
       expect(result.data.clusterPeers).toEqual(['node-b:9000', 'node-c:9000'])
+      expect(result.data.membershipProtocol).toBe('gossip')
+      expect(result.data.placementEpoch).toBe(3)
+      expect(result.data.status).toBe('degraded')
+      expect(result.data.checks).toEqual({
+        dataDirAccessible: true,
+        dataDirWritable: false,
+        storageDataPathReadable: false,
+        diskHeadroomSufficient: false,
+        peerConnectivityReady: false,
+        membershipProtocolReady: false,
+      })
+      expect(result.data.warnings).toEqual(['Data directory write probe failed'])
     }
   })
 
@@ -233,6 +276,377 @@ describe('api client', () => {
       expect(result.status).toBe(401)
       expect(result.error).toBe('Not authenticated')
     }
+  })
+
+  it('parses summary JSON payload into typed summary data', async () => {
+    mockFetchSequence([
+      new Response(
+        JSON.stringify({
+          health: {
+            ok: true,
+            status: 'ok',
+            version: '0.1.0',
+            uptimeSeconds: 51.25,
+            membershipViewId: 'view-123',
+            membershipProtocol: 'raft',
+            placementEpoch: 14,
+            checks: {
+              dataDirAccessible: true,
+              dataDirWritable: true,
+              storageDataPathReadable: true,
+              diskHeadroomSufficient: true,
+              peerConnectivityReady: true,
+              membershipProtocolReady: true,
+            },
+            warnings: [],
+          },
+          metrics: {
+            requestsTotal: 120,
+            uptimeSeconds: 50.5,
+            version: '0.1.0',
+            membershipProtocol: 'raft',
+          },
+          topology: {
+            mode: 'distributed',
+            nodeId: 'node-a',
+            clusterPeerCount: 2,
+            clusterPeers: ['node-b:9000', 'node-c:9000'],
+            membershipProtocol: 'raft',
+            placementEpoch: 14,
+          },
+          membership: {
+            mode: 'distributed',
+            protocol: 'static-bootstrap',
+            viewId: 'view-123',
+            leaderNodeId: null,
+            coordinatorNodeId: 'node-a',
+            nodes: [
+              { nodeId: 'node-a', role: 'self', status: 'alive' },
+              { nodeId: 'node-b:9000', role: 'peer', status: 'configured' },
+            ],
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      ),
+    ])
+
+    const result = await getRuntimeSummaryApi()
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.health.ok).toBe(true)
+      expect(result.data.health.version).toBe('0.1.0')
+      expect(result.data.health.uptimeSeconds).toBe(51.25)
+      expect(result.data.health.membershipViewId).toBe('view-123')
+      expect(result.data.health.membershipProtocol).toBe('raft')
+      expect(result.data.health.placementEpoch).toBe(14)
+      expect(result.data.health.status).toBe('ok')
+      expect(result.data.health.checks).toEqual({
+        dataDirAccessible: true,
+        dataDirWritable: true,
+        storageDataPathReadable: true,
+        diskHeadroomSufficient: true,
+        peerConnectivityReady: true,
+        membershipProtocolReady: true,
+      })
+      expect(result.data.health.warnings).toEqual([])
+
+      expect(result.data.metrics.requestsTotal).toBe(120)
+      expect(result.data.metrics.uptimeSeconds).toBe(50.5)
+      expect(result.data.metrics.version).toBe('0.1.0')
+      expect(result.data.metrics.mode).toBe('distributed')
+      expect(result.data.metrics.nodeId).toBe('node-a')
+      expect(result.data.metrics.membershipProtocol).toBe('raft')
+      expect(result.data.metrics.placementEpoch).toBe(14)
+
+      expect(result.data.topology.mode).toBe('distributed')
+      expect(result.data.topology.nodeId).toBe('node-a')
+      expect(result.data.topology.clusterPeerCount).toBe(2)
+      expect(result.data.topology.clusterPeers).toEqual([
+        'node-b:9000',
+        'node-c:9000',
+      ])
+      expect(result.data.topology.membershipProtocol).toBe('raft')
+      expect(result.data.topology.placementEpoch).toBe(14)
+
+      expect(result.data.membership).not.toBeNull()
+      expect(result.data.membership?.mode).toBe('distributed')
+      expect(result.data.membership?.protocol).toBe('static-bootstrap')
+      expect(result.data.membership?.viewId).toBe('view-123')
+      expect(result.data.membership?.coordinatorNodeId).toBe('node-a')
+      expect(result.data.membership?.leaderNodeId).toBeNull()
+      expect(result.data.membership?.nodes).toEqual([
+        { nodeId: 'node-a', role: 'self', status: 'alive' },
+        { nodeId: 'node-b:9000', role: 'peer', status: 'configured' },
+      ])
+    }
+  })
+
+  it('propagates summary request failures', async () => {
+    mockFetchSequence([
+      new Response(JSON.stringify({ error: 'Not authenticated' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ])
+
+    const result = await getRuntimeSummaryApi()
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(401)
+      expect(result.error).toBe('Not authenticated')
+    }
+  })
+
+  it('parses membership JSON payload into typed membership data', async () => {
+    mockFetchSequence([
+      new Response(
+        JSON.stringify({
+          mode: 'distributed',
+          protocol: 'static-bootstrap',
+          viewId: 'view-123',
+          leaderNodeId: null,
+          coordinatorNodeId: 'node-a',
+          nodes: [
+            { nodeId: 'node-a', role: 'self', status: 'alive' },
+            { nodeId: 'node-b:9000', role: 'peer', status: 'configured' },
+          ],
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      ),
+    ])
+
+    const result = await getRuntimeMembershipApi()
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.mode).toBe('distributed')
+      expect(result.data.protocol).toBe('static-bootstrap')
+      expect(result.data.viewId).toBe('view-123')
+      expect(result.data.leaderNodeId).toBeNull()
+      expect(result.data.coordinatorNodeId).toBe('node-a')
+      expect(result.data.nodes).toEqual([
+        { nodeId: 'node-a', role: 'self', status: 'alive' },
+        { nodeId: 'node-b:9000', role: 'peer', status: 'configured' },
+      ])
+    }
+  })
+
+  it('propagates membership request failures', async () => {
+    mockFetchSequence([
+      new Response(JSON.stringify({ error: 'Unauthorized' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ])
+
+    const result = await getRuntimeMembershipApi()
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(401)
+      expect(result.error).toBe('Unauthorized')
+    }
+  })
+
+  it('parses placement JSON payload into typed placement data', async () => {
+    mockFetchSequence([
+      new Response(
+        JSON.stringify({
+          key: 'videos/movie.mp4',
+          chunkIndex: 3,
+          replicaCountRequested: 2,
+          replicaCountApplied: 2,
+          writeQuorumSize: 2,
+          writeAckPolicy: 'majority',
+          nonOwnerMutationPolicy: 'forward-single-write',
+          owners: ['node-a:9000', 'node-b:9000'],
+          primaryOwner: 'node-b:9000',
+          forwardTarget: 'node-b:9000',
+          isLocalPrimaryOwner: false,
+          isLocalReplicaOwner: true,
+          mode: 'distributed',
+          nodeId: 'node-a:9000',
+          clusterPeerCount: 1,
+          clusterPeers: ['node-b:9000'],
+          membershipProtocol: 'gossip',
+          membershipViewId: 'view-456',
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      ),
+    ])
+
+    const result = await getRuntimePlacementApi({
+      key: 'videos/movie.mp4',
+      chunkIndex: 3,
+      replicaCount: 2,
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.key).toBe('videos/movie.mp4')
+      expect(result.data.chunkIndex).toBe(3)
+      expect(result.data.replicaCountRequested).toBe(2)
+      expect(result.data.replicaCountApplied).toBe(2)
+      expect(result.data.writeQuorumSize).toBe(2)
+      expect(result.data.writeAckPolicy).toBe('majority')
+      expect(result.data.nonOwnerMutationPolicy).toBe('forward-single-write')
+      expect(result.data.owners).toEqual(['node-a:9000', 'node-b:9000'])
+      expect(result.data.primaryOwner).toBe('node-b:9000')
+      expect(result.data.forwardTarget).toBe('node-b:9000')
+      expect(result.data.isLocalPrimaryOwner).toBe(false)
+      expect(result.data.isLocalReplicaOwner).toBe(true)
+      expect(result.data.mode).toBe('distributed')
+      expect(result.data.nodeId).toBe('node-a:9000')
+      expect(result.data.clusterPeerCount).toBe(1)
+      expect(result.data.clusterPeers).toEqual(['node-b:9000'])
+      expect(result.data.membershipProtocol).toBe('gossip')
+      expect(result.data.membershipViewId).toBe('view-456')
+    }
+  })
+
+  it('propagates placement request failures', async () => {
+    mockFetchSequence([
+      new Response(JSON.stringify({ error: 'Missing required query parameter: key' }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    ])
+
+    const result = await getRuntimePlacementApi({ key: '' })
+    expect(result.ok).toBe(false)
+    if (!result.ok) {
+      expect(result.status).toBe(400)
+      expect(result.error).toContain('key')
+    }
+  })
+
+  it('encodes placement query parameters', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const okResponse = new Response(
+      JSON.stringify({
+        key: 'folder/my file #1.txt',
+        owners: [],
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    )
+    mockFetchCapture(calls, okResponse)
+
+    await getRuntimePlacementApi({
+      key: 'folder/my file #1.txt',
+      replicaCount: 2,
+      chunkIndex: 7,
+    })
+
+    expect(calls.map((c) => c.url)).toEqual([
+      '/api/system/placement?key=folder%2Fmy+file+%231.txt&replicaCount=2&chunkIndex=7',
+    ])
+  })
+
+  it('parses rebalance JSON payload into typed rebalance data', async () => {
+    mockFetchSequence([
+      new Response(
+        JSON.stringify({
+          key: 'videos/movie.mp4',
+          chunkIndex: 2,
+          replicaCountRequested: 2,
+          replicaCountApplied: 1,
+          operation: 'join',
+          operationPeer: 'node-b:9000',
+          source: {
+            nodeId: 'node-a:9000',
+            clusterPeerCount: 0,
+            clusterPeers: [],
+            membershipViewId: 'view-a',
+            membershipNodes: ['node-a:9000'],
+          },
+          target: {
+            nodeId: 'node-a:9000',
+            clusterPeerCount: 1,
+            clusterPeers: ['node-b:9000'],
+            membershipViewId: 'view-b',
+            membershipNodes: ['node-a:9000', 'node-b:9000'],
+          },
+          plan: {
+            previousOwners: ['node-a:9000'],
+            nextOwners: ['node-b:9000'],
+            retainedOwners: [],
+            removedOwners: ['node-a:9000'],
+            addedOwners: ['node-b:9000'],
+            transferCount: 1,
+            transfers: [{ from: 'node-a:9000', to: 'node-b:9000' }],
+          },
+          mode: 'distributed',
+          nodeId: 'node-a:9000',
+          clusterPeerCount: 1,
+          clusterPeers: ['node-b:9000'],
+          membershipProtocol: 'gossip',
+          membershipViewId: 'view-a',
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      ),
+    ])
+
+    const result = await getRuntimeRebalanceApi({
+      key: 'videos/movie.mp4',
+      chunkIndex: 2,
+      replicaCount: 2,
+      operation: 'join',
+      peer: 'node-b:9000',
+    })
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.operation).toBe('join')
+      expect(result.data.operationPeer).toBe('node-b:9000')
+      expect(result.data.source.clusterPeers).toEqual([])
+      expect(result.data.target.clusterPeers).toEqual(['node-b:9000'])
+      expect(result.data.plan.previousOwners).toEqual(['node-a:9000'])
+      expect(result.data.plan.nextOwners).toEqual(['node-b:9000'])
+      expect(result.data.plan.transferCount).toBe(1)
+      expect(result.data.plan.transfers).toEqual([
+        { from: 'node-a:9000', to: 'node-b:9000' },
+      ])
+    }
+  })
+
+  it('encodes rebalance query parameters', async () => {
+    const calls: Array<{ url: string; init?: RequestInit }> = []
+    const okResponse = new Response(
+      JSON.stringify({
+        key: 'folder/my file #1.txt',
+        source: {},
+        target: {},
+        plan: {},
+      }),
+      {
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+      }
+    )
+    mockFetchCapture(calls, okResponse)
+
+    await getRuntimeRebalanceApi({
+      key: 'folder/my file #1.txt',
+      replicaCount: 2,
+      chunkIndex: 7,
+      operation: 'leave',
+      peer: 'node-b.internal:9000',
+    })
+
+    expect(calls.map((c) => c.url)).toEqual([
+      '/api/system/rebalance?key=folder%2Fmy+file+%231.txt&replicaCount=2&chunkIndex=7&removePeer=node-b.internal%3A9000',
+    ])
   })
 
   it('encodes object-key path segments for object endpoints', async () => {

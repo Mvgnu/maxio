@@ -1,7 +1,80 @@
 use super::*;
 use base64::Engine;
 use hmac::Mac;
+use maxio::storage::placement::primary_object_owner_with_self;
 use sha2::{Digest, Sha256};
+use tempfile::TempDir;
+
+const DISTRIBUTED_LOCAL_NODE: &str = "node-a.internal:9000";
+const DISTRIBUTED_PEER_NODE: &str = "127.0.0.1:39001";
+
+struct ForwardingPair {
+    coordinator_url: String,
+    owner_url: String,
+    owner_peer: String,
+    _coordinator_tmp: TempDir,
+    _owner_tmp: TempDir,
+}
+
+fn distributed_local_owner_key(seed: &str) -> String {
+    let peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    distributed_local_owner_key_for(seed, DISTRIBUTED_LOCAL_NODE, &peers)
+}
+
+fn distributed_local_owner_key_for(seed: &str, local_node: &str, peers: &[String]) -> String {
+    for idx in 0..1024 {
+        let key = format!("{seed}-local-{idx}.txt");
+        let owner = primary_object_owner_with_self(&key, local_node, peers);
+        if owner.as_deref() == Some(local_node) {
+            return key;
+        }
+    }
+    panic!("unable to find local-owner key for distributed test");
+}
+
+fn distributed_non_owner_key(seed: &str) -> String {
+    let peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    distributed_non_owner_key_for(seed, DISTRIBUTED_LOCAL_NODE, &peers)
+}
+
+fn distributed_non_owner_key_for(seed: &str, local_node: &str, peers: &[String]) -> String {
+    for idx in 0..1024 {
+        let key = format!("{seed}-forward-{idx}.txt");
+        let owner = primary_object_owner_with_self(&key, local_node, peers);
+        if owner.as_deref() != Some(local_node) {
+            return key;
+        }
+    }
+    panic!("unable to find non-owner key for distributed test");
+}
+
+fn host_port_from_base_url(base_url: &str) -> String {
+    let parsed = reqwest::Url::parse(base_url).expect("base url should parse");
+    let host = parsed.host_str().expect("base url should have host");
+    let port = parsed.port().expect("base url should have explicit port");
+    format!("{host}:{port}")
+}
+
+async fn start_forwarding_pair() -> ForwardingPair {
+    let (owner_url, owner_tmp) = start_server().await;
+    let owner_peer = host_port_from_base_url(&owner_url);
+
+    let coordinator_tmp = TempDir::new().expect("tempdir");
+    let data_dir = coordinator_tmp.path().to_string_lossy().to_string();
+    let mut coordinator_config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    coordinator_config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    coordinator_config.cluster_peers = vec![owner_peer.clone()];
+    let (coordinator_url, coordinator_tmp) =
+        start_server_with_config(coordinator_config, coordinator_tmp).await;
+
+    ForwardingPair {
+        coordinator_url,
+        owner_url,
+        owner_peer,
+        _coordinator_tmp: coordinator_tmp,
+        _owner_tmp: owner_tmp,
+    }
+}
 
 #[tokio::test]
 async fn test_create_bucket() {
@@ -14,6 +87,1069 @@ async fn test_create_bucket() {
     // Head bucket should succeed
     let resp = s3_request("HEAD", &format!("{}/test-bucket", base_url), vec![]).await;
     assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_put_object_standalone_omits_routing_headers() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/routing-standalone", base_url), vec![]).await;
+
+    let put = s3_request(
+        "PUT",
+        &format!("{}/routing-standalone/docs/a.txt", base_url),
+        b"hello".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+    assert!(put.headers().get("x-maxio-primary-owner").is_none());
+    assert!(put.headers().get("x-maxio-forward-target").is_none());
+    assert!(
+        put.headers()
+            .get("x-maxio-routing-local-primary-owner")
+            .is_none()
+    );
+}
+
+#[tokio::test]
+async fn test_put_object_distributed_sets_routing_headers() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    s3_request("PUT", &format!("{}/routing-distributed", base_url), vec![]).await;
+
+    let key = distributed_local_owner_key("routing-distributed");
+    let put = s3_request(
+        "PUT",
+        &format!("{}/routing-distributed/{}", base_url, key),
+        b"hello".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+
+    let primary_owner = put
+        .headers()
+        .get("x-maxio-primary-owner")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-maxio-primary-owner")
+        .to_string();
+    let local_primary = put
+        .headers()
+        .get("x-maxio-routing-local-primary-owner")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-maxio-routing-local-primary-owner");
+
+    assert!(local_primary == "true" || local_primary == "false");
+    if local_primary == "false" {
+        assert_eq!(
+            put.headers()
+                .get("x-maxio-forward-target")
+                .and_then(|v| v.to_str().ok()),
+            Some(primary_owner.as_str())
+        );
+    } else {
+        assert!(put.headers().get("x-maxio-forward-target").is_none());
+    }
+}
+
+#[tokio::test]
+async fn test_copy_object_distributed_sets_routing_headers() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    s3_request("PUT", &format!("{}/routing-copy", base_url), vec![]).await;
+    let source_key = distributed_local_owner_key("routing-copy-src");
+    let destination_key = distributed_local_owner_key("routing-copy-dst");
+    s3_request(
+        "PUT",
+        &format!("{}/routing-copy/{}", base_url, source_key),
+        b"copy me".to_vec(),
+    )
+    .await;
+    let copy_source = format!("/routing-copy/{}", source_key);
+
+    let copy = s3_request_with_headers(
+        "PUT",
+        &format!("{}/routing-copy/{}", base_url, destination_key),
+        vec![],
+        vec![("x-amz-copy-source", copy_source.as_str())],
+    )
+    .await;
+    assert_eq!(copy.status(), 200);
+
+    let primary_owner = copy
+        .headers()
+        .get("x-maxio-primary-owner")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-maxio-primary-owner")
+        .to_string();
+    let local_primary = copy
+        .headers()
+        .get("x-maxio-routing-local-primary-owner")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-maxio-routing-local-primary-owner");
+
+    assert!(local_primary == "true" || local_primary == "false");
+    if local_primary == "false" {
+        assert_eq!(
+            copy.headers()
+                .get("x-maxio-forward-target")
+                .and_then(|v| v.to_str().ok()),
+            Some(primary_owner.as_str())
+        );
+    } else {
+        assert!(copy.headers().get("x-maxio-forward-target").is_none());
+    }
+}
+
+#[tokio::test]
+async fn test_delete_object_distributed_sets_routing_headers() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    s3_request("PUT", &format!("{}/routing-delete", base_url), vec![]).await;
+    let key = distributed_local_owner_key("routing-delete");
+    s3_request(
+        "PUT",
+        &format!("{}/routing-delete/{}", base_url, key),
+        b"delete me".to_vec(),
+    )
+    .await;
+
+    let delete = s3_request(
+        "DELETE",
+        &format!("{}/routing-delete/{}", base_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 204);
+
+    let primary_owner = delete
+        .headers()
+        .get("x-maxio-primary-owner")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-maxio-primary-owner")
+        .to_string();
+    let local_primary = delete
+        .headers()
+        .get("x-maxio-routing-local-primary-owner")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-maxio-routing-local-primary-owner");
+
+    assert!(local_primary == "true" || local_primary == "false");
+    if local_primary == "false" {
+        assert_eq!(
+            delete
+                .headers()
+                .get("x-maxio-forward-target")
+                .and_then(|v| v.to_str().ok()),
+            Some(primary_owner.as_str())
+        );
+    } else {
+        assert!(delete.headers().get("x-maxio-forward-target").is_none());
+    }
+}
+
+#[tokio::test]
+async fn test_put_object_distributed_non_owner_write_returns_access_denied_when_forward_target_unreachable()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    s3_request("PUT", &format!("{}/routing-reject-put", base_url), vec![]).await;
+
+    let key = distributed_non_owner_key("routing-reject-put");
+    let put = s3_request(
+        "PUT",
+        &format!("{}/routing-reject-put/{}", base_url, key),
+        b"hello".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 403);
+    let body = put.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Write forwarding to primary owner failed"));
+}
+
+#[tokio::test]
+async fn test_put_object_distributed_forwards_non_owner_write_to_primary_owner() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-put", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-put", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let key = distributed_non_owner_key_for(
+        "routing-forward-put",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let put = s3_request(
+        "PUT",
+        &format!("{}/routing-forward-put/{}", pair.coordinator_url, key),
+        b"forwarded-payload".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+
+    let get_from_owner = s3_request(
+        "GET",
+        &format!("{}/routing-forward-put/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(get_from_owner.status(), 200);
+    assert_eq!(
+        get_from_owner.bytes().await.unwrap().as_ref(),
+        b"forwarded-payload"
+    );
+}
+
+#[tokio::test]
+async fn test_put_object_distributed_primary_write_reports_quorum_headers_when_replica_acks() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-put-quorum", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-put-quorum", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let key = distributed_local_owner_key_for(
+        "routing-forward-put-quorum",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let put = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-forward-put-quorum/{}",
+            pair.coordinator_url, key
+        ),
+        b"quorum-payload".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+    assert_eq!(
+        put.headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        put.headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        put.headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
+}
+
+#[tokio::test]
+async fn test_put_object_distributed_primary_write_reports_degraded_quorum_when_replica_unreachable()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-replica-unreachable", base_url),
+        vec![],
+    )
+    .await;
+
+    let key = distributed_local_owner_key("routing-replica-unreachable");
+    let put = s3_request(
+        "PUT",
+        &format!("{}/routing-replica-unreachable/{}", base_url, key),
+        b"quorum-degraded".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+    assert_eq!(
+        put.headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        put.headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        put.headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("false")
+    );
+}
+
+#[tokio::test]
+async fn test_put_object_distributed_non_owner_write_ignores_untrusted_forward_protocol_headers() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-untrusted-headers", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-untrusted-headers", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let key = distributed_non_owner_key_for(
+        "routing-forward-untrusted-headers",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let put = s3_request_with_headers(
+        "PUT",
+        &format!(
+            "{}/routing-forward-untrusted-headers/{}",
+            pair.coordinator_url, key
+        ),
+        b"forwarded-untrusted".to_vec(),
+        vec![
+            ("x-maxio-forwarded-write-epoch", "999"),
+            ("x-maxio-forwarded-write-view-id", "tampered-view"),
+            ("x-maxio-forwarded-write-hop-count", "7"),
+        ],
+    )
+    .await;
+    assert_eq!(
+        put.status(),
+        200,
+        "external untrusted forwarding headers must not block coordinator forwarding"
+    );
+
+    let get_from_owner = s3_request(
+        "GET",
+        &format!(
+            "{}/routing-forward-untrusted-headers/{}",
+            pair.owner_url, key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(get_from_owner.status(), 200);
+    assert_eq!(
+        get_from_owner.bytes().await.unwrap().as_ref(),
+        b"forwarded-untrusted"
+    );
+}
+
+#[tokio::test]
+async fn test_copy_object_distributed_forwards_non_owner_destination_write_to_primary_owner() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-copy", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-copy", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let source_key = "routing-forward-copy-src.txt";
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-copy/{}", pair.owner_url, source_key),
+        b"copy me".to_vec(),
+    )
+    .await;
+
+    let destination_key = distributed_non_owner_key_for(
+        "routing-forward-copy-dst",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let copy_source = format!("/routing-forward-copy/{}", source_key);
+    let copy = s3_request_with_headers(
+        "PUT",
+        &format!(
+            "{}/routing-forward-copy/{}",
+            pair.coordinator_url, destination_key
+        ),
+        vec![],
+        vec![("x-amz-copy-source", copy_source.as_str())],
+    )
+    .await;
+    assert_eq!(copy.status(), 200);
+
+    let copied = s3_request(
+        "GET",
+        &format!(
+            "{}/routing-forward-copy/{}",
+            pair.owner_url, destination_key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(copied.status(), 200);
+    assert_eq!(copied.bytes().await.unwrap().as_ref(), b"copy me");
+}
+
+#[tokio::test]
+async fn test_copy_object_distributed_primary_write_reports_quorum_headers_when_replica_acks() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-copy-quorum", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-copy-quorum", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let source_key = distributed_local_owner_key_for(
+        "routing-forward-copy-quorum-src",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let destination_key = distributed_local_owner_key_for(
+        "routing-forward-copy-quorum-dst",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+
+    let source_put = s3_request_with_headers(
+        "PUT",
+        &format!(
+            "{}/routing-forward-copy-quorum/{}",
+            pair.coordinator_url, source_key
+        ),
+        b"copy-quorum-payload".to_vec(),
+        vec![("content-type", "text/markdown")],
+    )
+    .await;
+    assert_eq!(source_put.status(), 200);
+
+    let copy_source = format!("/routing-forward-copy-quorum/{source_key}");
+    let copy = s3_request_with_headers(
+        "PUT",
+        &format!(
+            "{}/routing-forward-copy-quorum/{}",
+            pair.coordinator_url, destination_key
+        ),
+        vec![],
+        vec![("x-amz-copy-source", copy_source.as_str())],
+    )
+    .await;
+    assert_eq!(copy.status(), 200);
+    assert_eq!(
+        copy.headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        copy.headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        copy.headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
+
+    let copied = s3_request(
+        "GET",
+        &format!(
+            "{}/routing-forward-copy-quorum/{}",
+            pair.owner_url, destination_key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(copied.status(), 200);
+    assert_eq!(
+        copied.bytes().await.unwrap().as_ref(),
+        b"copy-quorum-payload"
+    );
+
+    let copied_head = s3_request(
+        "HEAD",
+        &format!(
+            "{}/routing-forward-copy-quorum/{}",
+            pair.owner_url, destination_key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(copied_head.status(), 200);
+    assert_eq!(
+        copied_head
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok()),
+        Some("text/markdown")
+    );
+}
+
+#[tokio::test]
+async fn test_copy_object_distributed_primary_write_reports_degraded_quorum_when_replica_unreachable()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-replica-unreachable-copy", base_url),
+        vec![],
+    )
+    .await;
+
+    let source_key = distributed_local_owner_key("routing-replica-unreachable-copy-src");
+    let destination_key = distributed_local_owner_key("routing-replica-unreachable-copy-dst");
+    let source_put = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-replica-unreachable-copy/{}",
+            base_url, source_key
+        ),
+        b"copy-unreachable-source".to_vec(),
+    )
+    .await;
+    assert_eq!(source_put.status(), 200);
+
+    let copy_source = format!("/routing-replica-unreachable-copy/{source_key}");
+    let copy = s3_request_with_headers(
+        "PUT",
+        &format!(
+            "{}/routing-replica-unreachable-copy/{}",
+            base_url, destination_key
+        ),
+        vec![],
+        vec![("x-amz-copy-source", copy_source.as_str())],
+    )
+    .await;
+    assert_eq!(copy.status(), 200);
+    assert_eq!(
+        copy.headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        copy.headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        copy.headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("false")
+    );
+}
+
+#[tokio::test]
+async fn test_delete_object_distributed_forwards_non_owner_write_to_primary_owner() {
+    let pair = start_forwarding_pair().await;
+
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let key = distributed_non_owner_key_for(
+        "routing-forward-delete",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete/{}", pair.owner_url, key),
+        b"delete-me".to_vec(),
+    )
+    .await;
+
+    let delete = s3_request(
+        "DELETE",
+        &format!("{}/routing-forward-delete/{}", pair.coordinator_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 204);
+
+    let missing = s3_request(
+        "GET",
+        &format!("{}/routing-forward-delete/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(missing.status(), 404);
+}
+
+#[tokio::test]
+async fn test_delete_object_distributed_primary_write_reports_quorum_headers_when_replica_acks() {
+    let pair = start_forwarding_pair().await;
+
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete-quorum", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete-quorum", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let key = distributed_local_owner_key_for(
+        "routing-forward-delete-quorum",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let put = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-forward-delete-quorum/{}",
+            pair.coordinator_url, key
+        ),
+        b"delete-quorum".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+
+    let delete = s3_request(
+        "DELETE",
+        &format!(
+            "{}/routing-forward-delete-quorum/{}",
+            pair.coordinator_url, key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 204);
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
+}
+
+#[tokio::test]
+async fn test_delete_object_distributed_primary_write_reports_degraded_quorum_when_replica_unreachable()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-replica-unreachable-delete", base_url),
+        vec![],
+    )
+    .await;
+
+    let key = distributed_local_owner_key("routing-replica-unreachable-delete");
+    let put = s3_request(
+        "PUT",
+        &format!("{}/routing-replica-unreachable-delete/{}", base_url, key),
+        b"delete-unreachable".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+
+    let delete = s3_request(
+        "DELETE",
+        &format!("{}/routing-replica-unreachable-delete/{}", base_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 204);
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("false")
+    );
+}
+
+#[tokio::test]
+async fn test_get_object_distributed_forwards_non_owner_read_to_primary_owner() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-get", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-get", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let key = distributed_non_owner_key_for(
+        "routing-forward-get",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-get/{}", pair.owner_url, key),
+        b"forwarded-read-payload".to_vec(),
+    )
+    .await;
+
+    let get = s3_request(
+        "GET",
+        &format!("{}/routing-forward-get/{}", pair.coordinator_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(get.status(), 200);
+    assert_eq!(
+        get.bytes().await.unwrap().as_ref(),
+        b"forwarded-read-payload"
+    );
+}
+
+#[tokio::test]
+async fn test_head_object_distributed_forwards_non_owner_read_to_primary_owner() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-head", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-head", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let key = distributed_non_owner_key_for(
+        "routing-forward-head",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-head/{}", pair.owner_url, key),
+        b"head-forwarded".to_vec(),
+    )
+    .await;
+
+    let head = s3_request(
+        "HEAD",
+        &format!("{}/routing-forward-head/{}", pair.coordinator_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(head.status(), 200);
+    assert_eq!(
+        head.headers()
+            .get("content-length")
+            .and_then(|v| v.to_str().ok()),
+        Some("14")
+    );
+    assert!(
+        head.headers().get("etag").is_some(),
+        "forwarded HEAD response should preserve object headers"
+    );
+}
+
+#[tokio::test]
+async fn test_get_object_distributed_primary_read_repairs_missing_replica() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-get", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-get", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let versioning_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let versioning = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-read-repair-get?versioning",
+            pair.coordinator_url
+        ),
+        versioning_xml,
+    )
+    .await;
+    assert_eq!(versioning.status(), 200);
+
+    let key = distributed_local_owner_key_for(
+        "routing-read-repair-get",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let put = s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-get/{}", pair.coordinator_url, key),
+        b"repair-on-read-get".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+    assert!(
+        put.headers()
+            .get("x-amz-version-id")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| !value.is_empty())
+    );
+
+    let owner_delete = s3_request(
+        "DELETE",
+        &format!("{}/routing-read-repair-get/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_delete.status(), 204);
+
+    let owner_missing_before = s3_request(
+        "GET",
+        &format!("{}/routing-read-repair-get/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_missing_before.status(), 404);
+
+    let get = s3_request(
+        "GET",
+        &format!("{}/routing-read-repair-get/{}", pair.coordinator_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(get.status(), 200);
+    assert_eq!(get.bytes().await.unwrap().as_ref(), b"repair-on-read-get");
+
+    let owner_repaired = s3_request(
+        "GET",
+        &format!("{}/routing-read-repair-get/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_repaired.status(), 200);
+    assert_eq!(
+        owner_repaired.bytes().await.unwrap().as_ref(),
+        b"repair-on-read-get"
+    );
+}
+
+#[tokio::test]
+async fn test_head_object_distributed_primary_read_repairs_missing_replica() {
+    let pair = start_forwarding_pair().await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-head", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-head", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let versioning_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let versioning = s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-read-repair-head?versioning",
+            pair.coordinator_url
+        ),
+        versioning_xml,
+    )
+    .await;
+    assert_eq!(versioning.status(), 200);
+
+    let key = distributed_local_owner_key_for(
+        "routing-read-repair-head",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let put = s3_request(
+        "PUT",
+        &format!("{}/routing-read-repair-head/{}", pair.coordinator_url, key),
+        b"repair-on-read-head".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+    assert!(
+        put.headers()
+            .get("x-amz-version-id")
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| !value.is_empty())
+    );
+
+    let owner_delete = s3_request(
+        "DELETE",
+        &format!("{}/routing-read-repair-head/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_delete.status(), 204);
+
+    let owner_missing_before = s3_request(
+        "HEAD",
+        &format!("{}/routing-read-repair-head/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_missing_before.status(), 404);
+
+    let head = s3_request(
+        "HEAD",
+        &format!("{}/routing-read-repair-head/{}", pair.coordinator_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(head.status(), 200);
+
+    let owner_repaired = s3_request(
+        "GET",
+        &format!("{}/routing-read-repair-head/{}", pair.owner_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(owner_repaired.status(), 200);
+    assert_eq!(
+        owner_repaired.bytes().await.unwrap().as_ref(),
+        b"repair-on-read-head"
+    );
+}
+
+#[tokio::test]
+async fn test_get_object_distributed_non_owner_read_returns_access_denied_when_forward_target_unreachable()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let key = distributed_non_owner_key("routing-reject-get");
+    let get = s3_request(
+        "GET",
+        &format!("{}/routing-reject-get/{}", base_url, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(get.status(), 403);
+    let body = get.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("forwarding to primary owner failed"));
 }
 
 #[tokio::test]
@@ -326,10 +1462,7 @@ async fn test_get_object_range_with_version_id_reads_specific_version() {
 
     let ranged = s3_request_with_headers(
         "GET",
-        &format!(
-            "{}/{}/{}?versionId={}",
-            base_url, bucket, key, version_1
-        ),
+        &format!("{}/{}/{}?versionId={}", base_url, bucket, key, version_1),
         vec![],
         vec![("range", "bytes=2-5")],
     )
@@ -900,6 +2033,235 @@ async fn test_delete_object_version_missing_bucket_returns_no_such_bucket() {
 }
 
 #[tokio::test]
+async fn test_delete_object_version_distributed_sets_routing_headers() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let bucket = "routing-delete-version";
+    let key = distributed_local_owner_key("routing-delete-version");
+    s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+
+    let enable_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let enable = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", base_url, bucket),
+        enable_xml,
+    )
+    .await;
+    assert_eq!(enable.status(), 200);
+
+    let put = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"delete me".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+    let version_id = put
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-amz-version-id on versioned put")
+        .to_string();
+
+    let delete = s3_request(
+        "DELETE",
+        &format!("{}/{}/{}?versionId={}", base_url, bucket, key, version_id),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 204);
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-amz-version-id")
+            .and_then(|v| v.to_str().ok()),
+        Some(version_id.as_str())
+    );
+
+    let primary_owner = delete
+        .headers()
+        .get("x-maxio-primary-owner")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-maxio-primary-owner")
+        .to_string();
+    let local_primary = delete
+        .headers()
+        .get("x-maxio-routing-local-primary-owner")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-maxio-routing-local-primary-owner");
+
+    assert!(local_primary == "true" || local_primary == "false");
+    if local_primary == "false" {
+        assert_eq!(
+            delete
+                .headers()
+                .get("x-maxio-forward-target")
+                .and_then(|v| v.to_str().ok()),
+            Some(primary_owner.as_str())
+        );
+    } else {
+        assert!(delete.headers().get("x-maxio-forward-target").is_none());
+    }
+}
+
+#[tokio::test]
+async fn test_delete_object_version_distributed_primary_write_reports_quorum_headers_when_replica_acks()
+ {
+    let pair = start_forwarding_pair().await;
+    let bucket = "routing-delete-version-quorum";
+    let key = distributed_local_owner_key_for(
+        "routing-delete-version-quorum",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+
+    s3_request(
+        "PUT",
+        &format!("{}/{}", pair.coordinator_url, bucket),
+        vec![],
+    )
+    .await;
+    s3_request("PUT", &format!("{}/{}", pair.owner_url, bucket), vec![]).await;
+
+    let enable_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let enable_coordinator = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", pair.coordinator_url, bucket),
+        enable_xml.clone(),
+    )
+    .await;
+    assert_eq!(enable_coordinator.status(), 200);
+    let enable_owner = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", pair.owner_url, bucket),
+        enable_xml,
+    )
+    .await;
+    assert_eq!(enable_owner.status(), 200);
+
+    let put = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", pair.coordinator_url, bucket, key),
+        b"delete-version-quorum".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+    let version_id = put
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-amz-version-id on versioned put")
+        .to_string();
+
+    let delete = s3_request(
+        "DELETE",
+        &format!(
+            "{}/{}/{}?versionId={}",
+            pair.coordinator_url, bucket, key, version_id
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 204);
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
+}
+
+#[tokio::test]
+async fn test_delete_object_version_distributed_primary_write_reports_degraded_quorum_when_replica_unreachable()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let bucket = "routing-delete-version-replica-unreachable";
+    s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+
+    let enable_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let enable = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", base_url, bucket),
+        enable_xml,
+    )
+    .await;
+    assert_eq!(enable.status(), 200);
+
+    let key = distributed_local_owner_key("routing-delete-version-replica-unreachable");
+    let put = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"delete-version-replica-unreachable".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+    let version_id = put
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing x-amz-version-id on versioned put")
+        .to_string();
+
+    let delete = s3_request(
+        "DELETE",
+        &format!("{}/{}/{}?versionId={}", base_url, bucket, key, version_id),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 204);
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        delete
+            .headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("false")
+    );
+}
+
+#[tokio::test]
 async fn test_list_objects() {
     let (base_url, _tmp) = start_server().await;
 
@@ -949,6 +2311,94 @@ async fn test_list_objects_invalid_prefix_returns_invalid_argument() {
 }
 
 #[tokio::test]
+async fn test_list_objects_invalid_max_keys_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/mybucket?list-type=2&max-keys=abc", base_url),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
+async fn test_list_objects_invalid_continuation_token_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let resp = s3_request(
+        "GET",
+        &format!(
+            "{}/mybucket?list-type=2&continuation-token=not-base64",
+            base_url
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
+async fn test_list_objects_v2_empty_delimiter_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/mybucket?list-type=2&delimiter=", base_url),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
+async fn test_list_objects_v1_empty_delimiter_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let resp = s3_request("GET", &format!("{}/mybucket?delimiter=", base_url), vec![]).await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
+async fn test_list_objects_invalid_list_type_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let resp = s3_request("GET", &format!("{}/mybucket?list-type=1", base_url), vec![]).await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
 async fn test_list_object_versions_invalid_prefix_returns_invalid_argument() {
     let (base_url, _tmp) = start_server().await;
     s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
@@ -957,6 +2407,44 @@ async fn test_list_object_versions_invalid_prefix_returns_invalid_argument() {
     let resp = s3_request(
         "GET",
         &format!("{}/mybucket?versions=&prefix={}", base_url, invalid_prefix),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
+async fn test_list_object_versions_invalid_max_keys_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/mybucket?versions=&max-keys=abc", base_url),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
+async fn test_list_object_versions_orphaned_version_id_marker_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/mybucket?versions=&version-id-marker=v1", base_url),
         vec![],
     )
     .await;
@@ -1203,6 +2691,258 @@ async fn test_delete_objects_batch_quiet_mode_suppresses_deleted_entries() {
 }
 
 #[tokio::test]
+async fn test_delete_objects_batch_distributed_reports_access_denied_when_forward_target_unreachable()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    let local_key = distributed_local_owner_key("routing-reject-delete-batch-local");
+    let non_owner_key = distributed_non_owner_key("routing-reject-delete-batch-forward");
+
+    s3_request(
+        "PUT",
+        &format!("{}/mybucket/{}", base_url, local_key),
+        b"aaa".to_vec(),
+    )
+    .await;
+
+    let delete_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Delete>
+  <Object><Key>{}</Key></Object>
+  <Object><Key>{}</Key></Object>
+</Delete>"#,
+        local_key, non_owner_key
+    );
+
+    let resp = s3_request(
+        "POST",
+        &format!("{}/mybucket?delete", base_url),
+        delete_xml.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains(&format!("<Key>{}</Key>", local_key)));
+    assert!(body.contains(&format!("<Key>{}</Key>", non_owner_key)));
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Write forwarding to primary owner failed"));
+
+    let local_get = s3_request(
+        "GET",
+        &format!("{}/mybucket/{}", base_url, local_key),
+        vec![],
+    )
+    .await;
+    assert_eq!(local_get.status(), 404);
+}
+
+#[tokio::test]
+async fn test_delete_objects_batch_distributed_forwards_non_owner_batch_to_primary_owner() {
+    let pair = start_forwarding_pair().await;
+
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete-batch", pair.coordinator_url),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete-batch", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let key_a = distributed_non_owner_key_for(
+        "routing-forward-delete-batch-a",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let key_b = distributed_non_owner_key_for(
+        "routing-forward-delete-batch-b",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete-batch/{}", pair.owner_url, key_a),
+        b"delete-me-a".to_vec(),
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete-batch/{}", pair.owner_url, key_b),
+        b"delete-me-b".to_vec(),
+    )
+    .await;
+
+    let delete_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Delete>
+  <Object><Key>{}</Key></Object>
+  <Object><Key>{}</Key></Object>
+</Delete>"#,
+        key_a, key_b
+    );
+
+    let resp = s3_request(
+        "POST",
+        &format!(
+            "{}/routing-forward-delete-batch?delete",
+            pair.coordinator_url
+        ),
+        delete_xml.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains(&format!("<Key>{}</Key>", key_a)));
+    assert!(body.contains(&format!("<Key>{}</Key>", key_b)));
+    assert!(!body.contains("<Code>AccessDenied</Code>"));
+
+    let missing_a = s3_request(
+        "GET",
+        &format!("{}/routing-forward-delete-batch/{}", pair.owner_url, key_a),
+        vec![],
+    )
+    .await;
+    assert_eq!(missing_a.status(), 404);
+    let missing_b = s3_request(
+        "GET",
+        &format!("{}/routing-forward-delete-batch/{}", pair.owner_url, key_b),
+        vec![],
+    )
+    .await;
+    assert_eq!(missing_b.status(), 404);
+}
+
+#[tokio::test]
+async fn test_delete_objects_batch_distributed_forwards_mixed_owner_entries() {
+    let pair = start_forwarding_pair().await;
+
+    s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-forward-delete-batch-mixed",
+            pair.coordinator_url
+        ),
+        vec![],
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!("{}/routing-forward-delete-batch-mixed", pair.owner_url),
+        vec![],
+    )
+    .await;
+
+    let local_key = distributed_local_owner_key_for(
+        "routing-forward-delete-batch-mixed-local",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    let forwarded_key = distributed_non_owner_key_for(
+        "routing-forward-delete-batch-mixed-forward",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+
+    s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-forward-delete-batch-mixed/{}",
+            pair.coordinator_url, local_key
+        ),
+        b"delete-local".to_vec(),
+    )
+    .await;
+    s3_request(
+        "PUT",
+        &format!(
+            "{}/routing-forward-delete-batch-mixed/{}",
+            pair.owner_url, forwarded_key
+        ),
+        b"delete-forwarded".to_vec(),
+    )
+    .await;
+
+    let delete_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Delete>
+  <Object><Key>{}</Key></Object>
+  <Object><Key>{}</Key></Object>
+</Delete>"#,
+        local_key, forwarded_key
+    );
+
+    let response = s3_request(
+        "POST",
+        &format!(
+            "{}/routing-forward-delete-batch-mixed?delete",
+            pair.coordinator_url
+        ),
+        delete_xml.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(response.status(), 200);
+    assert_eq!(
+        response
+            .headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        response
+            .headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
+
+    let body = response.text().await.unwrap();
+    assert!(body.contains(&format!("<Key>{}</Key>", local_key)));
+    assert!(body.contains(&format!("<Key>{}</Key>", forwarded_key)));
+    assert!(!body.contains("<Code>AccessDenied</Code>"));
+
+    let local_missing = s3_request(
+        "GET",
+        &format!(
+            "{}/routing-forward-delete-batch-mixed/{}",
+            pair.coordinator_url, local_key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(local_missing.status(), 404);
+
+    let forwarded_missing = s3_request(
+        "GET",
+        &format!(
+            "{}/routing-forward-delete-batch-mixed/{}",
+            pair.owner_url, forwarded_key
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(forwarded_missing.status(), 404);
+}
+
+#[tokio::test]
 async fn test_delete_objects_batch_missing_bucket_returns_no_such_bucket() {
     let (base_url, _tmp) = start_server().await;
 
@@ -1276,6 +3016,79 @@ async fn test_delete_objects_batch_invalid_key_returns_invalid_argument_entry() 
 
     let deleted = s3_request("GET", &format!("{}/mybucket/a.txt", base_url), vec![]).await;
     assert_eq!(deleted.status(), 404);
+}
+
+#[tokio::test]
+async fn test_delete_objects_batch_rejects_invalid_escaped_xml_content() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let delete_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Delete>
+  <Object><Key>bad&amp</Key></Object>
+</Delete>"#;
+
+    let resp = s3_request(
+        "POST",
+        &format!("{}/mybucket?delete", base_url),
+        delete_xml.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("MalformedXML")
+    );
+}
+
+#[tokio::test]
+async fn test_delete_objects_batch_rejects_more_than_1000_keys() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let mut delete_xml = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?><Delete>");
+    for i in 0..1001 {
+        delete_xml.push_str(&format!("<Object><Key>k-{i}</Key></Object>"));
+    }
+    delete_xml.push_str("</Delete>");
+
+    let resp = s3_request(
+        "POST",
+        &format!("{}/mybucket?delete", base_url),
+        delete_xml.into_bytes(),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("MalformedXML")
+    );
+}
+
+#[tokio::test]
+async fn test_delete_objects_batch_rejects_invalid_xml_structure() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let delete_xml = r#"<?xml version="1.0" encoding="UTF-8"?>
+<Delete>
+  <Key>a.txt</Key>
+</Delete>"#;
+
+    let resp = s3_request(
+        "POST",
+        &format!("{}/mybucket?delete", base_url),
+        delete_xml.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("MalformedXML")
+    );
 }
 
 #[tokio::test]
@@ -1716,6 +3529,249 @@ async fn test_multipart_complete() {
 }
 
 #[tokio::test]
+async fn test_multipart_complete_distributed_non_owner_write_forwards_to_primary_owner() {
+    let pair = start_forwarding_pair().await;
+    let bucket = "routing-multipart-forward-complete";
+    s3_request(
+        "PUT",
+        &format!("{}/{}", pair.coordinator_url, bucket),
+        vec![],
+    )
+    .await;
+    s3_request("PUT", &format!("{}/{}", pair.owner_url, bucket), vec![]).await;
+
+    let key = distributed_non_owner_key_for(
+        "routing-multipart-forward-complete",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+
+    let create = s3_request(
+        "POST",
+        &format!("{}/{}/{}?uploads=", pair.coordinator_url, bucket, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(create.status(), 200);
+    let upload_id = extract_xml_tag(&create.text().await.unwrap(), "UploadId").unwrap();
+
+    let payload = b"multipart-forwarded-payload".to_vec();
+    let part = s3_request(
+        "PUT",
+        &format!(
+            "{}/{}/{}?partNumber=1&uploadId={}",
+            pair.coordinator_url, bucket, key, upload_id
+        ),
+        payload.clone(),
+    )
+    .await;
+    assert_eq!(part.status(), 200);
+    let etag = part
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing part etag")
+        .to_string();
+
+    let complete_xml = format!(
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>",
+        etag
+    );
+    let complete = s3_request(
+        "POST",
+        &format!(
+            "{}/{}/{}?uploadId={}",
+            pair.coordinator_url, bucket, key, upload_id
+        ),
+        complete_xml.into_bytes(),
+    )
+    .await;
+    assert_eq!(complete.status(), 200);
+
+    let get_owner = s3_request(
+        "GET",
+        &format!("{}/{}/{}", pair.owner_url, bucket, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(get_owner.status(), 200);
+    assert_eq!(
+        get_owner.bytes().await.unwrap().as_ref(),
+        payload.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn test_multipart_complete_distributed_primary_write_reports_quorum_headers_when_replica_acks()
+ {
+    let pair = start_forwarding_pair().await;
+    let bucket = "routing-multipart-complete-quorum";
+    s3_request(
+        "PUT",
+        &format!("{}/{}", pair.coordinator_url, bucket),
+        vec![],
+    )
+    .await;
+    s3_request("PUT", &format!("{}/{}", pair.owner_url, bucket), vec![]).await;
+
+    let key = distributed_local_owner_key_for(
+        "routing-multipart-complete-quorum",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+
+    let create = s3_request(
+        "POST",
+        &format!("{}/{}/{}?uploads=", pair.coordinator_url, bucket, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(create.status(), 200);
+    let upload_id = extract_xml_tag(&create.text().await.unwrap(), "UploadId").unwrap();
+
+    let payload = b"multipart-complete-quorum-payload".to_vec();
+    let part = s3_request(
+        "PUT",
+        &format!(
+            "{}/{}/{}?partNumber=1&uploadId={}",
+            pair.coordinator_url, bucket, key, upload_id
+        ),
+        payload.clone(),
+    )
+    .await;
+    assert_eq!(part.status(), 200);
+    let etag = part
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing part etag")
+        .to_string();
+
+    let complete_xml = format!(
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>",
+        etag
+    );
+    let complete = s3_request(
+        "POST",
+        &format!(
+            "{}/{}/{}?uploadId={}",
+            pair.coordinator_url, bucket, key, upload_id
+        ),
+        complete_xml.into_bytes(),
+    )
+    .await;
+    assert_eq!(complete.status(), 200);
+    assert_eq!(
+        complete
+            .headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        complete
+            .headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        complete
+            .headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("true")
+    );
+
+    let get_owner = s3_request(
+        "GET",
+        &format!("{}/{}/{}", pair.owner_url, bucket, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(get_owner.status(), 200);
+    assert_eq!(
+        get_owner.bytes().await.unwrap().as_ref(),
+        payload.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn test_multipart_complete_distributed_primary_write_reports_degraded_quorum_when_replica_unreachable()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let bucket = "routing-multipart-complete-replica-unreachable";
+    s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    let key = distributed_local_owner_key("routing-multipart-complete-replica-unreachable");
+
+    let create = s3_request(
+        "POST",
+        &format!("{}/{}/{}?uploads=", base_url, bucket, key),
+        vec![],
+    )
+    .await;
+    assert_eq!(create.status(), 200);
+    let upload_id = extract_xml_tag(&create.text().await.unwrap(), "UploadId").unwrap();
+
+    let payload = b"multipart-complete-replica-unreachable".to_vec();
+    let part = s3_request(
+        "PUT",
+        &format!(
+            "{}/{}/{}?partNumber=1&uploadId={}",
+            base_url, bucket, key, upload_id
+        ),
+        payload,
+    )
+    .await;
+    assert_eq!(part.status(), 200);
+    let etag = part
+        .headers()
+        .get("etag")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing part etag")
+        .to_string();
+
+    let complete_xml = format!(
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>",
+        etag
+    );
+    let complete = s3_request(
+        "POST",
+        &format!("{}/{}/{}?uploadId={}", base_url, bucket, key, upload_id),
+        complete_xml.into_bytes(),
+    )
+    .await;
+    assert_eq!(complete.status(), 200);
+    assert_eq!(
+        complete
+            .headers()
+            .get("x-maxio-write-ack-count")
+            .and_then(|value| value.to_str().ok()),
+        Some("1")
+    );
+    assert_eq!(
+        complete
+            .headers()
+            .get("x-maxio-write-quorum-size")
+            .and_then(|value| value.to_str().ok()),
+        Some("2")
+    );
+    assert_eq!(
+        complete
+            .headers()
+            .get("x-maxio-write-quorum-reached")
+            .and_then(|value| value.to_str().ok()),
+        Some("false")
+    );
+}
+
+#[tokio::test]
 async fn test_multipart_complete_missing_bucket_returns_no_such_bucket() {
     let (base_url, _tmp) = start_server().await;
     let complete_xml = br#"
@@ -1922,6 +3978,124 @@ async fn test_multipart_list_parts() {
     assert_eq!(list.status(), 200);
     let body = list.text().await.unwrap();
     assert!(body.contains("<PartNumber>1</PartNumber>"));
+}
+
+#[tokio::test]
+async fn test_multipart_list_parts_supports_max_parts_and_marker() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    let create = s3_request(
+        "POST",
+        &format!("{}/mybucket/large.bin?uploads=", base_url),
+        vec![],
+    )
+    .await;
+    let upload_id = extract_xml_tag(&create.text().await.unwrap(), "UploadId").unwrap();
+
+    for (part_number, payload) in [(1, "part-one"), (2, "part-two"), (3, "part-three")] {
+        s3_request(
+            "PUT",
+            &format!(
+                "{}/mybucket/large.bin?partNumber={}&uploadId={}",
+                base_url, part_number, upload_id
+            ),
+            payload.as_bytes().to_vec(),
+        )
+        .await;
+    }
+
+    let first_page = s3_request(
+        "GET",
+        &format!(
+            "{}/mybucket/large.bin?uploadId={}&max-parts=2",
+            base_url, upload_id
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(first_page.status(), 200);
+    let first_body = first_page.text().await.unwrap();
+    assert!(first_body.contains("<IsTruncated>true</IsTruncated>"));
+    assert!(first_body.contains("<PartNumberMarker>0</PartNumberMarker>"));
+    assert!(first_body.contains("<NextPartNumberMarker>2</NextPartNumberMarker>"));
+    assert!(first_body.contains("<MaxParts>2</MaxParts>"));
+    assert!(first_body.contains("<PartNumber>1</PartNumber>"));
+    assert!(first_body.contains("<PartNumber>2</PartNumber>"));
+    assert!(!first_body.contains("<PartNumber>3</PartNumber>"));
+
+    let second_page = s3_request(
+        "GET",
+        &format!(
+            "{}/mybucket/large.bin?uploadId={}&part-number-marker=2&max-parts=2",
+            base_url, upload_id
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(second_page.status(), 200);
+    let second_body = second_page.text().await.unwrap();
+    assert!(second_body.contains("<IsTruncated>false</IsTruncated>"));
+    assert!(second_body.contains("<PartNumberMarker>2</PartNumberMarker>"));
+    assert!(!second_body.contains("<NextPartNumberMarker>"));
+    assert!(second_body.contains("<PartNumber>3</PartNumber>"));
+}
+
+#[tokio::test]
+async fn test_multipart_list_parts_invalid_max_parts_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    let create = s3_request(
+        "POST",
+        &format!("{}/mybucket/large.bin?uploads=", base_url),
+        vec![],
+    )
+    .await;
+    let upload_id = extract_xml_tag(&create.text().await.unwrap(), "UploadId").unwrap();
+
+    let resp = s3_request(
+        "GET",
+        &format!(
+            "{}/mybucket/large.bin?uploadId={}&max-parts=abc",
+            base_url, upload_id
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
+}
+
+#[tokio::test]
+async fn test_multipart_list_parts_invalid_part_number_marker_returns_invalid_argument() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    let create = s3_request(
+        "POST",
+        &format!("{}/mybucket/large.bin?uploads=", base_url),
+        vec![],
+    )
+    .await;
+    let upload_id = extract_xml_tag(&create.text().await.unwrap(), "UploadId").unwrap();
+
+    let resp = s3_request(
+        "GET",
+        &format!(
+            "{}/mybucket/large.bin?uploadId={}&part-number-marker=abc",
+            base_url, upload_id
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("InvalidArgument")
+    );
 }
 
 #[tokio::test]
@@ -2234,6 +4408,72 @@ async fn test_copy_object_metadata_directive_is_case_insensitive() {
 }
 
 #[tokio::test]
+async fn test_copy_object_can_target_specific_source_version() {
+    let (base_url, _tmp) = start_server().await;
+    let bucket = "copy-source-version";
+    let source_key = "src.txt";
+    let destination_key = "dst.txt";
+    s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+
+    let enable_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let enable = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", base_url, bucket),
+        enable_xml,
+    )
+    .await;
+    assert_eq!(enable.status(), 200);
+
+    let put_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, source_key),
+        b"version-one".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+    let version_1 = put_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id for v1")
+        .to_string();
+
+    let put_v2 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, source_key),
+        b"version-two".to_vec(),
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+
+    let copy_source_header = format!("/{}/{}?versionId={}", bucket, source_key, version_1);
+    let copy = s3_request_with_headers(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, destination_key),
+        vec![],
+        vec![("x-amz-copy-source", &copy_source_header)],
+    )
+    .await;
+    assert_eq!(copy.status(), 200);
+    assert_eq!(
+        copy.headers()
+            .get("x-amz-copy-source-version-id")
+            .and_then(|v| v.to_str().ok()),
+        Some(version_1.as_str())
+    );
+
+    let destination = s3_request(
+        "GET",
+        &format!("{}/{}/{}", base_url, bucket, destination_key),
+        vec![],
+    )
+    .await;
+    assert_eq!(destination.status(), 200);
+    assert_eq!(destination.bytes().await.unwrap().as_ref(), b"version-one");
+}
+
+#[tokio::test]
 async fn test_copy_object_source_not_found() {
     let (base_url, _tmp) = start_server().await;
     s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
@@ -2313,6 +4553,64 @@ async fn test_copy_object_no_leading_slash() {
 
     let resp = s3_request("GET", &format!("{}/mybucket/dst.txt", base_url), vec![]).await;
     assert_eq!(resp.bytes().await.unwrap().as_ref(), b"no slash");
+}
+
+#[tokio::test]
+async fn test_copy_object_rejects_empty_source_key() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let resp = s3_request_with_headers(
+        "PUT",
+        &format!("{}/mybucket/dst.txt", base_url),
+        vec![],
+        vec![("x-amz-copy-source", "/mybucket/")],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>InvalidArgument</Code>"));
+}
+
+#[tokio::test]
+async fn test_copy_object_rejects_empty_source_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    // Decodes to "/key", which implies an empty source bucket.
+    let resp = s3_request_with_headers(
+        "PUT",
+        &format!("{}/mybucket/dst.txt", base_url),
+        vec![],
+        vec![("x-amz-copy-source", "/%2Fkey")],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>InvalidArgument</Code>"));
+}
+
+#[tokio::test]
+async fn test_copy_object_rejects_double_leading_slash_source() {
+    let (base_url, _tmp) = start_server().await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    s3_request(
+        "PUT",
+        &format!("{}/mybucket/src.txt", base_url),
+        b"payload".to_vec(),
+    )
+    .await;
+
+    let resp = s3_request_with_headers(
+        "PUT",
+        &format!("{}/mybucket/dst.txt", base_url),
+        vec![],
+        vec![("x-amz-copy-source", "//mybucket/src.txt")],
+    )
+    .await;
+    assert_eq!(resp.status(), 400);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>InvalidArgument</Code>"));
 }
 
 // ── Range request tests ──────────────────────────────────────────────
@@ -2543,7 +4841,12 @@ async fn test_get_object_range_preserves_headers() {
 #[tokio::test]
 async fn test_get_object_range_preserves_checksum_header() {
     let (base_url, _tmp) = start_server().await;
-    s3_request("PUT", &format!("{}/range-checksum-bucket", base_url), vec![]).await;
+    s3_request(
+        "PUT",
+        &format!("{}/range-checksum-bucket", base_url),
+        vec![],
+    )
+    .await;
 
     let body = b"hello checksum range";
     let crc = crc32fast::hash(body);

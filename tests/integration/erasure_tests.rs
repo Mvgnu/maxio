@@ -81,6 +81,66 @@ async fn test_ec_range_request() {
 }
 
 #[tokio::test]
+async fn test_ec_get_object_range_with_version_id_reads_selected_version() {
+    let (base_url, _tmp) = start_server_ec().await;
+    let bucket = "ec-versioned-range";
+    let key = "docs/chunked-range.bin";
+    s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+
+    let enable_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let enable = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", base_url, bucket),
+        enable_xml,
+    )
+    .await;
+    assert_eq!(enable.status(), 200);
+
+    let put_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        vec![0x11; 1536],
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+    let version_1 = put_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id for first write")
+        .to_string();
+
+    let put_v2 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        vec![0x22; 1536],
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+
+    let range_resp = s3_request_with_headers(
+        "GET",
+        &format!("{}/{}/{}?versionId={}", base_url, bucket, key, version_1),
+        vec![],
+        vec![("Range", "bytes=512-767")],
+    )
+    .await;
+    assert_eq!(range_resp.status(), 206);
+    assert_eq!(
+        range_resp
+            .headers()
+            .get("x-amz-version-id")
+            .and_then(|v| v.to_str().ok()),
+        Some(version_1.as_str())
+    );
+
+    let body = range_resp.bytes().await.unwrap();
+    assert_eq!(body.len(), 256);
+    assert!(body.iter().all(|b| *b == 0x11));
+}
+
+#[tokio::test]
 async fn test_ec_delete_object() {
     let (base_url, tmp) = start_server_ec().await;
     s3_request("PUT", &format!("{}/testbucket", base_url), vec![]).await;
@@ -304,4 +364,71 @@ async fn test_ec_delete_marker_stays_current_after_deleting_older_version() {
     let get_after_old_delete =
         s3_request("GET", &format!("{}/{}/{}", base_url, bucket, key), vec![]).await;
     assert_eq!(get_after_old_delete.status(), 404);
+}
+
+#[tokio::test]
+async fn test_ec_deleting_latest_version_restores_previous_current_version() {
+    let (base_url, _tmp) = start_server_ec().await;
+    let bucket = "ec-versioned-restore";
+    let key = "logs/recover.bin";
+    s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+
+    let enable_xml =
+        br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
+    let enable = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", base_url, bucket),
+        enable_xml,
+    )
+    .await;
+    assert_eq!(enable.status(), 200);
+
+    let put_v1 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        vec![0xAA; 1536],
+    )
+    .await;
+    assert_eq!(put_v1.status(), 200);
+    let version_1 = put_v1
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id for v1")
+        .to_string();
+
+    let put_v2 = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        vec![0xBB; 1536],
+    )
+    .await;
+    assert_eq!(put_v2.status(), 200);
+    let version_2 = put_v2
+        .headers()
+        .get("x-amz-version-id")
+        .and_then(|v| v.to_str().ok())
+        .expect("missing version id for v2")
+        .to_string();
+
+    let delete_v2 = s3_request(
+        "DELETE",
+        &format!("{}/{}/{}?versionId={}", base_url, bucket, key, version_2),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete_v2.status(), 204);
+
+    let current = s3_request("GET", &format!("{}/{}/{}", base_url, bucket, key), vec![]).await;
+    assert_eq!(current.status(), 200);
+    assert_eq!(
+        current
+            .headers()
+            .get("x-amz-version-id")
+            .and_then(|v| v.to_str().ok()),
+        Some(version_1.as_str())
+    );
+    let body = current.bytes().await.unwrap();
+    assert_eq!(body.len(), 1536);
+    assert!(body.iter().all(|b| *b == 0xAA));
 }

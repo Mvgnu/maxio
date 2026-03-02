@@ -46,6 +46,12 @@ pub(super) struct SetLifecycleRequest {
     rules: Vec<LifecycleRuleDto>,
 }
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GetLifecycleResponse {
+    rules: Vec<LifecycleRuleDto>,
+}
+
 pub(super) async fn get_lifecycle(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
@@ -53,9 +59,9 @@ pub(super) async fn get_lifecycle(
     match state.storage.get_lifecycle_rules(&bucket).await {
         Ok(rules) => response::json(
             StatusCode::OK,
-            serde_json::json!({
-                "rules": rules.into_iter().map(LifecycleRuleDto::from).collect::<Vec<_>>()
-            }),
+            GetLifecycleResponse {
+                rules: rules.into_iter().map(LifecycleRuleDto::from).collect(),
+            },
         ),
         Err(e) => storage::map_bucket_storage_err(e),
     }

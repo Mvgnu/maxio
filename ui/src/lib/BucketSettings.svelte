@@ -8,6 +8,7 @@
     setBucketVersioningApi,
     type LifecycleRuleRecord,
   } from '$lib/api'
+  import { errorMessageOrFallback } from '$lib/error-message'
 
   interface Props {
     bucket: string
@@ -32,7 +33,7 @@
       if (result.ok) {
         versioningEnabled = result.data.enabled
       } else {
-        error = result.error || 'Failed to load versioning status'
+        error = errorMessageOrFallback(result.error, 'Failed to load versioning status')
       }
     } catch (err) {
       console.error('fetchVersioning failed:', err)
@@ -60,7 +61,7 @@
         versioningEnabled = newState
         toast.success(newState ? 'Versioning enabled' : 'Versioning disabled')
       } else {
-        toast.error(result.error || 'Failed to update versioning')
+        toast.error(errorMessageOrFallback(result.error, 'Failed to update versioning'))
       }
     } catch (err) {
       console.error('toggleVersioning failed:', err)
@@ -78,7 +79,7 @@
       if (result.ok) {
         lifecycleRules = result.data.rules
       } else {
-        lifecycleError = result.error || 'Failed to load lifecycle rules'
+        lifecycleError = errorMessageOrFallback(result.error, 'Failed to load lifecycle rules')
       }
     } catch (err) {
       console.error('fetchLifecycle failed:', err)
@@ -161,7 +162,7 @@
         lifecycleError = null
         toast.success('Lifecycle rules updated')
       } else {
-        toast.error(result.error || 'Failed to save lifecycle rules')
+        toast.error(errorMessageOrFallback(result.error, 'Failed to save lifecycle rules'))
       }
     } catch (err) {
       console.error('saveLifecycleRules failed:', err)

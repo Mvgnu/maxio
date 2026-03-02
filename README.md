@@ -21,9 +21,13 @@ MaxIO is a lightweight, single-binary S3-compatible object storage server writte
 - **AWS Signature V4** — Compatible with `mc`, AWS CLI, and any S3 SDK
 - **Multi-Credential Auth** — Supports primary plus additional `access:secret` credential pairs for S3 and console login
 - **Web Console** — Built-in UI at `/ui/` for browsing, uploading, and managing objects
-- **S3 API Coverage** — ListBuckets, CreateBucket, HeadBucket, DeleteBucket, GetBucketLocation, ListObjectsV1/V2, PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects (batch), CopyObject, Multipart Upload
+- **S3 API Coverage** — ListBuckets, CreateBucket, HeadBucket, DeleteBucket, GetBucketLocation, ListObjectsV1/V2, PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects (batch), CopyObject, Multipart Upload, Bucket Versioning APIs, Bucket Lifecycle APIs
 - **Range Requests** — HTTP 206 Partial Content support via `Range` header on GetObject
-- **Runtime Observability** — Prometheus metrics at `/metrics` and health status at `/healthz`
+- **Versioning** — Object version creation, list/get/delete by `versionId`, marker-aware `?versions` pagination, suspend-with-history-preservation semantics
+- **Lifecycle Rules** — Bucket lifecycle rule set/get/delete plus background lifecycle sweep execution
+- **Distributed Routing Foundation** — Placement-aware forwarding for non-owner reads/writes, replica fanout for primary writes (`PUT`/`CopyObject`/multipart complete/`DELETE`), quorum diagnostics headers, placement epoch/view wiring
+- **Read-Repair Foundation** — Primary-owner current-version `GET`/`HEAD` read-repair with trusted replica probes and replica repair fanout
+- **Runtime Observability** — Prometheus metrics at `/metrics` and probe-backed health/readiness status at `/healthz`
 - **Checksum Verification** — CRC32, CRC32C, SHA-1, and SHA-256 checksums on upload with automatic validation and persistent storage
 - **Erasure Coding** — Optional chunked storage with per-chunk SHA-256 integrity verification and Reed-Solomon parity for automatic recovery from corrupted or missing data
 
@@ -105,9 +109,11 @@ Open `http://localhost:9000/ui/` in your browser. Default credentials: `minioadm
 | `MAXIO_REGION` | `--region` | `us-east-1` | S3 region (aliases: `MINIO_REGION_NAME`, `MINIO_REGION`) |
 | `MAXIO_NODE_ID` | `--node-id` | `HOSTNAME` or `maxio-node` | Stable node identifier for distributed-mode bootstrap wiring |
 | `MAXIO_CLUSTER_PEERS` | `--cluster-peers` | _empty_ | Comma-separated `host:port` peer list for distributed bootstrap wiring |
+| `MAXIO_MEMBERSHIP_PROTOCOL` | `--membership-protocol` | `static-bootstrap` | Membership protocol mode (`static-bootstrap`, `gossip`, `raft`; gossip/raft are currently config placeholders) |
 | `MAXIO_ERASURE_CODING` | `--erasure-coding` | `false` | Enable erasure coding with per-chunk integrity checksums |
 | `MAXIO_CHUNK_SIZE` | `--chunk-size` | `10485760` (10MB) | Chunk size in bytes for erasure coding |
 | `MAXIO_PARITY_SHARDS` | `--parity-shards` | `0` | Number of parity shards per object (requires `--erasure-coding`, 0 = no parity) |
+| `MAXIO_MIN_DISK_HEADROOM_BYTES` | `--min-disk-headroom-bytes` | `268435456` (256MB) | Minimum required free bytes for `/healthz` readiness (`0` disables this gate) |
 
 ## Usage
 
@@ -139,11 +145,10 @@ aws --endpoint-url http://localhost:9000 s3 rb s3://my-bucket
 
 ## Roadmap
 
-- ~~Multipart upload~~, ~~presigned URLs~~, ~~CopyObject~~
-- ~~CORS~~, ~~Range headers~~
-- Versioning, ~~lifecycle rules~~, ~~metrics~~
-- Multi-user support
-- Distributed mode (bootstrap hooks in place), ~~erasure coding~~, replication
+- Done: multipart upload, presigned URLs, CopyObject, CORS, range headers, lifecycle rules, metrics baseline, erasure coding
+- Done: versioning foundation (version lifecycle APIs/flows, versions pagination, version-aware range reads)
+- In progress: distributed mode foundations (placement/epoch state, non-owner forwarding, primary replica fanout + quorum diagnostics, primary read-repair for current-version GET/HEAD)
+- In progress: replication hardening, read-repair expansion, rebalance executor, dynamic membership engines (gossip/raft), multi-user policy/authorization layers
 
 ## Contributing
 
@@ -173,9 +178,9 @@ Run all domain checks:
 ./scripts/domain_check.sh all
 ```
 
-## Core Maintainer
+## Maintainer
 
-| [<img src="https://github.com/andrasbacsai.png" width="120" /><br />Andras Bacsai](https://github.com/andrasbacsai) |
+| [<img src="https://github.com/Mvgnu.png" width="120" /><br />Magnus Ohle](https://github.com/Mvgnu) |
 |---|
 
 ## License

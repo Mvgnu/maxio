@@ -1,4 +1,6 @@
 use super::*;
+use maxio::config::MembershipProtocol;
+use maxio::server::AppState;
 
 #[tokio::test]
 async fn test_request_id_header_present_on_s3_auth_failure() {
@@ -31,6 +33,7 @@ async fn test_metrics_endpoint_reports_distributed_gauges_when_cluster_peers_con
     let data_dir = tmp.path().to_str().unwrap().to_string();
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
     config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    config.membership_protocol = MembershipProtocol::Gossip;
     let (base_url, _tmp) = start_server_with_config(config, tmp).await;
 
     let resp = client()
@@ -43,6 +46,12 @@ async fn test_metrics_endpoint_reports_distributed_gauges_when_cluster_peers_con
 
     assert_eq!(metric_value(&body, "maxio_distributed_mode"), Some(1.0));
     assert_eq!(metric_value(&body, "maxio_cluster_peers_total"), Some(1.0));
+    assert_eq!(
+        metric_value(&body, "maxio_membership_nodes_total"),
+        Some(2.0)
+    );
+    assert!(body.contains("maxio_membership_protocol_info{protocol=\"gossip\"} 1"));
+    assert_eq!(metric_value(&body, "maxio_placement_epoch"), Some(0.0));
 }
 
 #[tokio::test]
@@ -103,6 +112,18 @@ async fn test_metrics_endpoint_exposes_runtime_counters() {
         body.contains("maxio_cluster_peers_total"),
         "metrics output missing cluster-peer count gauge"
     );
+    assert!(
+        body.contains("maxio_membership_nodes_total"),
+        "metrics output missing membership-node count gauge"
+    );
+    assert!(
+        body.contains("maxio_membership_protocol_info"),
+        "metrics output missing membership protocol info gauge"
+    );
+    assert!(
+        body.contains("maxio_placement_epoch"),
+        "metrics output missing placement epoch gauge"
+    );
 }
 
 #[tokio::test]
@@ -125,12 +146,32 @@ async fn test_healthz_endpoint_reports_runtime_status() {
 
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["ok"], true);
+    assert_eq!(body["status"], "ok");
     assert_eq!(body["version"], env!("CARGO_PKG_VERSION"));
     assert!(body["uptimeSeconds"].as_f64().is_some());
     assert_eq!(body["mode"], "standalone");
     assert!(body["nodeId"].as_str().is_some_and(|v| !v.is_empty()));
     assert_eq!(body["clusterPeerCount"], 0);
     assert_eq!(body["clusterPeers"], serde_json::json!([]));
+    assert_eq!(body["membershipNodeCount"], 1);
+    assert_eq!(
+        body["membershipNodes"],
+        serde_json::json!(["maxio-test-node"])
+    );
+    assert_eq!(body["membershipProtocol"], "static-bootstrap");
+    assert!(
+        body["membershipViewId"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty())
+    );
+    assert_eq!(body["placementEpoch"], 0);
+    assert_eq!(body["checks"]["dataDirAccessible"], true);
+    assert_eq!(body["checks"]["dataDirWritable"], true);
+    assert_eq!(body["checks"]["storageDataPathReadable"], true);
+    assert_eq!(body["checks"]["diskHeadroomSufficient"], true);
+    assert_eq!(body["checks"]["peerConnectivityReady"], true);
+    assert_eq!(body["checks"]["membershipProtocolReady"], true);
+    assert_eq!(body["warnings"], serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -138,7 +179,8 @@ async fn test_healthz_reports_distributed_mode_when_cluster_peers_configured() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
-    config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    config.cluster_peers = vec!["127.0.0.1:1".to_string()];
+    config.membership_protocol = MembershipProtocol::Gossip;
     let (base_url, _tmp) = start_server_with_config(config, tmp).await;
 
     let resp = client()
@@ -149,12 +191,157 @@ async fn test_healthz_reports_distributed_mode_when_cluster_peers_configured() {
     assert_eq!(resp.status(), 200);
 
     let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["status"], "degraded");
     assert_eq!(body["mode"], "distributed");
     assert_eq!(body["clusterPeerCount"], 1);
+    assert_eq!(body["clusterPeers"], serde_json::json!(["127.0.0.1:1"]));
+    assert_eq!(body["membershipNodeCount"], 2);
     assert_eq!(
-        body["clusterPeers"],
-        serde_json::json!(["node-b.internal:9000"])
+        body["membershipNodes"],
+        serde_json::json!(["127.0.0.1:1", "maxio-test-node"])
     );
+    assert_eq!(body["membershipProtocol"], "gossip");
+    assert!(
+        body["membershipViewId"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty())
+    );
+    assert_eq!(body["placementEpoch"], 0);
+    assert_eq!(body["checks"]["dataDirAccessible"], true);
+    assert_eq!(body["checks"]["dataDirWritable"], true);
+    assert_eq!(body["checks"]["storageDataPathReadable"], true);
+    assert_eq!(body["checks"]["diskHeadroomSufficient"], true);
+    assert_eq!(body["checks"]["peerConnectivityReady"], false);
+    assert_eq!(body["checks"]["membershipProtocolReady"], false);
+    assert!(
+        body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| !warnings.is_empty())
+    );
+}
+
+#[tokio::test]
+async fn test_healthz_reports_degraded_when_storage_data_path_probe_fails() {
+    let (base_url, tmp) = start_server().await;
+    tokio::fs::remove_dir_all(tmp.path().join("buckets"))
+        .await
+        .expect("buckets directory should be removable");
+
+    let resp = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["checks"]["dataDirAccessible"], true);
+    assert_eq!(body["checks"]["dataDirWritable"], true);
+    assert_eq!(body["checks"]["storageDataPathReadable"], false);
+    assert_eq!(body["checks"]["diskHeadroomSufficient"], true);
+    assert_eq!(body["checks"]["peerConnectivityReady"], true);
+    assert_eq!(body["checks"]["membershipProtocolReady"], true);
+    assert!(
+        body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("Storage data-path probe failed"))))
+    );
+}
+
+#[tokio::test]
+async fn test_healthz_reports_degraded_when_disk_headroom_threshold_not_met() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.min_disk_headroom_bytes = u64::MAX;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let resp = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["checks"]["dataDirAccessible"], true);
+    assert_eq!(body["checks"]["dataDirWritable"], true);
+    assert_eq!(body["checks"]["storageDataPathReadable"], true);
+    assert_eq!(body["checks"]["diskHeadroomSufficient"], false);
+    assert_eq!(body["checks"]["peerConnectivityReady"], true);
+    assert_eq!(body["checks"]["membershipProtocolReady"], true);
+    assert!(
+        body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("Disk headroom below threshold"))))
+    );
+}
+
+#[tokio::test]
+async fn test_healthz_reports_degraded_when_static_peer_connectivity_probe_fails() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_peers = vec!["127.0.0.1:1".to_string()];
+    config.membership_protocol = MembershipProtocol::StaticBootstrap;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let resp = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["checks"]["membershipProtocolReady"], true);
+    assert_eq!(body["checks"]["peerConnectivityReady"], false);
+    assert!(
+        body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("Peer connectivity probe failed"))))
+    );
+}
+
+#[tokio::test]
+async fn test_placement_epoch_persists_and_increments_when_membership_view_changes() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+
+    let config_a = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    let state_a = AppState::from_config(config_a)
+        .await
+        .expect("state A should initialize");
+    assert_eq!(state_a.placement_epoch(), 0);
+    drop(state_a);
+
+    let mut config_b = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config_b.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let state_b = AppState::from_config(config_b)
+        .await
+        .expect("state B should initialize");
+    assert_eq!(state_b.placement_epoch(), 1);
+    drop(state_b);
+
+    let mut config_c = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config_c.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let state_c = AppState::from_config(config_c)
+        .await
+        .expect("state C should initialize");
+    assert_eq!(state_c.placement_epoch(), 1);
 }
 
 #[tokio::test]

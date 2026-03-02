@@ -27,6 +27,7 @@
     objectDisplayName,
     parentObjectPrefix,
   } from '$lib/object-browser'
+  import { errorMessageOrFallback } from '$lib/error-message'
   import type { ObjectBreadcrumb } from '$lib/object-browser'
 
   interface Props {
@@ -80,7 +81,10 @@
         prefixes = result.data.prefixes
         emptyPrefixes = new Set(result.data.emptyPrefixes || [])
       } else {
-        error = result.error || `Failed to load objects (${result.status})`
+        error = errorMessageOrFallback(
+          result.error,
+          `Failed to load objects (${result.status})`
+        )
       }
     } catch (err) {
       console.error('fetchObjects failed:', err)
@@ -139,7 +143,10 @@
           file.type || 'application/octet-stream'
         )
         if (!result.ok) {
-          toast.error(result.error || `Failed to upload ${file.name}`, { id: toastId })
+          toast.error(
+            errorMessageOrFallback(result.error, `Failed to upload ${file.name}`),
+            { id: toastId }
+          )
           if (fileInput) fileInput.value = ''
           uploading = false
           return
@@ -170,7 +177,7 @@
         toast.success(`"${objectDisplayName(key)}" deleted`)
         await fetchObjects()
       } else {
-        toast.error(result.error || 'Failed to delete object')
+        toast.error(errorMessageOrFallback(result.error, 'Failed to delete object'))
       }
     } catch (err) {
       console.error('deleteObject failed:', err)
@@ -196,7 +203,7 @@
       const result = await presignObjectApi(bucket, key, expires)
       if (!result.ok) {
         console.error('Presign failed:', result.status, result.data)
-        toast.error(result.error || 'Failed to generate share link')
+        toast.error(errorMessageOrFallback(result.error, 'Failed to generate share link'))
         return
       }
       await navigator.clipboard.writeText(result.data.url)
@@ -222,7 +229,7 @@
         showCreateFolder = false
         await fetchObjects()
       } else {
-        toast.error(result.error || 'Failed to create folder')
+        toast.error(errorMessageOrFallback(result.error, 'Failed to create folder'))
       }
     } catch (err) {
       console.error('createFolder failed:', err)
@@ -241,7 +248,7 @@
         toast.success(`Folder "${objectDisplayName(folderPrefix)}" deleted`)
         await fetchObjects()
       } else {
-        toast.error(result.error || 'Failed to delete folder')
+        toast.error(errorMessageOrFallback(result.error, 'Failed to delete folder'))
       }
     } catch (err) {
       console.error('deleteFolder failed:', err)

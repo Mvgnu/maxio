@@ -28,6 +28,27 @@ async fn test_auth_accepts_valid_signature() {
 }
 
 #[tokio::test]
+async fn test_auth_rejects_multiple_authorization_headers() {
+    let (base_url, _tmp) = start_server().await;
+    let url = format!("{}/", base_url);
+
+    let mut headers = Vec::new();
+    sign_request("GET", &url, &mut headers, &[]);
+
+    let mut req = client().get(&url);
+    for (name, value) in &headers {
+        req = req.header(name, value);
+    }
+    req = req.header("authorization", "AWS4-HMAC-SHA256 garbage");
+
+    let resp = req.send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Multiple Authorization headers are not allowed"));
+}
+
+#[tokio::test]
 async fn test_auth_rejects_invalid_credential_scope_service() {
     let (base_url, _tmp) = start_server().await;
     let url = format!("{}/", base_url);
@@ -120,6 +141,25 @@ async fn test_presigned_rejects_invalid_credential_scope_service() {
 }
 
 #[tokio::test]
+async fn test_presigned_rejects_multiple_authorization_headers() {
+    let (base_url, _tmp) = start_server().await;
+    let presigned = presign_url(&base_url, "GET", "/", 300);
+
+    let resp = client()
+        .get(&presigned)
+        .header("authorization", "AWS4-HMAC-SHA256 foo")
+        .header("authorization", "AWS4-HMAC-SHA256 bar")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Multiple Authorization headers are not allowed"));
+}
+
+#[tokio::test]
 async fn test_auth_compact_header_no_spaces() {
     // mc sends Authorization header with commas but no spaces:
     // Credential=...,SignedHeaders=...,Signature=...
@@ -148,7 +188,10 @@ async fn test_auth_rejects_duplicate_authorization_components() {
             saw_auth = true;
         }
     }
-    assert!(saw_auth, "signed request should include authorization header");
+    assert!(
+        saw_auth,
+        "signed request should include authorization header"
+    );
 
     let mut req = client().get(&url);
     for (name, value) in &headers {
@@ -177,7 +220,10 @@ async fn test_auth_rejects_unknown_authorization_component() {
             saw_auth = true;
         }
     }
-    assert!(saw_auth, "signed request should include authorization header");
+    assert!(
+        saw_auth,
+        "signed request should include authorization header"
+    );
 
     let mut req = client().get(&url);
     for (name, value) in &headers {
@@ -189,6 +235,133 @@ async fn test_auth_rejects_unknown_authorization_component() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("<Code>AccessDenied</Code>"));
     assert!(body.contains("Invalid auth component"));
+}
+
+#[tokio::test]
+async fn test_auth_rejects_signed_headers_without_host() {
+    let (base_url, _tmp) = start_server().await;
+    let url = format!("{}/", base_url);
+
+    let mut headers = Vec::new();
+    sign_request("GET", &url, &mut headers, &[]);
+
+    let mut saw_auth = false;
+    for (name, value) in &mut headers {
+        if name == "authorization" {
+            *value = value.replace(
+                "SignedHeaders=host;x-amz-content-sha256;x-amz-date",
+                "SignedHeaders=x-amz-date",
+            );
+            saw_auth = true;
+        }
+    }
+    assert!(
+        saw_auth,
+        "signed request should include authorization header"
+    );
+
+    let mut req = client().get(&url);
+    for (name, value) in &headers {
+        req = req.header(name, value);
+    }
+
+    let resp = req.send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("SignedHeaders must include host"));
+}
+
+#[tokio::test]
+async fn test_auth_rejects_duplicate_signed_headers_entries() {
+    let (base_url, _tmp) = start_server().await;
+    let url = format!("{}/", base_url);
+
+    let mut headers = Vec::new();
+    sign_request("GET", &url, &mut headers, &[]);
+
+    let mut saw_auth = false;
+    for (name, value) in &mut headers {
+        if name == "authorization" {
+            *value = value.replace(
+                "SignedHeaders=host;x-amz-content-sha256;x-amz-date",
+                "SignedHeaders=host;host",
+            );
+            saw_auth = true;
+        }
+    }
+    assert!(
+        saw_auth,
+        "signed request should include authorization header"
+    );
+
+    let mut req = client().get(&url);
+    for (name, value) in &headers {
+        req = req.header(name, value);
+    }
+
+    let resp = req.send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Duplicate SignedHeaders entry"));
+}
+
+#[tokio::test]
+async fn test_auth_rejects_signed_headers_with_invalid_token() {
+    let (base_url, _tmp) = start_server().await;
+    let url = format!("{}/", base_url);
+
+    let mut headers = Vec::new();
+    sign_request("GET", &url, &mut headers, &[]);
+
+    let mut saw_auth = false;
+    for (name, value) in &mut headers {
+        if name == "authorization" {
+            *value = value.replace(
+                "SignedHeaders=host;x-amz-content-sha256;x-amz-date",
+                "SignedHeaders=host;bad header",
+            );
+            saw_auth = true;
+        }
+    }
+    assert!(
+        saw_auth,
+        "signed request should include authorization header"
+    );
+
+    let mut req = client().get(&url);
+    for (name, value) in &headers {
+        req = req.header(name, value);
+    }
+
+    let resp = req.send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Invalid SignedHeaders"));
+}
+
+#[tokio::test]
+async fn test_auth_rejects_missing_signed_header_value() {
+    let (base_url, _tmp) = start_server().await;
+    let url = format!("{}/", base_url);
+
+    // Include an empty signed header during signature construction, then omit it
+    // from the actual HTTP request.
+    let mut headers = vec![("x-amz-meta-probe".to_string(), String::new())];
+    sign_request("GET", &url, &mut headers, &[]);
+    headers.retain(|(name, _)| name != "x-amz-meta-probe");
+
+    let mut req = client().get(&url);
+    for (name, value) in &headers {
+        req = req.header(name, value);
+    }
+
+    let resp = req.send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>SignatureDoesNotMatch</Code>"));
 }
 
 /// Generate a presigned URL for the given method/path.
@@ -267,6 +440,80 @@ fn presign_url_with_credentials_at(
     );
 
     let key = format!("AWS4{}", secret_key);
+    let mut mac = HmacSha256::new_from_slice(key.as_bytes()).unwrap();
+    mac.update(date_stamp.as_bytes());
+    let date_key = mac.finalize().into_bytes();
+    let mut mac = HmacSha256::new_from_slice(&date_key).unwrap();
+    mac.update(REGION.as_bytes());
+    let date_region_key = mac.finalize().into_bytes();
+    let mut mac = HmacSha256::new_from_slice(&date_region_key).unwrap();
+    mac.update(b"s3");
+    let date_region_service_key = mac.finalize().into_bytes();
+    let mut mac = HmacSha256::new_from_slice(&date_region_service_key).unwrap();
+    mac.update(b"aws4_request");
+    let signing_key = mac.finalize().into_bytes();
+    let mut mac = HmacSha256::new_from_slice(&signing_key).unwrap();
+    mac.update(string_to_sign.as_bytes());
+    let signature = hex::encode(mac.finalize().into_bytes());
+
+    format!(
+        "{}{}?{}&X-Amz-Signature={}",
+        base_url, path, canonical_qs, signature
+    )
+}
+
+fn presign_url_with_missing_signed_header(
+    base_url: &str,
+    method: &str,
+    path: &str,
+    expires_secs: u64,
+) -> String {
+    let parsed = reqwest::Url::parse(&format!("{}{}", base_url, path)).unwrap();
+    let host = parsed.host_str().unwrap();
+    let port = parsed.port().unwrap();
+    let host_header = format!("{}:{}", host, port);
+
+    let now = chrono::Utc::now();
+    let date_stamp = now.format("%Y%m%d").to_string();
+    let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
+    let credential = format!("{}/{}/{}/s3/aws4_request", ACCESS_KEY, date_stamp, REGION);
+    let signed_headers = "host;x-amz-meta-probe";
+
+    let mut qs_params = vec![
+        (
+            "X-Amz-Algorithm".to_string(),
+            "AWS4-HMAC-SHA256".to_string(),
+        ),
+        ("X-Amz-Credential".to_string(), credential.clone()),
+        ("X-Amz-Date".to_string(), amz_date.clone()),
+        ("X-Amz-Expires".to_string(), expires_secs.to_string()),
+        (
+            "X-Amz-SignedHeaders".to_string(),
+            signed_headers.to_string(),
+        ),
+    ];
+    qs_params.sort();
+
+    let canonical_qs: String = qs_params
+        .iter()
+        .map(|(k, v)| format!("{}={}", percent_encode_s3(k), percent_encode_s3(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let canonical_request = format!(
+        "{}\n{}\n{}\nhost:{}\nx-amz-meta-probe:\n\n{}\nUNSIGNED-PAYLOAD",
+        method, path, canonical_qs, host_header, signed_headers
+    );
+
+    let scope = format!("{}/{}/s3/aws4_request", date_stamp, REGION);
+    let string_to_sign = format!(
+        "AWS4-HMAC-SHA256\n{}\n{}\n{}",
+        amz_date,
+        scope,
+        hex::encode(Sha256::digest(canonical_request.as_bytes()))
+    );
+
+    let key = format!("AWS4{}", SECRET_KEY);
     let mut mac = HmacSha256::new_from_slice(key.as_bytes()).unwrap();
     mac.update(date_stamp.as_bytes());
     let date_key = mac.finalize().into_bytes();
@@ -433,12 +680,33 @@ async fn test_presigned_accepts_percent_encoded_signature_query_key() {
         "/presign-encoded-sig-key-bucket/test.txt",
         300,
     );
-    let encoded_signature_key =
-        presigned.replacen("X-Amz-Signature=", "%58-Amz-Signature=", 1);
+    let encoded_signature_key = presigned.replacen("X-Amz-Signature=", "%58-Amz-Signature=", 1);
 
     let resp = client().get(&encoded_signature_key).send().await.unwrap();
     assert_eq!(resp.status(), 200);
     assert_eq!(resp.bytes().await.unwrap().as_ref(), expected_body);
+}
+
+#[tokio::test]
+async fn test_presigned_rejects_missing_signed_header_value() {
+    let (base_url, _tmp) = start_server().await;
+
+    let bucket_url = format!("{}/presign-missing-header-bucket", base_url);
+    s3_request("PUT", &bucket_url, vec![]).await;
+    let object_url = format!("{}/presign-missing-header-bucket/test.txt", base_url);
+    s3_request("PUT", &object_url, b"data".to_vec()).await;
+
+    let presigned = presign_url_with_missing_signed_header(
+        &base_url,
+        "GET",
+        "/presign-missing-header-bucket/test.txt",
+        300,
+    );
+
+    let resp = client().get(&presigned).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>SignatureDoesNotMatch</Code>"));
 }
 
 #[tokio::test]
@@ -464,6 +732,24 @@ async fn test_presigned_rejects_unknown_access_key() {
     assert_eq!(resp.status(), 403);
     let body = resp.text().await.unwrap();
     assert!(body.contains("<Code>InvalidAccessKeyId</Code>"));
+}
+
+#[tokio::test]
+async fn test_presigned_rejects_zero_expires() {
+    let (base_url, _tmp) = start_server().await;
+
+    let bucket_url = format!("{}/presign-zero-expires-bucket", base_url);
+    s3_request("PUT", &bucket_url, vec![]).await;
+    let object_url = format!("{}/presign-zero-expires-bucket/test.txt", base_url);
+    s3_request("PUT", &object_url, b"data".to_vec()).await;
+
+    let presigned = presign_url(&base_url, "GET", "/presign-zero-expires-bucket/test.txt", 0);
+
+    let resp = client().get(&presigned).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("X-Amz-Expires must be greater than 0 seconds"));
 }
 
 #[tokio::test]
@@ -581,4 +867,88 @@ async fn test_presigned_rejects_duplicate_auth_query_components() {
     let body = resp.text().await.unwrap();
     assert!(body.contains("<Code>AccessDenied</Code>"));
     assert!(body.contains("Duplicate X-Amz-Date"));
+}
+
+#[tokio::test]
+async fn test_presigned_rejects_signed_headers_without_host() {
+    let (base_url, _tmp) = start_server().await;
+
+    let bucket_url = format!("{}/presign-missing-host-header-bucket", base_url);
+    s3_request("PUT", &bucket_url, vec![]).await;
+    let object_url = format!("{}/presign-missing-host-header-bucket/test.txt", base_url);
+    s3_request("PUT", &object_url, b"data".to_vec()).await;
+
+    let presigned = presign_url(
+        &base_url,
+        "GET",
+        "/presign-missing-host-header-bucket/test.txt",
+        300,
+    );
+    let mutated = presigned.replace("X-Amz-SignedHeaders=host", "X-Amz-SignedHeaders=x-amz-date");
+
+    let resp = client().get(&mutated).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("SignedHeaders must include host"));
+}
+
+#[tokio::test]
+async fn test_presigned_rejects_duplicate_signed_headers_entries() {
+    let (base_url, _tmp) = start_server().await;
+
+    let bucket_url = format!("{}/presign-duplicate-signed-headers-bucket", base_url);
+    s3_request("PUT", &bucket_url, vec![]).await;
+    let object_url = format!(
+        "{}/presign-duplicate-signed-headers-bucket/test.txt",
+        base_url
+    );
+    s3_request("PUT", &object_url, b"data".to_vec()).await;
+
+    let presigned = presign_url(
+        &base_url,
+        "GET",
+        "/presign-duplicate-signed-headers-bucket/test.txt",
+        300,
+    );
+    let mutated = presigned.replace(
+        "X-Amz-SignedHeaders=host",
+        "X-Amz-SignedHeaders=host%3Bhost",
+    );
+
+    let resp = client().get(&mutated).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Duplicate SignedHeaders entry"));
+}
+
+#[tokio::test]
+async fn test_presigned_rejects_signed_headers_with_invalid_token() {
+    let (base_url, _tmp) = start_server().await;
+
+    let bucket_url = format!("{}/presign-invalid-signed-headers-bucket", base_url);
+    s3_request("PUT", &bucket_url, vec![]).await;
+    let object_url = format!(
+        "{}/presign-invalid-signed-headers-bucket/test.txt",
+        base_url
+    );
+    s3_request("PUT", &object_url, b"data".to_vec()).await;
+
+    let presigned = presign_url(
+        &base_url,
+        "GET",
+        "/presign-invalid-signed-headers-bucket/test.txt",
+        300,
+    );
+    let mutated = presigned.replace(
+        "X-Amz-SignedHeaders=host",
+        "X-Amz-SignedHeaders=host%3Bbad%20header",
+    );
+
+    let resp = client().get(&mutated).send().await.unwrap();
+    assert_eq!(resp.status(), 403);
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("<Code>AccessDenied</Code>"));
+    assert!(body.contains("Invalid SignedHeaders"));
 }

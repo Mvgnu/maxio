@@ -9,6 +9,7 @@
   import Settings from 'lucide-svelte/icons/settings'
   import { toast } from '$lib/toast'
   import { createBucketApi, deleteBucketApi, listBucketsApi } from '$lib/api'
+  import { errorMessageOrFallback } from '$lib/error-message'
 
   interface Props {
     onSelect: (bucket: string) => void
@@ -41,7 +42,10 @@
       if (result.ok) {
         buckets = result.data.buckets
       } else {
-        error = result.error || `Failed to load buckets (${result.status})`
+        error = errorMessageOrFallback(
+          result.error,
+          `Failed to load buckets (${result.status})`
+        )
       }
     } catch (err) {
       console.error('fetchBuckets failed:', err)
@@ -63,7 +67,12 @@
         showCreate = false
         await fetchBuckets()
       } else {
-        toast.error(result.error || `Failed to create bucket (${result.status})`)
+        toast.error(
+          errorMessageOrFallback(
+            result.error,
+            `Failed to create bucket (${result.status})`
+          )
+        )
       }
     } catch (err) {
       console.error('createBucket failed:', err)
@@ -82,7 +91,12 @@
         toast.success(`Bucket "${name}" deleted`)
         await fetchBuckets()
       } else {
-        toast.error(result.error || `Failed to delete bucket (${result.status})`)
+        toast.error(
+          errorMessageOrFallback(
+            result.error,
+            `Failed to delete bucket (${result.status})`
+          )
+        )
       }
     } catch (err) {
       console.error('deleteBucket failed:', err)

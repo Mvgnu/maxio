@@ -156,6 +156,15 @@ pub struct ListPartsResult {
     pub key: String,
     #[serde(rename = "UploadId")]
     pub upload_id: String,
+    #[serde(rename = "PartNumberMarker")]
+    pub part_number_marker: u32,
+    #[serde(
+        rename = "NextPartNumberMarker",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub next_part_number_marker: Option<u32>,
+    #[serde(rename = "MaxParts")]
+    pub max_parts: u32,
     #[serde(rename = "IsTruncated")]
     pub is_truncated: bool,
     #[serde(rename = "Part", default)]

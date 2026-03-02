@@ -11,6 +11,7 @@
     deleteVersionApi,
     listVersionsApi,
   } from '$lib/api'
+  import { errorMessageOrFallback } from '$lib/error-message'
 
   interface Props {
     bucket: string
@@ -40,7 +41,7 @@
       if (result.ok) {
         versions = result.data.versions
       } else {
-        error = result.error || 'Failed to load versions'
+        error = errorMessageOrFallback(result.error, 'Failed to load versions')
       }
     } catch (err) {
       console.error('fetchVersions failed:', err)
@@ -58,7 +59,7 @@
         await fetchVersions()
         onVersionDeleted?.()
       } else {
-        error = result.error || 'Failed to delete version'
+        error = errorMessageOrFallback(result.error, 'Failed to delete version')
       }
     } catch (err) {
       console.error('deleteVersion failed:', err)

@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
 use std::env;
 
@@ -24,6 +24,24 @@ fn default_region() -> String {
 
 fn default_node_id() -> String {
     first_env_value(&["MAXIO_NODE_ID", "HOSTNAME"]).unwrap_or_else(|| "maxio-node".to_string())
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum MembershipProtocol {
+    StaticBootstrap,
+    Gossip,
+    Raft,
+}
+
+impl MembershipProtocol {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StaticBootstrap => "static-bootstrap",
+            Self::Gossip => "gossip",
+            Self::Raft => "raft",
+        }
+    }
 }
 
 #[derive(Parser, Debug, Clone)]
@@ -66,6 +84,15 @@ pub struct Config {
     #[arg(long, env = "MAXIO_CLUSTER_PEERS", value_delimiter = ',')]
     pub cluster_peers: Vec<String>,
 
+    /// Membership protocol strategy for distributed node liveness/convergence contracts.
+    #[arg(
+        long,
+        env = "MAXIO_MEMBERSHIP_PROTOCOL",
+        value_enum,
+        default_value_t = MembershipProtocol::StaticBootstrap
+    )]
+    pub membership_protocol: MembershipProtocol,
+
     /// Enable erasure coding with per-chunk integrity checksums
     #[arg(long, env = "MAXIO_ERASURE_CODING", default_value = "false")]
     pub erasure_coding: bool,
@@ -77,6 +104,15 @@ pub struct Config {
     /// Number of parity shards for erasure coding (0 = no parity, requires --erasure-coding)
     #[arg(long, env = "MAXIO_PARITY_SHARDS", default_value = "0")]
     pub parity_shards: u32,
+
+    /// Minimum required free bytes in the data-dir filesystem for `/healthz` readiness.
+    /// Set to `0` to disable disk-headroom gating.
+    #[arg(
+        long,
+        env = "MAXIO_MIN_DISK_HEADROOM_BYTES",
+        default_value = "268435456"
+    )]
+    pub min_disk_headroom_bytes: u64,
 }
 
 impl Config {
@@ -160,7 +196,7 @@ impl Config {
 
 #[cfg(test)]
 mod tests {
-    use super::Config;
+    use super::{Config, MembershipProtocol};
 
     fn base_config() -> Config {
         Config {
@@ -173,9 +209,11 @@ mod tests {
             region: "us-east-1".to_string(),
             node_id: "maxio-test-node".to_string(),
             cluster_peers: Vec::new(),
+            membership_protocol: MembershipProtocol::StaticBootstrap,
             erasure_coding: false,
             chunk_size: 10 * 1024 * 1024,
             parity_shards: 0,
+            min_disk_headroom_bytes: 268_435_456,
         }
     }
 
@@ -239,5 +277,15 @@ mod tests {
 
         config.cluster_peers = vec!["node-a:0".to_string()];
         assert!(config.parsed_cluster_peers().is_err());
+    }
+
+    #[test]
+    fn membership_protocol_as_str_matches_contract() {
+        assert_eq!(
+            MembershipProtocol::StaticBootstrap.as_str(),
+            "static-bootstrap"
+        );
+        assert_eq!(MembershipProtocol::Gossip.as_str(), "gossip");
+        assert_eq!(MembershipProtocol::Raft.as_str(), "raft");
     }
 }

@@ -11,6 +11,30 @@ use futures::TryStreamExt;
 use super::{response, storage};
 use crate::server::AppState;
 
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ObjectListFileDto {
+    key: String,
+    size: u64,
+    last_modified: String,
+    etag: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ListObjectsResponse {
+    files: Vec<ObjectListFileDto>,
+    prefixes: Vec<String>,
+    empty_prefixes: Vec<String>,
+}
+
+#[derive(serde::Serialize)]
+struct UploadObjectResponse {
+    ok: bool,
+    etag: String,
+    size: u64,
+}
+
 #[derive(serde::Deserialize)]
 pub(super) struct ListObjectsParams {
     prefix: Option<String>,
@@ -49,34 +73,34 @@ pub(super) async fn list_objects(
             let common = format!("{}{}", prefix, &suffix[..pos + delimiter.len()]);
             prefix_set.insert(common);
         } else if !obj.key.ends_with('/') {
-            files.push(serde_json::json!({
-                "key": obj.key,
-                "size": obj.size,
-                "lastModified": obj.last_modified,
-                "etag": obj.etag,
-            }));
+            files.push(ObjectListFileDto {
+                key: obj.key.clone(),
+                size: obj.size,
+                last_modified: obj.last_modified.clone(),
+                etag: obj.etag.clone(),
+            });
         }
     }
 
-    let mut empty_prefixes: Vec<&String> = Vec::new();
+    let mut empty_prefixes: Vec<String> = Vec::new();
     for p in &prefix_set {
         let has_children = all_objects
             .iter()
             .any(|obj| obj.key.starts_with(p.as_str()) && obj.key != *p);
         if !has_children {
-            empty_prefixes.push(p);
+            empty_prefixes.push(p.clone());
         }
     }
 
-    let prefixes: Vec<&String> = prefix_set.iter().collect();
+    let prefixes: Vec<String> = prefix_set.into_iter().collect();
 
     response::json(
         StatusCode::OK,
-        serde_json::json!({
-            "files": files,
-            "prefixes": prefixes,
-            "emptyPrefixes": empty_prefixes,
-        }),
+        ListObjectsResponse {
+            files,
+            prefixes,
+            empty_prefixes,
+        },
     )
 }
 
@@ -105,11 +129,11 @@ pub(super) async fn upload_object(
     {
         Ok(result) => response::json(
             StatusCode::OK,
-            serde_json::json!({
-                "ok": true,
-                "etag": result.etag,
-                "size": result.size,
-            }),
+            UploadObjectResponse {
+                ok: true,
+                etag: result.etag,
+                size: result.size,
+            },
         ),
         Err(e) => storage::map_bucket_storage_err(e),
     }

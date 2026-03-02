@@ -4,21 +4,37 @@ use axum::{
     http::StatusCode,
     response::IntoResponse,
 };
+use serde::Serialize;
 
 use super::response;
 use crate::server::AppState;
 use crate::storage::{BucketMeta, StorageError};
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BucketSummary {
+    name: String,
+    created_at: String,
+    versioning: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct ListBucketsResponse {
+    buckets: Vec<BucketSummary>,
+}
+
 pub(super) async fn list_buckets(State(state): State<AppState>) -> impl IntoResponse {
     match state.storage.list_buckets().await {
         Ok(buckets) => {
-            let list: Vec<serde_json::Value> = buckets
+            let list = buckets
                 .into_iter()
-                .map(|b| {
-                    serde_json::json!({ "name": b.name, "createdAt": b.created_at, "versioning": b.versioning })
+                .map(|bucket| BucketSummary {
+                    name: bucket.name,
+                    created_at: bucket.created_at,
+                    versioning: bucket.versioning,
                 })
-                .collect();
-            response::json(StatusCode::OK, serde_json::json!({ "buckets": list }))
+                .collect::<Vec<_>>();
+            response::json(StatusCode::OK, ListBucketsResponse { buckets: list })
         }
         Err(e) => response::error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }

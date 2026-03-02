@@ -13,7 +13,6 @@ use http::StatusCode;
 use super::multipart;
 use crate::error::S3Error;
 use crate::server::AppState;
-use crate::storage::StorageError;
 use crate::xml::types::*;
 use response::{bucket_location_response, xml_response};
 
@@ -24,38 +23,27 @@ pub async fn handle_bucket_get(
 ) -> Result<Response<Body>, S3Error> {
     tracing::debug!("GET /{} params={:?}", bucket, params);
 
-    match state.storage.head_bucket(&bucket).await {
-        Ok(true) => {}
-        Ok(false) => return Err(S3Error::no_such_bucket(&bucket)),
-        Err(e) => return Err(S3Error::internal(e)),
-    }
+    service::ensure_bucket_exists(&state, &bucket).await?;
 
-    if params.contains_key("uploads") {
-        return multipart::list_multipart_uploads(State(state), Path(bucket)).await;
-    }
-
-    if params.contains_key("versioning") {
-        return super::bucket::get_bucket_versioning(state, bucket).await;
-    }
-
-    if params.contains_key("lifecycle") {
-        return super::bucket::get_bucket_lifecycle(state, bucket).await;
-    }
-
-    if params.contains_key("versions") {
-        return list_object_versions(state, bucket, params).await;
-    }
-
-    // Handle ?location query (GetBucketLocation)
-    if params.contains_key("location") {
-        tracing::debug!("GetBucketLocation for {}", bucket);
-        return bucket_location_response(&state.config.region);
-    }
-
-    if params.get("list-type").map(|v| v.as_str()) == Some("2") {
-        list_objects_v2(state, bucket, params).await
-    } else {
-        list_objects_v1(state, bucket, params).await
+    match service::resolve_bucket_get_operation(&params)? {
+        service::BucketGetOperation::ListUploads => {
+            multipart::list_multipart_uploads(State(state), Path(bucket)).await
+        }
+        service::BucketGetOperation::GetVersioning => {
+            super::bucket::get_bucket_versioning(state, bucket).await
+        }
+        service::BucketGetOperation::GetLifecycle => {
+            super::bucket::get_bucket_lifecycle(state, bucket).await
+        }
+        service::BucketGetOperation::ListVersions => {
+            list_object_versions(state, bucket, params).await
+        }
+        service::BucketGetOperation::GetLocation => {
+            tracing::debug!("GetBucketLocation for {}", bucket);
+            bucket_location_response(&state.config.region)
+        }
+        service::BucketGetOperation::ListV2 => list_objects_v2(state, bucket, params).await,
+        service::BucketGetOperation::ListV1 => list_objects_v1(state, bucket, params).await,
     }
 }
 
@@ -64,14 +52,14 @@ async fn list_objects_v2(
     bucket: String,
     params: HashMap<String, String>,
 ) -> Result<Response<Body>, S3Error> {
-    let query = service::ListV2Query::from_params(&params);
+    let query = service::ListV2Query::from_params(&params)?;
     service::validate_prefix(&query.prefix)?;
 
     let all_objects = state
         .storage
         .list_objects(&bucket, &query.prefix)
         .await
-        .map_err(|e| map_bucket_storage_err(&bucket, e))?;
+        .map_err(|e| service::map_bucket_storage_err(&bucket, e))?;
 
     let filtered = service::filter_objects_after(&all_objects, query.effective_start.as_deref());
     let (page, is_truncated) = service::paginate_objects(filtered, query.max_keys);
@@ -107,14 +95,14 @@ async fn list_objects_v1(
     bucket: String,
     params: HashMap<String, String>,
 ) -> Result<Response<Body>, S3Error> {
-    let query = service::ListV1Query::from_params(&params);
+    let query = service::ListV1Query::from_params(&params)?;
     service::validate_prefix(&query.prefix)?;
 
     let all_objects = state
         .storage
         .list_objects(&bucket, &query.prefix)
         .await
-        .map_err(|e| map_bucket_storage_err(&bucket, e))?;
+        .map_err(|e| service::map_bucket_storage_err(&bucket, e))?;
 
     let filtered = service::filter_objects_after(&all_objects, query.marker.as_deref());
     let (page, is_truncated) = service::paginate_objects(filtered, query.max_keys);
@@ -147,14 +135,14 @@ async fn list_object_versions(
     bucket: String,
     params: HashMap<String, String>,
 ) -> Result<Response<Body>, S3Error> {
-    let query = service::ListVersionsQuery::from_params(&params);
+    let query = service::ListVersionsQuery::from_params(&params)?;
     service::validate_prefix(&query.prefix)?;
 
     let all_versions = state
         .storage
         .list_object_versions(&bucket, &query.prefix)
         .await
-        .map_err(|e| map_bucket_storage_err(&bucket, e))?;
+        .map_err(|e| service::map_bucket_storage_err(&bucket, e))?;
 
     let latest_per_key = service::latest_version_per_key(&all_versions);
     let filtered = service::filter_versions_after(
@@ -182,28 +170,24 @@ async fn list_object_versions(
     xml_response(StatusCode::OK, &result)
 }
 
-fn map_bucket_storage_err(bucket: &str, err: StorageError) -> S3Error {
-    match err {
-        StorageError::NotFound(_) => S3Error::no_such_bucket(bucket),
-        StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
-        other => S3Error::internal(other),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::error::S3ErrorCode;
+    use crate::storage::StorageError;
 
     #[test]
     fn map_bucket_storage_err_maps_not_found_to_no_such_bucket() {
-        let err = map_bucket_storage_err("missing", StorageError::NotFound("missing".to_string()));
+        let err = service::map_bucket_storage_err(
+            "missing",
+            StorageError::NotFound("missing".to_string()),
+        );
         assert!(matches!(err.code, S3ErrorCode::NoSuchBucket));
     }
 
     #[test]
     fn map_bucket_storage_err_maps_invalid_key_to_invalid_argument() {
-        let err = map_bucket_storage_err(
+        let err = service::map_bucket_storage_err(
             "bucket",
             StorageError::InvalidKey("invalid prefix".to_string()),
         );

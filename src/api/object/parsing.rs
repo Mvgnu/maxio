@@ -1,9 +1,18 @@
 use crate::error::S3Error;
 
+const DELETE_OBJECTS_MAX_KEYS: usize = 1000;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct DeleteObjectsRequest {
     pub keys: Vec<String>,
     pub quiet: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct CopySource {
+    pub bucket: String,
+    pub key: String,
+    pub version_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,15 +77,63 @@ pub(super) fn parse_range(header: &str, file_size: u64) -> Result<Option<(u64, u
     }
 }
 
-pub(super) fn parse_copy_source(copy_source: &str) -> Result<(String, String), S3Error> {
-    let decoded = percent_encoding::percent_decode_str(copy_source)
+pub(super) fn parse_copy_source(copy_source: &str) -> Result<CopySource, S3Error> {
+    let trimmed = copy_source.strip_prefix('/').unwrap_or(copy_source);
+    let (raw_path, raw_query) = match trimmed.split_once('?') {
+        Some((path, query)) => (path, Some(query)),
+        None => (trimmed, None),
+    };
+
+    let decoded = percent_encoding::percent_decode_str(raw_path)
         .decode_utf8()
         .map_err(|_| S3Error::invalid_argument("invalid x-amz-copy-source encoding"))?;
-    let trimmed = decoded.trim_start_matches('/');
-    let (src_bucket, src_key) = trimmed
+    let (src_bucket, src_key) = decoded
         .split_once('/')
         .ok_or_else(|| S3Error::invalid_argument("invalid x-amz-copy-source format"))?;
-    Ok((src_bucket.to_string(), src_key.to_string()))
+    if src_bucket.is_empty() || src_key.is_empty() {
+        return Err(S3Error::invalid_argument(
+            "invalid x-amz-copy-source format",
+        ));
+    }
+
+    let mut version_id = None;
+    if let Some(query) = raw_query {
+        for param in query.split('&') {
+            if param.is_empty() {
+                continue;
+            }
+            let (raw_key, raw_value) = match param.split_once('=') {
+                Some((key, value)) => (key, value),
+                None => (param, ""),
+            };
+            let key = percent_encoding::percent_decode_str(raw_key)
+                .decode_utf8()
+                .map_err(|_| S3Error::invalid_argument("invalid x-amz-copy-source query"))?;
+            if key != "versionId" {
+                continue;
+            }
+            if version_id.is_some() {
+                return Err(S3Error::invalid_argument(
+                    "duplicate versionId in x-amz-copy-source",
+                ));
+            }
+            let value = percent_encoding::percent_decode_str(raw_value)
+                .decode_utf8()
+                .map_err(|_| S3Error::invalid_argument("invalid x-amz-copy-source query"))?;
+            if value.is_empty() {
+                return Err(S3Error::invalid_argument(
+                    "invalid x-amz-copy-source versionId",
+                ));
+            }
+            version_id = Some(value.into_owned());
+        }
+    }
+
+    Ok(CopySource {
+        bucket: src_bucket.to_string(),
+        key: src_key.to_string(),
+        version_id,
+    })
 }
 
 pub(super) fn parse_metadata_directive(
@@ -102,28 +159,53 @@ pub(super) fn parse_delete_objects_request(xml: &str) -> Result<DeleteObjectsReq
     let mut quiet = false;
     let mut reader = quick_xml::Reader::from_str(xml);
     reader.config_mut().trim_text(true);
+    let mut saw_delete_root = false;
+    let mut in_delete = false;
+    let mut in_object = false;
     let mut in_key = false;
     let mut in_quiet = false;
 
     loop {
         match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"Delete" => {
+                if saw_delete_root || in_delete {
+                    return Err(S3Error::malformed_xml());
+                }
+                saw_delete_root = true;
+                in_delete = true;
+            }
+            Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"Object" => {
+                if !in_delete || in_object {
+                    return Err(S3Error::malformed_xml());
+                }
+                in_object = true;
+            }
             Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"Key" => {
+                if !in_object {
+                    return Err(S3Error::malformed_xml());
+                }
                 in_key = true;
             }
             Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"Quiet" => {
+                if !in_delete {
+                    return Err(S3Error::malformed_xml());
+                }
                 in_quiet = true;
             }
             Ok(quick_xml::events::Event::Text(e)) if in_key => {
-                keys.push(e.unescape().unwrap_or_default().into_owned());
+                let key = e
+                    .unescape()
+                    .map_err(|_| S3Error::malformed_xml())?
+                    .into_owned();
+                keys.push(key);
+                if keys.len() > DELETE_OBJECTS_MAX_KEYS {
+                    return Err(S3Error::malformed_xml());
+                }
                 in_key = false;
             }
             Ok(quick_xml::events::Event::Text(e)) if in_quiet => {
-                quiet = e
-                    .unescape()
-                    .unwrap_or_default()
-                    .as_ref()
-                    .trim()
-                    .eq_ignore_ascii_case("true");
+                let quiet_value = e.unescape().map_err(|_| S3Error::malformed_xml())?;
+                quiet = quiet_value.as_ref().trim().eq_ignore_ascii_case("true");
                 in_quiet = false;
             }
             Ok(quick_xml::events::Event::End(e)) if e.name().as_ref() == b"Key" => {
@@ -132,10 +214,20 @@ pub(super) fn parse_delete_objects_request(xml: &str) -> Result<DeleteObjectsReq
             Ok(quick_xml::events::Event::End(e)) if e.name().as_ref() == b"Quiet" => {
                 in_quiet = false;
             }
+            Ok(quick_xml::events::Event::End(e)) if e.name().as_ref() == b"Object" => {
+                in_object = false;
+            }
+            Ok(quick_xml::events::Event::End(e)) if e.name().as_ref() == b"Delete" => {
+                in_delete = false;
+            }
             Ok(quick_xml::events::Event::Eof) => break,
             Err(_) => return Err(S3Error::malformed_xml()),
             _ => {}
         }
+    }
+
+    if !saw_delete_root || in_delete || in_object || in_key || in_quiet {
+        return Err(S3Error::malformed_xml());
     }
 
     Ok(DeleteObjectsRequest { keys, quiet })
@@ -177,19 +269,40 @@ mod tests {
 
     #[test]
     fn parse_copy_source_decodes_and_splits() {
-        let (bucket, key) = parse_copy_source("/src-bucket/path%20with%20space.txt").unwrap();
-        assert_eq!(bucket, "src-bucket");
-        assert_eq!(key, "path with space.txt");
+        let parsed = parse_copy_source("/src-bucket/path%20with%20space.txt").unwrap();
+        assert_eq!(parsed.bucket, "src-bucket");
+        assert_eq!(parsed.key, "path with space.txt");
+        assert!(parsed.version_id.is_none());
 
-        let (bucket, key) = parse_copy_source("src-bucket/no-leading-slash.txt").unwrap();
-        assert_eq!(bucket, "src-bucket");
-        assert_eq!(key, "no-leading-slash.txt");
+        let parsed = parse_copy_source("src-bucket/no-leading-slash.txt").unwrap();
+        assert_eq!(parsed.bucket, "src-bucket");
+        assert_eq!(parsed.key, "no-leading-slash.txt");
+        assert!(parsed.version_id.is_none());
     }
 
     #[test]
     fn parse_copy_source_rejects_invalid_input() {
         assert!(parse_copy_source("missing-delimiter").is_err());
         assert!(parse_copy_source("/bucket/%FF").is_err());
+        assert!(parse_copy_source("/bucket/").is_err());
+        assert!(parse_copy_source("bucket/").is_err());
+        assert!(parse_copy_source("/%2Fkey").is_err());
+        assert!(parse_copy_source("//bucket/key").is_err());
+        assert!(parse_copy_source("///bucket/key").is_err());
+    }
+
+    #[test]
+    fn parse_copy_source_extracts_version_id() {
+        let parsed = parse_copy_source("/src-bucket/path.txt?versionId=ver-1").unwrap();
+        assert_eq!(parsed.bucket, "src-bucket");
+        assert_eq!(parsed.key, "path.txt");
+        assert_eq!(parsed.version_id.as_deref(), Some("ver-1"));
+    }
+
+    #[test]
+    fn parse_copy_source_rejects_duplicate_or_empty_version_id() {
+        assert!(parse_copy_source("/src-bucket/path.txt?versionId=").is_err());
+        assert!(parse_copy_source("/src-bucket/path.txt?versionId=one&versionId=two").is_err());
     }
 
     #[test]
@@ -239,6 +352,12 @@ mod tests {
     }
 
     #[test]
+    fn parse_delete_objects_request_invalid_escaped_text_fails() {
+        let xml = r#"<Delete><Object><Key>bad&amp</Key></Object></Delete>"#;
+        assert!(parse_delete_objects_request(xml).is_err());
+    }
+
+    #[test]
     fn parse_delete_objects_request_empty_payload_is_ok() {
         let xml = "<Delete></Delete>";
         let request = parse_delete_objects_request(xml).unwrap();
@@ -268,5 +387,27 @@ mod tests {
         let xml = r#"<Delete><Quiet>FALSE</Quiet><Object><Key>a.txt</Key></Object></Delete>"#;
         let request = parse_delete_objects_request(xml).unwrap();
         assert!(!request.quiet);
+    }
+
+    #[test]
+    fn parse_delete_objects_request_rejects_more_than_1000_keys() {
+        let mut xml = String::from("<Delete>");
+        for i in 0..1001 {
+            xml.push_str(&format!("<Object><Key>k-{i}</Key></Object>"));
+        }
+        xml.push_str("</Delete>");
+        assert!(parse_delete_objects_request(&xml).is_err());
+    }
+
+    #[test]
+    fn parse_delete_objects_request_requires_delete_root() {
+        let xml = r#"<NotDelete><Object><Key>a.txt</Key></Object></NotDelete>"#;
+        assert!(parse_delete_objects_request(xml).is_err());
+    }
+
+    #[test]
+    fn parse_delete_objects_request_rejects_key_outside_object() {
+        let xml = r#"<Delete><Key>a.txt</Key></Delete>"#;
+        assert!(parse_delete_objects_request(xml).is_err());
     }
 }

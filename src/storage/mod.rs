@@ -2,6 +2,7 @@ pub mod chunk_reader;
 pub mod filesystem;
 pub(crate) mod layout;
 pub mod lifecycle;
+pub mod placement;
 pub(crate) mod validation;
 
 use serde::{Deserialize, Serialize};

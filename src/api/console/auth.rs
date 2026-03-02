@@ -222,6 +222,33 @@ pub(super) struct LoginRequest {
     secret_key: String,
 }
 
+#[derive(serde::Serialize)]
+struct LoginRateLimitErrorResponse {
+    error: String,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionAuthResponse {
+    ok: bool,
+    access_key: String,
+    session_issued_at: i64,
+    session_expires_at: i64,
+}
+
+#[derive(serde::Serialize)]
+struct LogoutResponse {
+    ok: bool,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct IdentityResponse {
+    access_key: String,
+    session_issued_at: i64,
+    session_expires_at: i64,
+}
+
 pub(super) async fn login(
     State(state): State<AppState>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -234,7 +261,9 @@ pub(super) async fn login(
         return axum::response::IntoResponse::into_response((
             StatusCode::TOO_MANY_REQUESTS,
             [(axum::http::header::RETRY_AFTER, retry_after.to_string())],
-            Json(serde_json::json!({"error": "Too many login attempts. Try again later."})),
+            Json(LoginRateLimitErrorResponse {
+                error: "Too many login attempts. Try again later.".to_string(),
+            }),
         ));
     }
 
@@ -262,12 +291,12 @@ pub(super) async fn login(
     axum::response::IntoResponse::into_response((
         StatusCode::OK,
         resp_headers,
-        Json(serde_json::json!({
-            "ok": true,
-            "accessKey": body.access_key,
-            "sessionIssuedAt": now,
-            "sessionExpiresAt": expires_at
-        })),
+        Json(SessionAuthResponse {
+            ok: true,
+            access_key: body.access_key,
+            session_issued_at: now,
+            session_expires_at: expires_at,
+        }),
     ))
 }
 
@@ -277,12 +306,12 @@ pub(super) async fn check(State(state): State<AppState>, headers: HeaderMap) -> 
     {
         response::json(
             StatusCode::OK,
-            serde_json::json!({
-                "ok": true,
-                "accessKey": session.access_key,
-                "sessionIssuedAt": session.issued_at,
-                "sessionExpiresAt": session.expires_at
-            }),
+            SessionAuthResponse {
+                ok: true,
+                access_key: session.access_key,
+                session_issued_at: session.issued_at,
+                session_expires_at: session.expires_at,
+            },
         )
     } else {
         response::error(StatusCode::UNAUTHORIZED, "Not authenticated")
@@ -298,7 +327,7 @@ pub(super) async fn logout(headers: HeaderMap) -> Response {
     axum::response::IntoResponse::into_response((
         StatusCode::OK,
         resp_headers,
-        Json(serde_json::json!({"ok": true})),
+        Json(LogoutResponse { ok: true }),
     ))
 }
 
@@ -309,11 +338,11 @@ pub(super) async fn me(request: Request) -> Response {
 
     response::json(
         StatusCode::OK,
-        serde_json::json!({
-            "accessKey": principal.access_key,
-            "sessionIssuedAt": principal.session_issued_at,
-            "sessionExpiresAt": principal.session_expires_at
-        }),
+        IdentityResponse {
+            access_key: principal.access_key.clone(),
+            session_issued_at: principal.session_issued_at,
+            session_expires_at: principal.session_expires_at,
+        },
     )
 }
 

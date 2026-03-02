@@ -1,4 +1,4 @@
-use maxio::config::Config;
+use maxio::config::{Config, MembershipProtocol};
 use maxio::server;
 use std::net::SocketAddr;
 use tempfile::TempDir;
@@ -30,9 +30,11 @@ pub(crate) fn make_test_config(
         region: REGION.to_string(),
         node_id: "maxio-test-node".to_string(),
         cluster_peers: Vec::new(),
+        membership_protocol: MembershipProtocol::StaticBootstrap,
         erasure_coding,
         chunk_size,
         parity_shards,
+        min_disk_headroom_bytes: 268_435_456,
     }
 }
 
@@ -102,6 +104,10 @@ pub(crate) fn sign_request_with_credentials(
     secret_key: &str,
     region: &str,
 ) {
+    for (name, _) in headers.iter_mut() {
+        *name = name.to_ascii_lowercase();
+    }
+
     let parsed = reqwest::Url::parse(url).unwrap();
     let host = parsed.host_str().unwrap();
     let port = parsed.port().unwrap();
@@ -205,6 +211,10 @@ pub(crate) fn sign_request_compact(
     headers: &mut Vec<(String, String)>,
     body: &[u8],
 ) {
+    for (name, _) in headers.iter_mut() {
+        *name = name.to_ascii_lowercase();
+    }
+
     // Reuse the same signing logic but produce compact auth header
     let parsed = reqwest::Url::parse(url).unwrap();
     let host = parsed.host_str().unwrap();

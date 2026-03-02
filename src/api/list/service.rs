@@ -2,10 +2,67 @@ use std::collections::{BTreeSet, HashMap};
 use std::path::{Component, Path};
 
 use crate::error::S3Error;
-use crate::storage::ObjectMeta;
+use crate::server::AppState;
+use crate::storage::{ObjectMeta, StorageError};
 use crate::xml::types::{CommonPrefix, DeleteMarkerEntry, ObjectEntry, VersionEntry};
 
 const MAX_KEYS_CAP: usize = 1000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum BucketGetOperation {
+    ListUploads,
+    GetVersioning,
+    GetLifecycle,
+    ListVersions,
+    GetLocation,
+    ListV2,
+    ListV1,
+}
+
+pub(super) fn resolve_bucket_get_operation(
+    params: &HashMap<String, String>,
+) -> Result<BucketGetOperation, S3Error> {
+    if params.contains_key("uploads") {
+        return Ok(BucketGetOperation::ListUploads);
+    }
+    if params.contains_key("versioning") {
+        return Ok(BucketGetOperation::GetVersioning);
+    }
+    if params.contains_key("lifecycle") {
+        return Ok(BucketGetOperation::GetLifecycle);
+    }
+    if params.contains_key("versions") {
+        return Ok(BucketGetOperation::ListVersions);
+    }
+    if params.contains_key("location") {
+        return Ok(BucketGetOperation::GetLocation);
+    }
+
+    if let Some(list_type) = params.get("list-type") {
+        if list_type == "2" {
+            return Ok(BucketGetOperation::ListV2);
+        }
+        return Err(S3Error::invalid_argument("Invalid list-type value"));
+    }
+
+    Ok(BucketGetOperation::ListV1)
+}
+
+pub(super) async fn ensure_bucket_exists(state: &AppState, bucket: &str) -> Result<(), S3Error> {
+    match state.storage.head_bucket(bucket).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(S3Error::no_such_bucket(bucket)),
+        Err(err) => Err(S3Error::internal(err)),
+    }
+}
+
+pub(super) fn map_bucket_storage_err(bucket: &str, err: StorageError) -> S3Error {
+    match err {
+        StorageError::NotFound(_) => S3Error::no_such_bucket(bucket),
+        StorageError::InvalidKey(msg) => S3Error::invalid_argument(&msg),
+        other => S3Error::internal(other),
+    }
+}
 
 pub(super) fn validate_prefix(prefix: &str) -> Result<(), S3Error> {
     if prefix.is_empty() {
@@ -46,22 +103,26 @@ pub(super) struct ListV2Query {
 }
 
 impl ListV2Query {
-    pub(super) fn from_params(params: &HashMap<String, String>) -> Self {
+    pub(super) fn from_params(params: &HashMap<String, String>) -> Result<Self, S3Error> {
         let start_after = params.get("start-after").cloned();
         let continuation_token = params.get("continuation-token").cloned();
-        let effective_start = continuation_token
-            .as_deref()
-            .and_then(decode_continuation_token)
-            .or_else(|| start_after.clone());
+        let effective_start = if let Some(token) = continuation_token.as_deref() {
+            Some(
+                decode_continuation_token(token)
+                    .ok_or_else(|| S3Error::invalid_argument("Invalid continuation token"))?,
+            )
+        } else {
+            start_after.clone()
+        };
 
-        Self {
+        Ok(Self {
             prefix: params.get("prefix").cloned().unwrap_or_default(),
-            delimiter: params.get("delimiter").cloned(),
-            max_keys: parse_max_keys(params),
+            delimiter: parse_delimiter(params)?,
+            max_keys: parse_max_keys(params)?,
             start_after,
             continuation_token,
             effective_start,
-        }
+        })
     }
 }
 
@@ -80,7 +141,7 @@ pub(super) struct ListVersionsQuery {
 }
 
 impl ListVersionsQuery {
-    pub(super) fn from_params(params: &HashMap<String, String>) -> Self {
+    pub(super) fn from_params(params: &HashMap<String, String>) -> Result<Self, S3Error> {
         let key_marker = params
             .get("key-marker")
             .cloned()
@@ -89,33 +150,52 @@ impl ListVersionsQuery {
             .get("version-id-marker")
             .cloned()
             .filter(|value| !value.is_empty());
+        if version_id_marker.is_some() && key_marker.is_none() {
+            return Err(S3Error::invalid_argument(
+                "version-id-marker requires key-marker",
+            ));
+        }
 
-        Self {
+        Ok(Self {
             prefix: params.get("prefix").cloned().unwrap_or_default(),
             key_marker,
             version_id_marker,
-            max_keys: parse_max_keys(params),
-        }
+            max_keys: parse_max_keys(params)?,
+        })
     }
 }
 
 impl ListV1Query {
-    pub(super) fn from_params(params: &HashMap<String, String>) -> Self {
-        Self {
+    pub(super) fn from_params(params: &HashMap<String, String>) -> Result<Self, S3Error> {
+        Ok(Self {
             prefix: params.get("prefix").cloned().unwrap_or_default(),
-            delimiter: params.get("delimiter").cloned(),
-            max_keys: parse_max_keys(params),
+            delimiter: parse_delimiter(params)?,
+            max_keys: parse_max_keys(params)?,
             marker: params.get("marker").cloned(),
-        }
+        })
     }
 }
 
-fn parse_max_keys(params: &HashMap<String, String>) -> usize {
-    params
-        .get("max-keys")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(MAX_KEYS_CAP)
-        .min(MAX_KEYS_CAP)
+fn parse_delimiter(params: &HashMap<String, String>) -> Result<Option<String>, S3Error> {
+    match params.get("delimiter") {
+        Some(delimiter) if delimiter.is_empty() => {
+            Err(S3Error::invalid_argument("Invalid delimiter value"))
+        }
+        Some(delimiter) => Ok(Some(delimiter.clone())),
+        None => Ok(None),
+    }
+}
+
+fn parse_max_keys(params: &HashMap<String, String>) -> Result<usize, S3Error> {
+    let Some(raw_max_keys) = params.get("max-keys").map(String::as_str) else {
+        return Ok(MAX_KEYS_CAP);
+    };
+
+    let max_keys = raw_max_keys
+        .parse::<usize>()
+        .map_err(|_| S3Error::invalid_argument("Invalid max-keys value"))?;
+
+    Ok(max_keys.min(MAX_KEYS_CAP))
 }
 
 pub(super) fn decode_continuation_token(token: &str) -> Option<String> {
@@ -293,6 +373,7 @@ pub(super) fn split_version_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::error::S3ErrorCode;
 
     fn object_meta(key: &str, version_id: Option<&str>, is_delete_marker: bool) -> ObjectMeta {
         ObjectMeta {
@@ -458,5 +539,158 @@ mod tests {
         assert_eq!(page.len(), 2);
         assert!(is_truncated);
         assert_eq!(next_markers, Some(("a.txt".to_string(), "v2".to_string())));
+    }
+
+    #[test]
+    fn map_bucket_storage_err_maps_not_found_to_no_such_bucket() {
+        let err = map_bucket_storage_err("missing", StorageError::NotFound("missing".to_string()));
+        assert!(matches!(err.code, S3ErrorCode::NoSuchBucket));
+    }
+
+    #[test]
+    fn map_bucket_storage_err_maps_invalid_key_to_invalid_argument() {
+        let err = map_bucket_storage_err(
+            "bucket",
+            StorageError::InvalidKey("invalid prefix".to_string()),
+        );
+        assert!(matches!(err.code, S3ErrorCode::InvalidArgument));
+    }
+
+    #[test]
+    fn resolve_bucket_get_operation_defaults_to_list_v1() {
+        let params = HashMap::<String, String>::new();
+        assert_eq!(
+            resolve_bucket_get_operation(&params).expect("default list-v1 should resolve"),
+            BucketGetOperation::ListV1
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_get_operation_prefers_uploads_over_other_markers() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert("uploads".to_string(), String::new());
+        params.insert("versioning".to_string(), String::new());
+        params.insert("lifecycle".to_string(), String::new());
+        params.insert("versions".to_string(), String::new());
+        params.insert("location".to_string(), String::new());
+        params.insert("list-type".to_string(), "2".to_string());
+
+        assert_eq!(
+            resolve_bucket_get_operation(&params).expect("uploads should take precedence"),
+            BucketGetOperation::ListUploads
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_get_operation_picks_list_v2_from_query() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert("list-type".to_string(), "2".to_string());
+
+        assert_eq!(
+            resolve_bucket_get_operation(&params).expect("list-type=2 should resolve"),
+            BucketGetOperation::ListV2
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_get_operation_rejects_invalid_list_type() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert("list-type".to_string(), "1".to_string());
+
+        let err = match resolve_bucket_get_operation(&params) {
+            Ok(_) => panic!("invalid list-type should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::InvalidArgument
+        ));
+    }
+
+    #[test]
+    fn list_v2_query_rejects_invalid_max_keys() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert("max-keys".to_string(), "abc".to_string());
+        let err = match ListV2Query::from_params(&params) {
+            Ok(_) => panic!("invalid max-keys should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::InvalidArgument
+        ));
+    }
+
+    #[test]
+    fn list_v2_query_rejects_invalid_continuation_token() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert("continuation-token".to_string(), "%%%".to_string());
+        let err = match ListV2Query::from_params(&params) {
+            Ok(_) => panic!("invalid continuation token should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::InvalidArgument
+        ));
+    }
+
+    #[test]
+    fn list_v2_query_rejects_empty_delimiter() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert("delimiter".to_string(), String::new());
+
+        let err = match ListV2Query::from_params(&params) {
+            Ok(_) => panic!("empty delimiter should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::InvalidArgument
+        ));
+    }
+
+    #[test]
+    fn list_v1_query_rejects_empty_delimiter() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert("delimiter".to_string(), String::new());
+
+        let err = match ListV1Query::from_params(&params) {
+            Ok(_) => panic!("empty delimiter should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::InvalidArgument
+        ));
+    }
+
+    #[test]
+    fn list_versions_query_rejects_invalid_max_keys() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert("max-keys".to_string(), "abc".to_string());
+        let err = match ListVersionsQuery::from_params(&params) {
+            Ok(_) => panic!("invalid max-keys should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::InvalidArgument
+        ));
+    }
+
+    #[test]
+    fn list_versions_query_rejects_orphaned_version_id_marker() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert("version-id-marker".to_string(), "v1".to_string());
+
+        let err = match ListVersionsQuery::from_params(&params) {
+            Ok(_) => panic!("version-id-marker without key-marker should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::InvalidArgument
+        ));
     }
 }

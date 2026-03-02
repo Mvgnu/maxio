@@ -4,17 +4,33 @@ use axum::{
     http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
 };
+use serde::Serialize;
 
-pub(super) fn json(status: StatusCode, value: serde_json::Value) -> Response {
-    (status, Json(value)).into_response()
+#[derive(Serialize)]
+pub(super) struct OkResponse {
+    pub(super) ok: bool,
+}
+
+#[derive(Serialize)]
+pub(super) struct ErrorResponse {
+    pub(super) error: String,
+}
+
+pub(super) fn json<T: Serialize>(status: StatusCode, payload: T) -> Response {
+    (status, Json(payload)).into_response()
 }
 
 pub(super) fn ok() -> Response {
-    json(StatusCode::OK, serde_json::json!({"ok": true}))
+    json(StatusCode::OK, OkResponse { ok: true })
 }
 
 pub(super) fn error(status: StatusCode, message: impl Into<String>) -> Response {
-    json(status, serde_json::json!({ "error": message.into() }))
+    json(
+        status,
+        ErrorResponse {
+            error: message.into(),
+        },
+    )
 }
 
 pub(super) fn download(

@@ -4,6 +4,7 @@
   import Eye from "lucide-svelte/icons/eye";
   import EyeOff from "lucide-svelte/icons/eye-off";
   import { authLogin } from "$lib/api";
+  import { errorMessageOrFallback } from "$lib/error-message";
 
   let accessKey = $state('')
   let secretKey = $state('')
@@ -25,7 +26,7 @@
       if (result.ok) {
         onLogin(result.data.accessKey)
       } else {
-        error = result.error || 'Invalid credentials'
+        error = errorMessageOrFallback(result.error, 'Invalid credentials')
       }
     } catch (err) {
       console.error('Login failed:', err)
