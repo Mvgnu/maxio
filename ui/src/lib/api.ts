@@ -230,6 +230,12 @@ export interface RuntimeRebalanceTransfer {
   to: string
 }
 
+export interface RuntimeRebalanceLocalAction {
+  action: 'send' | 'receive'
+  from: string | null
+  to: string
+}
+
 export interface RuntimeRebalancePlan {
   previousOwners: string[]
   nextOwners: string[]
@@ -237,6 +243,7 @@ export interface RuntimeRebalancePlan {
   removedOwners: string[]
   addedOwners: string[]
   transferCount: number | null
+  localActions: RuntimeRebalanceLocalAction[]
   transfers: RuntimeRebalanceTransfer[]
 }
 
@@ -1016,6 +1023,11 @@ export async function getRuntimeRebalanceApi(args: {
       removedOwners?: unknown
       addedOwners?: unknown
       transferCount?: number
+      localActions?: Array<{
+        action?: string
+        from?: string | null
+        to?: string
+      }>
       transfers?: Array<{
         from?: string | null
         to?: string
@@ -1040,6 +1052,24 @@ export async function getRuntimeRebalanceApi(args: {
   const source = result.data.source ?? {}
   const target = result.data.target ?? {}
   const plan = result.data.plan ?? {}
+  const localActions = Array.isArray(plan.localActions)
+    ? plan.localActions
+        .filter(
+          (action): action is { action?: string; from?: string | null; to?: string } =>
+            typeof action === 'object' && action !== null
+        )
+        .filter((action): action is { action: 'send' | 'receive'; from?: string | null; to: string } => {
+          return (
+            (action.action === 'send' || action.action === 'receive') &&
+            typeof action.to === 'string'
+          )
+        })
+        .map((action): RuntimeRebalanceLocalAction => ({
+          action: action.action,
+          from: typeof action.from === 'string' ? action.from : null,
+          to: action.to,
+        }))
+    : []
   const transfers = Array.isArray(plan.transfers)
     ? plan.transfers
         .filter(
@@ -1106,6 +1136,7 @@ export async function getRuntimeRebalanceApi(args: {
         addedOwners: parseStringArray(plan.addedOwners),
         transferCount:
           typeof plan.transferCount === 'number' ? Math.trunc(plan.transferCount) : null,
+        localActions,
         transfers,
       },
       mode: topology.mode,

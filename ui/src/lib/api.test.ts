@@ -582,6 +582,10 @@ describe('api client', () => {
             removedOwners: ['node-a:9000'],
             addedOwners: ['node-b:9000'],
             transferCount: 1,
+            localActions: [
+              { action: 'send', from: 'node-a:9000', to: 'node-b:9000' },
+              { action: 'receive', from: null, to: 'node-a:9000' },
+            ],
             transfers: [{ from: 'node-a:9000', to: 'node-b:9000' }],
           },
           mode: 'distributed',
@@ -614,6 +618,10 @@ describe('api client', () => {
       expect(result.data.plan.previousOwners).toEqual(['node-a:9000'])
       expect(result.data.plan.nextOwners).toEqual(['node-b:9000'])
       expect(result.data.plan.transferCount).toBe(1)
+      expect(result.data.plan.localActions).toEqual([
+        { action: 'send', from: 'node-a:9000', to: 'node-b:9000' },
+        { action: 'receive', from: null, to: 'node-a:9000' },
+      ])
       expect(result.data.plan.transfers).toEqual([
         { from: 'node-a:9000', to: 'node-b:9000' },
       ])
@@ -636,13 +644,18 @@ describe('api client', () => {
     )
     mockFetchCapture(calls, okResponse)
 
-    await getRuntimeRebalanceApi({
+    const result = await getRuntimeRebalanceApi({
       key: 'folder/my file #1.txt',
       replicaCount: 2,
       chunkIndex: 7,
       operation: 'leave',
       peer: 'node-b.internal:9000',
     })
+
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.plan.localActions).toEqual([])
+    }
 
     expect(calls.map((c) => c.url)).toEqual([
       '/api/system/rebalance?key=folder%2Fmy+file+%231.txt&replicaCount=2&chunkIndex=7&removePeer=node-b.internal%3A9000',

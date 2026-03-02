@@ -3,6 +3,7 @@
   import RefreshCw from "lucide-svelte/icons/refresh-cw";
   import { toast } from "svelte-sonner";
   import { getRuntimePlacementApi, getRuntimeRebalanceApi } from "./api";
+  import type { RuntimeRebalanceLocalAction } from "./api";
   import { loadSystemMetricsSnapshot } from "./system-metrics";
   import { errorMessageOrFallback } from "./error-message";
   import { parsePlacementLookupRequest } from "./system-placement";
@@ -61,6 +62,7 @@
   let rebalanceAddedOwners = $state<string[]>([]);
   let rebalanceRemovedOwners = $state<string[]>([]);
   let rebalanceTransferCount = $state<number | null>(null);
+  let rebalanceLocalActions = $state<RuntimeRebalanceLocalAction[]>([]);
 
   function formatUptime(seconds: number): string {
     const total = Math.max(0, Math.floor(seconds));
@@ -176,6 +178,7 @@
     rebalanceAddedOwners = result.data.plan.addedOwners;
     rebalanceRemovedOwners = result.data.plan.removedOwners;
     rebalanceTransferCount = result.data.plan.transferCount;
+    rebalanceLocalActions = result.data.plan.localActions;
   }
 
   onMount(loadMetrics);
@@ -458,6 +461,20 @@
           <ul class="space-y-1 text-sm">
             {#each rebalanceRemovedOwners as owner}
               <li class="truncate" title={owner}>{owner}</li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+      <div class="md:col-span-2">
+        <p class="mb-1 text-xs text-muted-foreground">Local actions</p>
+        {#if rebalanceLocalActions.length === 0}
+          <p class="text-xs text-muted-foreground">No local actions for this node.</p>
+        {:else}
+          <ul class="space-y-1 text-sm">
+            {#each rebalanceLocalActions as action}
+              <li class="truncate" title={`${action.action} ${action.from ?? "--"} -> ${action.to}`}>
+                {action.action}: {action.from ?? "--"} -> {action.to}
+              </li>
             {/each}
           </ul>
         {/if}

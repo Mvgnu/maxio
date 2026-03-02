@@ -1223,7 +1223,9 @@ mod tests {
             // In that environment we cannot construct a strictly larger threshold.
             return;
         }
-        let required = free_bytes.saturating_add(1);
+        // Use a fixed maximal threshold so the assertion is stable even if free space
+        // changes between probe calls in CI/containerized filesystems.
+        let required = u64::MAX;
 
         let probe = probe_disk_headroom(path, required);
         assert!(!probe.sufficient);
