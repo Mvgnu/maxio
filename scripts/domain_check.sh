@@ -23,6 +23,7 @@ run_domain() {
   case "$domain" in
     runtime_platform)
       cargo check
+      cargo clippy --lib --bins -- -D clippy::unwrap_used -D clippy::expect_used
       cargo test server::tests
       for t in \
         runtime_tests::test_request_id_header_present_on_s3_auth_failure \
@@ -214,6 +215,7 @@ run_domain() {
       ;;
     console_api)
       cargo check
+      cargo clippy --lib --bins -- -D clippy::unwrap_used -D clippy::expect_used
       cargo test api::console::auth::tests
       cargo test api::console::system::tests
       cargo test api::console::storage::tests
