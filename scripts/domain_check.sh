@@ -257,6 +257,7 @@ run_domain() {
         console_tests::test_console_health_endpoint_reports_distributed_mode_when_configured \
         console_tests::test_console_health_endpoint_reports_degraded_when_storage_data_path_probe_fails \
         console_tests::test_console_health_endpoint_reports_degraded_when_disk_headroom_threshold_not_met \
+        console_tests::test_console_health_endpoint_reports_degraded_when_cluster_peers_include_local_node_id \
         console_tests::test_console_health_endpoint_contract_shape_is_stable \
         console_tests::test_console_metrics_endpoint_requires_auth_and_returns_json \
         console_tests::test_console_metrics_endpoint_reports_distributed_mode_when_configured \
@@ -274,6 +275,7 @@ run_domain() {
         console_tests::test_console_summary_endpoint_requires_auth_and_returns_json \
         console_tests::test_console_summary_endpoint_reports_distributed_mode_when_configured \
         console_tests::test_console_summary_endpoint_reports_degraded_health_when_storage_data_path_probe_fails \
+        console_tests::test_console_summary_endpoint_reports_degraded_health_when_cluster_peers_include_local_node_id \
         console_tests::test_console_summary_endpoint_contract_shape_is_stable \
         console_tests::test_console_buckets_and_objects_json_contract_shapes \
         console_tests::test_console_download_object_returns_expected_headers_and_body \

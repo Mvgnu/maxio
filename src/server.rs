@@ -1218,6 +1218,11 @@ mod tests {
         let temp = tempfile::tempdir().expect("temp dir should create");
         let path = temp.path().to_str().expect("path should be utf8");
         let free_bytes = fs2::available_space(path).expect("available space probe should succeed");
+        if free_bytes == u64::MAX {
+            // Some filesystems report an effectively unbounded free-space sentinel.
+            // In that environment we cannot construct a strictly larger threshold.
+            return;
+        }
         let required = free_bytes.saturating_add(1);
 
         let probe = probe_disk_headroom(path, required);

@@ -941,6 +941,40 @@ async fn test_console_health_endpoint_reports_degraded_when_disk_headroom_thresh
 }
 
 #[tokio::test]
+async fn test_console_health_endpoint_reports_degraded_when_cluster_peers_include_local_node_id() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "127.0.0.1:1".to_string();
+    config.cluster_peers = vec!["127.0.0.1:1".to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let cookie = console_login_cookie(&base_url).await;
+    let response = client()
+        .get(format!("{}/api/system/health", base_url))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["ok"], false);
+    assert_eq!(body["status"], "degraded");
+    assert_eq!(body["checks"]["membershipProtocolReady"], true);
+    assert_eq!(body["checks"]["peerConnectivityReady"], false);
+    assert!(
+        body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|entry| {
+                entry
+                    .as_str()
+                    .is_some_and(|msg| msg.contains("includes local node id"))
+            }))
+    );
+}
+
+#[tokio::test]
 async fn test_console_topology_endpoint_requires_auth_and_returns_json() {
     let (base_url, _tmp) = start_server().await;
 
@@ -1667,6 +1701,41 @@ async fn test_console_summary_endpoint_reports_degraded_health_when_storage_data
                 entry
                     .as_str()
                     .is_some_and(|msg| msg.contains("Storage data-path probe failed"))
+            }))
+    );
+}
+
+#[tokio::test]
+async fn test_console_summary_endpoint_reports_degraded_health_when_cluster_peers_include_local_node_id()
+{
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "127.0.0.1:1".to_string();
+    config.cluster_peers = vec!["127.0.0.1:1".to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let cookie = console_login_cookie(&base_url).await;
+    let response = client()
+        .get(format!("{}/api/system/summary", base_url))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["health"]["ok"], false);
+    assert_eq!(body["health"]["status"], "degraded");
+    assert_eq!(body["health"]["checks"]["membershipProtocolReady"], true);
+    assert_eq!(body["health"]["checks"]["peerConnectivityReady"], false);
+    assert!(
+        body["health"]["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|entry| {
+                entry
+                    .as_str()
+                    .is_some_and(|msg| msg.contains("includes local node id"))
             }))
     );
 }

@@ -125,6 +125,18 @@ pub struct ObjectRebalancePlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LocalRebalanceAction {
+    Receive {
+        from: Option<String>,
+        to: String,
+    },
+    Send {
+        from: String,
+        to: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlacementViewState {
     pub epoch: u64,
     pub node_id: String,
@@ -576,6 +588,40 @@ pub fn chunk_rebalance_plan(
         select_chunk_owners(object_key, chunk_index, previous_nodes, replica_count),
         select_chunk_owners(object_key, chunk_index, next_nodes, replica_count),
     )
+}
+
+/// Select local rebalance actions for a node from a deterministic transfer plan.
+///
+/// Incoming transfers are represented as `Receive`; outgoing transfers as `Send`.
+/// Empty local node identifiers return no actions.
+pub fn local_rebalance_actions(
+    plan: &ObjectRebalancePlan,
+    local_node: &str,
+) -> Vec<LocalRebalanceAction> {
+    let local = local_node.trim();
+    if local.is_empty() {
+        return Vec::new();
+    }
+
+    let mut actions = Vec::new();
+    for transfer in &plan.transfers {
+        if transfer.to == local {
+            actions.push(LocalRebalanceAction::Receive {
+                from: transfer.from.clone(),
+                to: transfer.to.clone(),
+            });
+            continue;
+        }
+
+        if transfer.from.as_deref() == Some(local) {
+            actions.push(LocalRebalanceAction::Send {
+                from: local.to_string(),
+                to: transfer.to.clone(),
+            });
+        }
+    }
+
+    actions
 }
 
 /// Whether the local node is selected as an owner for an object chunk.
@@ -1656,6 +1702,89 @@ mod tests {
             select_chunk_owners("objects/chunked.bin", 3, &next_nodes, 2)
         );
         assert_eq!(plan.transfers.len(), plan.added_owners.len());
+    }
+
+    #[test]
+    fn local_rebalance_actions_selects_receive_and_send_operations() {
+        let plan = ObjectRebalancePlan {
+            previous_owners: vec!["node-a:9000".to_string(), "node-b:9000".to_string()],
+            next_owners: vec!["node-b:9000".to_string(), "node-c:9000".to_string()],
+            retained_owners: vec!["node-b:9000".to_string()],
+            removed_owners: vec!["node-a:9000".to_string()],
+            added_owners: vec!["node-c:9000".to_string()],
+            transfers: vec![
+                RebalanceTransfer {
+                    from: Some("node-a:9000".to_string()),
+                    to: "node-c:9000".to_string(),
+                },
+                RebalanceTransfer {
+                    from: Some("node-b:9000".to_string()),
+                    to: "node-a:9000".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            local_rebalance_actions(&plan, "node-a:9000"),
+            vec![
+                LocalRebalanceAction::Send {
+                    from: "node-a:9000".to_string(),
+                    to: "node-c:9000".to_string(),
+                },
+                LocalRebalanceAction::Receive {
+                    from: Some("node-b:9000".to_string()),
+                    to: "node-a:9000".to_string(),
+                },
+            ]
+        );
+        assert_eq!(
+            local_rebalance_actions(&plan, "node-c:9000"),
+            vec![LocalRebalanceAction::Receive {
+                from: Some("node-a:9000".to_string()),
+                to: "node-c:9000".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn local_rebalance_actions_marks_bootstrap_receive_when_source_is_missing() {
+        let plan = ObjectRebalancePlan {
+            previous_owners: Vec::new(),
+            next_owners: vec!["node-a:9000".to_string()],
+            retained_owners: Vec::new(),
+            removed_owners: Vec::new(),
+            added_owners: vec!["node-a:9000".to_string()],
+            transfers: vec![RebalanceTransfer {
+                from: None,
+                to: "node-a:9000".to_string(),
+            }],
+        };
+
+        assert_eq!(
+            local_rebalance_actions(&plan, "node-a:9000"),
+            vec![LocalRebalanceAction::Receive {
+                from: None,
+                to: "node-a:9000".to_string(),
+            }]
+        );
+    }
+
+    #[test]
+    fn local_rebalance_actions_ignores_unrelated_or_empty_local_nodes() {
+        let plan = ObjectRebalancePlan {
+            previous_owners: vec!["node-a:9000".to_string()],
+            next_owners: vec!["node-b:9000".to_string()],
+            retained_owners: Vec::new(),
+            removed_owners: vec!["node-a:9000".to_string()],
+            added_owners: vec!["node-b:9000".to_string()],
+            transfers: vec![RebalanceTransfer {
+                from: Some("node-a:9000".to_string()),
+                to: "node-b:9000".to_string(),
+            }],
+        };
+
+        assert_eq!(local_rebalance_actions(&plan, ""), Vec::new());
+        assert_eq!(local_rebalance_actions(&plan, "node-z:9000"), Vec::new());
     }
 
     #[test]
