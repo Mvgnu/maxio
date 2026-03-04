@@ -1114,8 +1114,10 @@ mod tests {
         apply_bucket_metadata_operation_to_persisted_state, apply_metadata_repair_plan,
         apply_object_metadata_operation_to_persisted_state,
         apply_object_version_metadata_operation_to_persisted_state,
-        apply_pending_metadata_repair_plan_to_persisted_state, build_metadata_repair_plan,
+        apply_pending_metadata_repair_plan_to_persisted_state,
+        apply_pending_metadata_repair_plan_to_persisted_state_classified, build_metadata_repair_plan,
         build_queryable_metadata_index_from_persisted_state, enqueue_pending_metadata_repair_plan,
+        classify_pending_metadata_repair_apply_error,
         lease_pending_metadata_repair_plan_for_execution, list_buckets_from_persisted_state,
         list_buckets_from_persisted_state_with_view_id,
         list_object_versions_page_from_persisted_state, list_objects_page_from_persisted_state,
@@ -2721,6 +2723,82 @@ mod tests {
             }
             other => panic!("expected target view mismatch, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn classify_pending_metadata_repair_apply_error_marks_state_io_errors_as_transient() {
+        let error = PendingMetadataRepairApplyError::StateLoad(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "permission denied",
+        ));
+
+        let failure = classify_pending_metadata_repair_apply_error(&error);
+        assert!(matches!(
+            failure,
+            PendingMetadataRepairApplyFailure::Transient(_)
+        ));
+        assert_eq!(failure.message(), Some("permission denied"));
+    }
+
+    #[test]
+    fn classify_pending_metadata_repair_apply_error_marks_execution_errors_as_permanent() {
+        let error = PendingMetadataRepairApplyError::Execution(
+            MetadataRepairExecutionError::TargetViewMismatch {
+                expected_target_view_id: "view-live".to_string(),
+                plan_target_view_id: "view-stale".to_string(),
+            },
+        );
+
+        let failure = classify_pending_metadata_repair_apply_error(&error);
+        assert!(failure.is_permanent());
+        let message = failure
+            .message()
+            .expect("permanent classification should include message");
+        assert!(message.contains("TargetViewMismatch"));
+    }
+
+    #[test]
+    fn apply_pending_metadata_repair_plan_to_persisted_state_classified_returns_permanent_for_stale_target_view()
+     {
+        let temp = TempDir::new().expect("temp dir");
+        let state_path = temp
+            .path()
+            .join(".maxio-runtime/cluster-metadata-state.json");
+        let persisted = PersistedMetadataState {
+            view_id: "view-live".to_string(),
+            buckets: Vec::new(),
+            bucket_tombstones: Vec::new(),
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+        };
+        persist_persisted_metadata_state(state_path.as_path(), &persisted)
+            .expect("persisted state should save");
+        let pending = PendingMetadataRepairPlan::new(
+            "repair-view-mismatch-classified",
+            1,
+            MetadataRepairPlan {
+                source_view_id: "view-source".to_string(),
+                target_view_id: "view-target".to_string(),
+                actions: vec![MetadataReconcileAction::UpsertBucket {
+                    bucket: "photos".to_string(),
+                    versioning_enabled: false,
+                    lifecycle_enabled: false,
+                }],
+            },
+        )
+        .expect("pending plan should be valid");
+
+        let failure = apply_pending_metadata_repair_plan_to_persisted_state_classified(
+            state_path.as_path(),
+            &pending,
+        )
+        .expect_err("stale target view should classify as permanent failure");
+
+        assert!(failure.is_permanent());
+        let message = failure
+            .message()
+            .expect("permanent failure should include message");
+        assert!(message.contains("TargetViewMismatch"));
     }
 
     #[test]

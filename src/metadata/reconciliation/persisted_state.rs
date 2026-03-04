@@ -160,6 +160,30 @@ pub fn apply_pending_metadata_repair_plan_to_persisted_state(
     Ok(applied)
 }
 
+pub fn classify_pending_metadata_repair_apply_error(
+    error: &PendingMetadataRepairApplyError,
+) -> PendingMetadataRepairApplyFailure {
+    match error {
+        PendingMetadataRepairApplyError::StateLoad(source)
+        | PendingMetadataRepairApplyError::StatePersist(source) => {
+            PendingMetadataRepairApplyFailure::transient(source.to_string())
+        }
+        PendingMetadataRepairApplyError::Execution(source) => {
+            PendingMetadataRepairApplyFailure::permanent(format!(
+                "metadata repair execution is not applicable to current state: {source:?}"
+            ))
+        }
+    }
+}
+
+pub fn apply_pending_metadata_repair_plan_to_persisted_state_classified(
+    path: &Path,
+    pending_plan: &PendingMetadataRepairPlan,
+) -> Result<MetadataRepairExecutionOutput, PendingMetadataRepairApplyFailure> {
+    apply_pending_metadata_repair_plan_to_persisted_state(path, pending_plan)
+        .map_err(|error| classify_pending_metadata_repair_apply_error(&error))
+}
+
 fn operation_bucket_name(operation: &BucketMetadataOperation) -> &str {
     match operation {
         BucketMetadataOperation::CreateBucket { bucket, .. }
