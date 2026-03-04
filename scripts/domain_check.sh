@@ -456,6 +456,8 @@ run_domain() {
         console_tests::test_console_list_buckets_consensus_index_uses_persisted_metadata_state \
         console_tests::test_console_list_buckets_consensus_index_rejects_persisted_view_mismatch \
         console_tests::test_console_list_buckets_consensus_index_persists_local_create_into_consensus_state \
+        console_tests::test_console_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect \
+        console_tests::test_console_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect \
         console_tests::test_console_list_objects_request_time_aggregation_merges_peer_object_state_when_ready \
         console_tests::test_console_list_versions_consensus_index_merges_peer_state_when_ready \
         console_tests::test_console_list_versions_consensus_index_does_not_fallback_to_local_storage \

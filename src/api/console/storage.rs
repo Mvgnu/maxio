@@ -20,8 +20,9 @@ use crate::metadata::{
     MetadataVersionsQuery, ObjectMetadataOperation, ObjectMetadataOperationError,
     ObjectMetadataState, ObjectVersionMetadataOperation, ObjectVersionMetadataOperationError,
     ObjectVersionMetadataState, PersistedBucketMetadataOperationError,
-    PersistedBucketMetadataReadResolution, PersistedMetadataQueryError,
-    PersistedObjectMetadataOperationError, PersistedObjectVersionMetadataOperationError,
+    PersistedBucketMetadataReadResolution, PersistedBucketPresenceReadResolution,
+    PersistedMetadataQueryError, PersistedObjectMetadataOperationError,
+    PersistedObjectVersionMetadataOperationError,
     apply_bucket_metadata_operation_to_persisted_state,
     apply_object_metadata_operation_to_persisted_state,
     apply_object_version_metadata_operation_to_persisted_state,
@@ -31,7 +32,7 @@ use crate::metadata::{
     cluster_metadata_fan_in_execution_strategy, cluster_metadata_readiness_reject_reason,
     list_buckets_from_persisted_state_with_view_id, list_object_versions_page_from_persisted_state,
     list_objects_page_from_persisted_state, load_persisted_metadata_state,
-    resolve_bucket_metadata_from_persisted_state,
+    resolve_bucket_metadata_from_persisted_state, resolve_bucket_presence_from_persisted_state,
 };
 use crate::server::{AppState, RuntimeTopologySnapshot, runtime_topology_snapshot};
 use crate::storage::StorageError;
@@ -359,6 +360,66 @@ pub(super) fn current_unix_ms_u64() -> u64 {
 
 pub(super) fn persisted_bucket_tombstone_retention_ms() -> u64 {
     PERSISTED_BUCKET_TOMBSTONE_RETENTION_MS
+}
+
+pub(super) fn ensure_consensus_index_create_bucket_preconditions(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    operation: &str,
+) -> Result<(), Box<Response>> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+                operation, err
+            ),
+        ))
+    })?;
+
+    match resolve_bucket_presence_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+    ) {
+        Ok(PersistedBucketPresenceReadResolution::Present(_)) => Err(Box::new(response::error(
+            StatusCode::CONFLICT,
+            "Bucket already exists",
+        ))),
+        Ok(PersistedBucketPresenceReadResolution::Tombstoned(tombstone)) => {
+            if tombstone.is_expired(current_unix_ms_u64()) {
+                Ok(())
+            } else {
+                Err(Box::new(response::error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    format!(
+                        "Distributed bucket metadata operation '{}' rejected create for '{}' because tombstone retention is still active",
+                        operation, bucket
+                    ),
+                )))
+            }
+        }
+        Ok(PersistedBucketPresenceReadResolution::Missing) => Ok(()),
+        Err(PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        }) => Err(Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
+                operation, expected_view_id, persisted_view_id
+            ),
+        ))),
+        Err(err) => Err(Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
+                operation, err
+            ),
+        ))),
+    }
 }
 
 pub(super) fn persist_bucket_metadata_operation(

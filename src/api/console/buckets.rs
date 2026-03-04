@@ -435,6 +435,16 @@ pub(super) async fn create_bucket(
             return err;
         }
     }
+    if use_consensus_bucket_metadata {
+        if let Err(err) = storage::ensure_consensus_index_create_bucket_preconditions(
+            &state,
+            &topology,
+            body.name.as_str(),
+            "CreateBucket",
+        ) {
+            return *err;
+        }
+    }
 
     let now = chrono::Utc::now()
         .format("%Y-%m-%dT%H:%M:%S%.3fZ")

@@ -236,6 +236,10 @@ From CLAUDE phased roadmap (additional context):
     - `GET /api/buckets/{bucket}/lifecycle` returns deterministic `503` with `consensus-index-peer-fan-in-auth-token-missing` when shared-token peer trust is unset for lifecycle-enabled buckets.
     - with shared-token trust configured, lifecycle-enabled reads execute trusted local-scope fan-in and return converged lifecycle payloads.
     - integration coverage locks both paths (`console_tests::test_console_get_bucket_lifecycle_consensus_index_returns_service_unavailable_when_token_missing_for_enabled_rules`, `console_tests::test_console_get_bucket_lifecycle_consensus_index_merges_peer_state_when_token_configured`).
+  - Console `consensus-index` `CreateBucket` now enforces persisted bucket-presence preconditions before local storage mutation:
+    - persisted-present bucket state fails fast with deterministic `409 Bucket already exists`.
+    - active bucket tombstones fail fast with deterministic `503` while tombstone retention is active.
+    - integration coverage now locks both persisted-present and active-tombstone no-side-effect behavior (`console_tests::test_console_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect`, `console_tests::test_console_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect`).
 - Health readiness accuracy (`runtime_platform` + `quality_harness`):
   - `/healthz` now includes probe-backed degraded readiness for data-dir access/writeability, storage data-path readability, configurable disk headroom thresholds, membership-protocol readiness, static-bootstrap peer-connectivity probing, static-bootstrap peer-view consistency checks (`membershipViewId` parity), and static-bootstrap self-peer misconfiguration detection (`clusterPeers` containing local `nodeId`, including case-variant peer strings); continue extending split-brain/consensus health semantics and keep regression coverage current as readiness contracts evolve.
 

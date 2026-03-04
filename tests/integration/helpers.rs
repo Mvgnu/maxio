@@ -1,7 +1,8 @@
 use maxio::config::{Config, MembershipProtocol, WriteDurabilityMode};
 use maxio::metadata::{
-    BucketMetadataState, ClusterMetadataListingStrategy, ObjectMetadataState,
-    ObjectVersionMetadataState, PersistedMetadataState, persist_persisted_metadata_state,
+    BucketMetadataState, BucketMetadataTombstoneState, ClusterMetadataListingStrategy,
+    ObjectMetadataState, ObjectVersionMetadataState, PersistedMetadataState,
+    persist_persisted_metadata_state,
 };
 use maxio::server;
 use maxio::storage::{BucketMeta, ObjectMeta, filesystem::FilesystemStorage};
@@ -266,10 +267,19 @@ pub(crate) fn seed_consensus_metadata_buckets(
     view_id: &str,
     buckets: &[BucketMetadataState],
 ) {
+    seed_consensus_metadata_bucket_state(data_dir, view_id, buckets, &[]);
+}
+
+pub(crate) fn seed_consensus_metadata_bucket_state(
+    data_dir: &str,
+    view_id: &str,
+    buckets: &[BucketMetadataState],
+    bucket_tombstones: &[BucketMetadataTombstoneState],
+) {
     let state = PersistedMetadataState {
         view_id: view_id.to_string(),
         buckets: buckets.to_vec(),
-        bucket_tombstones: Vec::new(),
+        bucket_tombstones: bucket_tombstones.to_vec(),
         objects: Vec::new(),
         object_versions: Vec::new(),
     };

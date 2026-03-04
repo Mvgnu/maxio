@@ -1,8 +1,8 @@
 use super::*;
 use hmac::{Hmac, Mac};
 use maxio::metadata::{
-    BucketMetadataState, ClusterMetadataListingStrategy, ObjectMetadataState,
-    ObjectVersionMetadataState,
+    BucketMetadataState, BucketMetadataTombstoneState, ClusterMetadataListingStrategy,
+    ObjectMetadataState, ObjectVersionMetadataState,
 };
 use maxio::storage::placement::membership_view_id_with_self;
 use sha2::Sha256;
@@ -2754,6 +2754,117 @@ async fn test_console_list_buckets_consensus_index_persists_local_create_into_co
 }
 
 #[tokio::test]
+async fn test_console_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "console-consensus-persisted-present";
+    seed_consensus_metadata_buckets(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+    );
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let create = client()
+        .post(format!("{}/api/buckets", base_url))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "name": bucket }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create.status(), 409);
+    let body: serde_json::Value = create.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket already exists");
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let exists = storage
+        .head_bucket(bucket)
+        .await
+        .expect("head bucket should succeed");
+    assert!(
+        !exists,
+        "expected no local side effect for persisted-present create rejection"
+    );
+}
+
+#[tokio::test]
+async fn test_console_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "console-consensus-active-tombstone";
+    let now_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+    seed_consensus_metadata_bucket_state(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[],
+        &[BucketMetadataTombstoneState {
+            bucket: bucket.to_string(),
+            deleted_at_unix_ms: now_ms.saturating_sub(1_000),
+            retain_until_unix_ms: now_ms.saturating_add(120_000),
+        }],
+    );
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let create = client()
+        .post(format!("{}/api/buckets", base_url))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "name": bucket }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create.status(), 503);
+    let body: serde_json::Value = create.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("tombstone retention is still active")),
+        "unexpected body: {body}"
+    );
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let exists = storage
+        .head_bucket(bucket)
+        .await
+        .expect("head bucket should succeed");
+    assert!(
+        !exists,
+        "expected no local side effect for active tombstone create rejection"
+    );
+}
+
+#[tokio::test]
 async fn test_console_list_buckets_consensus_index_rejects_persisted_view_mismatch() {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
@@ -4250,6 +4361,7 @@ async fn test_console_get_bucket_lifecycle_consensus_index_merges_peer_state_whe
 
     let owner_tmp = TempDir::new().unwrap();
     let owner_data_dir = owner_tmp.path().to_string_lossy().to_string();
+    seed_bucket_in_data_dir(&owner_data_dir, bucket).await;
     seed_consensus_metadata_buckets(
         &owner_data_dir,
         owner_membership_view_id.as_str(),
@@ -4269,6 +4381,7 @@ async fn test_console_get_bucket_lifecycle_consensus_index_merges_peer_state_whe
         consensus_membership_view_id(coordinator_node_id, coordinator_cluster_peers.as_slice());
     let coordinator_tmp = TempDir::new().unwrap();
     let coordinator_data_dir = coordinator_tmp.path().to_string_lossy().to_string();
+    seed_bucket_in_data_dir(&coordinator_data_dir, bucket).await;
     seed_consensus_metadata_buckets(
         &coordinator_data_dir,
         coordinator_membership_view_id.as_str(),
@@ -4283,16 +4396,6 @@ async fn test_console_get_bucket_lifecycle_consensus_index_merges_peer_state_whe
         start_server_with_config(coordinator_config, coordinator_tmp).await;
 
     let coordinator_cookie = console_login_cookie(&coordinator_url).await;
-
-    let coordinator_create =
-        s3_request("PUT", &format!("{}/{}", coordinator_url, bucket), vec![]).await;
-    assert_eq!(coordinator_create.status(), 200);
-    let owner_create = s3_request("PUT", &format!("{}/{}", owner_url, bucket), vec![]).await;
-    assert!(
-        matches!(owner_create.status().as_u16(), 200 | 409),
-        "expected peer create to return 200 or 409, got {}",
-        owner_create.status().as_u16()
-    );
 
     let lifecycle_xml = br#"
       <LifecycleConfiguration>
