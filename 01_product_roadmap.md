@@ -255,6 +255,8 @@ From CLAUDE phased roadmap (additional context):
 Scorecard sync update (March 4, 2026):
 - `consensus-index` `CreateBucket` now performs persisted bucket-presence preflight and rejects active tombstone-retention windows before local filesystem mutation, preventing local side effects when authoritative metadata state would fail create.
 - Locked by regression: `core_tests::test_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect` (also wired into `scripts/domain_check.sh s3_api_surface`).
+- `consensus-index` `CreateBucket` now also rejects persisted-present bucket state with deterministic `409 BucketAlreadyOwnedByYou` before local filesystem mutation, preventing local side effects when authoritative metadata already marks the bucket as existing.
+- Locked by regression: `core_tests::test_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect` (also wired into `scripts/domain_check.sh s3_api_surface`).
 
 ## Distributed Implementation Exit Targets (Execution-Aligned)
 

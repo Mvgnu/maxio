@@ -250,6 +250,7 @@ run_domain() {
         core_tests::test_head_bucket_consensus_index_uses_persisted_metadata_state \
         core_tests::test_head_bucket_consensus_index_persists_local_create_into_consensus_state \
         core_tests::test_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect \
+        core_tests::test_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect \
         core_tests::test_list_buckets_distributed_request_aggregation_returns_service_unavailable_when_unready \
         core_tests::test_list_buckets_consensus_index_uses_persisted_metadata_state \
         core_tests::test_list_buckets_consensus_index_persists_local_create_into_consensus_state \

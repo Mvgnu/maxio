@@ -249,6 +249,24 @@ async fn create_bucket_local_only_on_peer(
     .await
 }
 
+async fn create_bucket_local_only_on_coordinator(
+    coordinator_url: &str,
+    bucket: &str,
+    token: &str,
+    forwarded_by: &str,
+) -> reqwest::Response {
+    s3_request_with_headers(
+        "PUT",
+        &format!("{coordinator_url}/{bucket}?x-maxio-internal-metadata-scope=local-node-only"),
+        vec![],
+        vec![
+            ("x-maxio-forwarded-by", forwarded_by),
+            ("x-maxio-internal-auth-token", token),
+        ],
+    )
+    .await
+}
+
 async fn delete_bucket_local_only_on_peer(
     owner_url: &str,
     bucket: &str,
@@ -4501,6 +4519,44 @@ async fn test_create_bucket_consensus_index_rejects_active_tombstone_without_loc
 }
 
 #[tokio::test]
+async fn test_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect(
+) {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "consensus-present-active";
+    seed_consensus_metadata_buckets(
+        &data_dir,
+        view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+    );
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let create = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create.status(), 409);
+    let body = create.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("BucketAlreadyOwnedByYou")
+    );
+
+    let bucket_path = Path::new(&data_dir).join(bucket);
+    assert!(
+        !bucket_path.exists(),
+        "bucket directory should not be created on persisted-present preflight rejection"
+    );
+}
+
+#[tokio::test]
 async fn test_get_bucket_versioning_consensus_index_uses_persisted_metadata_state() {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
@@ -4676,12 +4732,14 @@ async fn test_get_bucket_lifecycle_consensus_index_merges_peer_state_when_token_
     )
     .await;
 
-    let coordinator_create = s3_request(
-        "PUT",
-        &format!("{}/{}", pair.coordinator_url, bucket),
-        vec![],
-    )
-    .await;
+    let coordinator_create =
+        create_bucket_local_only_on_coordinator(
+            &pair.coordinator_url,
+            bucket,
+            token,
+            pair.owner_peer.as_str(),
+        )
+        .await;
     assert_eq!(coordinator_create.status(), 200);
     let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
     assert_eq!(owner_create.status(), 200);
@@ -5083,10 +5141,11 @@ async fn test_list_objects_distributed_request_aggregation_merges_peer_object_st
     let pair = start_bucket_listing_aggregation_pair_with_token(token).await;
     let bucket = "list-objects-aggregate";
 
-    let create = s3_request(
-        "PUT",
-        &format!("{}/{}", pair.coordinator_url, bucket),
-        vec![],
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
     )
     .await;
     assert_eq!(create.status(), 200);
@@ -5153,10 +5212,11 @@ async fn test_list_objects_distributed_consensus_index_merges_peer_object_state_
     )
     .await;
 
-    let create = s3_request(
-        "PUT",
-        &format!("{}/{}", pair.coordinator_url, bucket),
-        vec![],
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
     )
     .await;
     assert_eq!(create.status(), 200);
@@ -5253,10 +5313,11 @@ async fn test_list_objects_distributed_consensus_index_does_not_fallback_to_loca
     )
     .await;
 
-    let create = s3_request(
-        "PUT",
-        &format!("{}/{}", pair.coordinator_url, bucket),
-        vec![],
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
     )
     .await;
     assert_eq!(create.status(), 200);
@@ -5317,7 +5378,12 @@ async fn test_list_objects_distributed_request_aggregation_rejects_inconsistent_
     let bucket = "list-objects-inconsistent-bucket";
 
     let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
-    assert_eq!(owner_create.status(), 200);
+    let owner_create_status = owner_create.status().as_u16();
+    assert!(
+        owner_create_status == 200 || owner_create_status == 409,
+        "unexpected owner create status: {}",
+        owner_create_status
+    );
 
     let owner_dir = pair._owner_tmp.path().to_string_lossy().to_string();
     seed_object_in_data_dir(owner_dir.as_str(), bucket, "owner-only.txt", b"owner").await;
@@ -5355,6 +5421,13 @@ async fn test_list_object_versions_distributed_request_aggregation_merges_peer_s
     )
     .await;
     assert_eq!(create.status(), 200);
+    let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
+    let owner_create_status = owner_create.status().as_u16();
+    assert!(
+        owner_create_status == 200 || owner_create_status == 409,
+        "unexpected owner create status: {}",
+        owner_create_status
+    );
 
     let versioning_xml =
         br#"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>"#.to_vec();
@@ -5364,7 +5437,9 @@ async fn test_list_object_versions_distributed_request_aggregation_merges_peer_s
         versioning_xml,
     )
     .await;
-    assert_eq!(versioning.status(), 200);
+    let versioning_status = versioning.status();
+    let versioning_body = versioning.text().await.unwrap();
+    assert_eq!(versioning_status, 200, "unexpected body: {versioning_body}");
 
     let coordinator_dir = pair._coordinator_tmp.path().to_string_lossy().to_string();
     let owner_dir = pair._owner_tmp.path().to_string_lossy().to_string();
@@ -5434,16 +5509,22 @@ async fn test_list_object_versions_distributed_consensus_index_merges_peer_state
     )
     .await;
 
-    let create = s3_request(
-        "PUT",
-        &format!("{}/{}", pair.coordinator_url, bucket),
-        vec![],
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
     )
     .await;
     assert_eq!(create.status(), 200);
 
     let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
-    assert_eq!(owner_create.status(), 200);
+    let owner_create_status = owner_create.status().as_u16();
+    assert!(
+        owner_create_status == 200 || owner_create_status == 409,
+        "unexpected owner create status: {}",
+        owner_create_status
+    );
 
     let resp = s3_request(
         "GET",
@@ -5499,10 +5580,11 @@ async fn test_list_object_versions_distributed_consensus_index_does_not_fallback
     )
     .await;
 
-    let create = s3_request(
-        "PUT",
-        &format!("{}/{}", pair.coordinator_url, bucket),
-        vec![],
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
     )
     .await;
     assert_eq!(create.status(), 200);

@@ -443,7 +443,9 @@ fn ensure_consensus_index_create_bucket_preconditions(
         bucket,
         Some(topology.membership_view_id.as_str()),
     ) {
-        Ok(PersistedBucketPresenceReadResolution::Present(_)) => Ok(()),
+        Ok(PersistedBucketPresenceReadResolution::Present(_)) => {
+            Err(S3Error::bucket_already_owned(bucket))
+        }
         Ok(PersistedBucketPresenceReadResolution::Tombstoned(tombstone)) => {
             if tombstone.is_expired(current_unix_ms_u64()) {
                 Ok(())
