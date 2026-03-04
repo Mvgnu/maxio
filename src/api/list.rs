@@ -26,6 +26,7 @@ use crate::error::S3Error;
 use crate::metadata::{
     ClusterMetadataListingStrategy, ClusterResponderMembershipView,
     assess_cluster_metadata_fan_in_preflight_for_topology_responders,
+    assess_cluster_metadata_fan_in_preflight_for_topology_single_responder,
     cluster_metadata_fan_in_preflight_reject_reason,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
@@ -942,11 +943,16 @@ fn ensure_metadata_fan_in_preflight_ready(
         topology.membership_nodes.as_slice(),
         responders,
     )
-    .map_err(|_| {
-        S3Error::service_unavailable(&format!(
-            "Distributed metadata fan-in preflight failed for '{operation}'",
-        ))
-    })?;
+    .unwrap_or_else(|_| {
+        assess_cluster_metadata_fan_in_preflight_for_topology_single_responder(
+            strategy,
+            None,
+            topology.node_id.as_str(),
+            topology.membership_nodes.as_slice(),
+            topology.node_id.as_str(),
+            None,
+        )
+    });
     if preflight.ready {
         return Ok(());
     }

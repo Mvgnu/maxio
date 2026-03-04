@@ -34,6 +34,7 @@ use crate::metadata::{
     assess_cluster_bucket_metadata_convergence_for_responder_states,
     assess_cluster_bucket_presence_convergence,
     assess_cluster_metadata_fan_in_preflight_for_topology_responders,
+    assess_cluster_metadata_fan_in_preflight_for_topology_single_responder,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
     assess_cluster_responder_membership_views, cluster_metadata_fan_in_preflight_reject_reason,
@@ -2120,11 +2121,16 @@ fn ensure_bucket_metadata_fan_in_preflight_ready(
         topology.membership_nodes.as_slice(),
         responders,
     )
-    .map_err(|_| {
-        S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata fan-in preflight failed for '{operation}'",
-        ))
-    })?;
+    .unwrap_or_else(|_| {
+        assess_cluster_metadata_fan_in_preflight_for_topology_single_responder(
+            strategy,
+            None,
+            topology.node_id.as_str(),
+            topology.membership_nodes.as_slice(),
+            topology.node_id.as_str(),
+            None,
+        )
+    });
     if preflight.ready {
         return Ok(());
     }
