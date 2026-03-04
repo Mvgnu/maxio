@@ -1,6 +1,29 @@
 use super::*;
 use hmac::Mac;
+use serde_json::json;
 use sha2::{Digest, Sha256};
+
+fn metric_value(metrics: &str, name: &str) -> Option<f64> {
+    metrics.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || !trimmed.starts_with(name) {
+            return None;
+        }
+        let value = trimmed.split_whitespace().nth(1)?;
+        value.parse::<f64>().ok()
+    })
+}
+
+fn metric_labeled_value(metrics: &str, metric_with_labels: &str) -> Option<f64> {
+    metrics.lines().find_map(|line| {
+        let trimmed = line.trim();
+        if trimmed.starts_with('#') || !trimmed.starts_with(metric_with_labels) {
+            return None;
+        }
+        let value = trimmed.split_whitespace().nth(1)?;
+        value.parse::<f64>().ok()
+    })
+}
 
 #[tokio::test]
 async fn test_auth_rejects_bad_key() {
@@ -25,6 +48,235 @@ async fn test_auth_accepts_valid_signature() {
     let (base_url, _tmp) = start_server().await;
     let resp = s3_request("GET", &format!("{}/", base_url), vec![]).await;
     assert_eq!(resp.status(), 200);
+}
+
+#[tokio::test]
+async fn test_auth_accepts_signed_requests_with_custom_forwarding_like_headers() {
+    let (base_url, _tmp) = start_server().await;
+    let bucket = "auth-custom-forwarding-headers";
+    let key = "docs/a.txt";
+
+    let create = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create.status(), 200);
+
+    let put = s3_request_with_headers(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"auth-custom-header-payload".to_vec(),
+        vec![
+            ("x-maxio-forwarded-write-epoch", "7"),
+            ("x-maxio-forwarded-write-view-id", "external-client-view"),
+            ("x-maxio-forwarded-write-hop-count", "1"),
+        ],
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+
+    let get = s3_request("GET", &format!("{}/{}/{}", base_url, bucket, key), vec![]).await;
+    assert_eq!(get.status(), 200);
+    assert_eq!(
+        get.bytes().await.unwrap().as_ref(),
+        b"auth-custom-header-payload"
+    );
+}
+
+#[tokio::test]
+async fn test_auth_rejects_internal_operation_headers_without_forwarded_by_marker() {
+    let (base_url, _tmp) = start_server().await;
+    let bucket = "auth-internal-operation-header-sanitization";
+    let key = "docs/a.txt";
+
+    let create = s3_request("PUT", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(create.status(), 200);
+
+    let before_metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let before_total =
+        metric_value(&before_metrics, "maxio_cluster_peer_auth_reject_total").unwrap_or(0.0);
+    let before_reason = metric_labeled_value(
+        &before_metrics,
+        "maxio_cluster_peer_auth_reject_reason_total{reason=\"missing_or_malformed_forwarded_by\"}",
+    )
+    .unwrap_or(0.0);
+
+    let put = s3_request_with_headers(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key),
+        b"auth-internal-header-payload".to_vec(),
+        vec![
+            (
+                "x-maxio-internal-forwarded-write-operation",
+                "replicate-put-object",
+            ),
+            (
+                "x-maxio-internal-forwarded-write-idempotency-key",
+                "spoofed-idempotency",
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(put.status(), 200);
+
+    let get = s3_request("GET", &format!("{}/{}/{}", base_url, bucket, key), vec![]).await;
+    assert_eq!(get.status(), 200);
+    assert_eq!(
+        get.bytes().await.unwrap().as_ref(),
+        b"auth-internal-header-payload"
+    );
+
+    let after_metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let after_total =
+        metric_value(&after_metrics, "maxio_cluster_peer_auth_reject_total").unwrap_or(0.0);
+    let after_reason = metric_labeled_value(
+        &after_metrics,
+        "maxio_cluster_peer_auth_reject_reason_total{reason=\"missing_or_malformed_forwarded_by\"}",
+    )
+    .unwrap_or(0.0);
+
+    assert!(
+        after_total >= before_total + 1.0,
+        "expected reject_total to increase for spoofed internal operation header"
+    );
+    assert!(
+        after_reason >= before_reason + 1.0,
+        "expected missing_or_malformed_forwarded_by reason counter to increase"
+    );
+}
+
+#[tokio::test]
+async fn test_auth_internal_header_trust_uses_live_runtime_membership_peers() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["peer-a.internal:9000".to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let before_metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let before_allowlist_rejects = metric_labeled_value(
+        &before_metrics,
+        "maxio_cluster_peer_auth_reject_reason_total{reason=\"sender_not_in_allowlist\"}",
+    )
+    .unwrap_or(0.0);
+
+    let get_untrusted_sender = s3_request_with_headers(
+        "GET",
+        &format!("{}/", base_url),
+        Vec::new(),
+        vec![
+            ("x-maxio-forwarded-by", "peer-b.internal:9000"),
+            ("x-maxio-internal-auth-token", "shared-secret"),
+            (
+                "x-maxio-internal-forwarded-write-operation",
+                "replicate-put-object",
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(get_untrusted_sender.status(), 200);
+
+    let after_untrusted_metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let after_untrusted_allowlist_rejects = metric_labeled_value(
+        &after_untrusted_metrics,
+        "maxio_cluster_peer_auth_reject_reason_total{reason=\"sender_not_in_allowlist\"}",
+    )
+    .unwrap_or(0.0);
+    assert!(
+        after_untrusted_allowlist_rejects >= before_allowlist_rejects + 1.0,
+        "expected sender_not_in_allowlist to increment before live membership update"
+    );
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    let cluster_id = health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present");
+
+    let membership_update = client()
+        .post(format!("{}/internal/cluster/membership/update", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id)
+        .header("x-maxio-join-node-id", "peer-control.internal:9000")
+        .header("x-maxio-forwarded-by", "peer-a.internal:9000")
+        .header(
+            "x-maxio-join-unix-ms",
+            chrono::Utc::now().timestamp_millis().to_string(),
+        )
+        .header("x-maxio-join-nonce", "auth-live-membership-update-1")
+        .header("x-maxio-internal-auth-token", "shared-secret")
+        .json(&json!({
+            "clusterId": cluster_id,
+            "clusterPeers": ["peer-b.internal:9000"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(membership_update.status(), 200);
+
+    let get_trusted_sender = s3_request_with_headers(
+        "GET",
+        &format!("{}/", base_url),
+        Vec::new(),
+        vec![
+            ("x-maxio-forwarded-by", "peer-b.internal:9000"),
+            ("x-maxio-internal-auth-token", "shared-secret"),
+            (
+                "x-maxio-internal-forwarded-write-operation",
+                "replicate-put-object",
+            ),
+        ],
+    )
+    .await;
+    assert_eq!(get_trusted_sender.status(), 200);
+
+    let after_trusted_metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    let after_trusted_allowlist_rejects = metric_labeled_value(
+        &after_trusted_metrics,
+        "maxio_cluster_peer_auth_reject_reason_total{reason=\"sender_not_in_allowlist\"}",
+    )
+    .unwrap_or(0.0);
+    assert_eq!(
+        after_trusted_allowlist_rejects, after_untrusted_allowlist_rejects,
+        "expected sender_not_in_allowlist to stop increasing after live membership update"
+    );
 }
 
 #[tokio::test]

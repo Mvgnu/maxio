@@ -37,6 +37,26 @@ interface SystemMetricsLoaders {
   getMembership: () => Promise<ApiResult<RuntimeMembership>>
 }
 
+function checksWithFallback(
+  checks: RuntimeHealth['checks'],
+  metricsProtocolReady: boolean | null
+): RuntimeHealth['checks'] {
+  if (checks !== null) {
+    return checks
+  }
+  if (metricsProtocolReady === null) {
+    return null
+  }
+  return {
+    dataDirAccessible: null,
+    dataDirWritable: null,
+    storageDataPathReadable: null,
+    diskHeadroomSufficient: null,
+    peerConnectivityReady: null,
+    membershipProtocolReady: metricsProtocolReady,
+  }
+}
+
 const defaultLoaders: SystemMetricsLoaders = {
   getSummary: getRuntimeSummaryApi,
   getMetrics: getRuntimeMetricsApi,
@@ -92,7 +112,10 @@ export async function loadSystemMetricsSnapshot(
         healthOk: summaryResult.data.health.ok,
         healthStatus: summaryResult.data.health.status,
         healthWarnings: summaryResult.data.health.warnings,
-        healthChecks: summaryResult.data.health.checks,
+        healthChecks: checksWithFallback(
+          summaryResult.data.health.checks,
+          summaryResult.data.metrics.membershipProtocolReady
+        ),
         raw: JSON.stringify(
           {
             health: summaryResult.data.health.raw,
@@ -167,7 +190,10 @@ export async function loadSystemMetricsSnapshot(
       healthOk: healthResult.ok ? healthResult.data.ok : null,
       healthStatus: healthResult.ok ? healthResult.data.status : null,
       healthWarnings: healthResult.ok ? healthResult.data.warnings : [],
-      healthChecks: healthResult.ok ? healthResult.data.checks : null,
+      healthChecks: checksWithFallback(
+        healthResult.ok ? healthResult.data.checks : null,
+        metricsResult.data.membershipProtocolReady
+      ),
       raw: metricsResult.data.raw,
     },
   }

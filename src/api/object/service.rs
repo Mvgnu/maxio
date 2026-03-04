@@ -3,22 +3,41 @@ use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::Response,
 };
+use chrono::DateTime;
 use futures::TryStreamExt;
 use percent_encoding::{AsciiSet, NON_ALPHANUMERIC, utf8_percent_encode};
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
 use super::parsing::to_http_date;
+use super::peer_transport::{
+    attest_internal_peer_target, build_internal_peer_http_client, internal_peer_transport_scheme,
+};
+use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
+use crate::cluster::authenticator::{
+    FORWARDED_BY_HEADER, INTERNAL_FORWARDING_PROTOCOL_HEADERS, authenticate_forwarded_request,
+};
+use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::error::S3Error;
+use crate::membership::unix_ms_now;
 use crate::server::AppState;
 use crate::storage::placement::{
     ForwardedWriteEnvelope, ForwardedWriteOperation, ForwardedWriteRejectReason,
-    ForwardedWriteResolution, PlacementViewState, object_forward_target_with_self,
-    primary_object_owner_with_self, resolve_forwarded_write_envelope,
+    ForwardedWriteResolution, ObjectWriteQuorumOutcome, PendingReplicationAcknowledgeOutcome,
+    PendingReplicationEnqueueOutcome, PendingReplicationFailureWithBackoffOutcome,
+    PendingReplicationReplayCandidate, PendingReplicationReplayLeaseOutcome,
+    PendingReplicationRetryPolicy, PlacementViewState, ReplicationMutationOperation,
+    acknowledge_pending_replication_target_persisted,
+    enqueue_pending_replication_operation_persisted,
+    lease_pending_replication_target_for_replay_persisted, object_forward_target_with_self,
+    pending_replication_operation_from_quorum_outcome,
+    pending_replication_replay_candidates_from_disk, pending_replication_replay_owner_alignment,
+    primary_object_owner_with_self, record_pending_replication_failure_with_backoff_persisted,
+    resolve_forwarded_write_envelope,
 };
 use crate::storage::{ChecksumAlgorithm, ObjectMeta, PutResult, StorageError};
 
-const INTERNAL_FORWARDED_BY_HEADER: &str = "x-maxio-forwarded-by";
 const INTERNAL_FORWARD_EPOCH_HEADER: &str = "x-maxio-forwarded-write-epoch";
 const INTERNAL_FORWARD_VIEW_ID_HEADER: &str = "x-maxio-forwarded-write-view-id";
 const INTERNAL_FORWARD_HOP_COUNT_HEADER: &str = "x-maxio-forwarded-write-hop-count";
@@ -40,6 +59,12 @@ const INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_DELETE: &str = "replicate-del
 const INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_HEAD: &str = "replicate-head-object";
 const FORWARD_MAX_HOPS_DEFAULT: u8 = 8;
 const DISTRIBUTED_WRITE_REPLICA_TARGET: usize = 2;
+const RUNTIME_STATE_DIR: &str = ".maxio-runtime";
+const PENDING_REPLICATION_QUEUE_FILE: &str = "pending-replication-queue.json";
+const INITIAL_REPLICA_FAILURE_REASON: &str = "initial_replica_fanout_not_acked";
+const PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY: &str = "replay_attempt_failed";
+const PENDING_REPLICATION_REPLAY_FAILURE_REASON_SOURCE_UNAVAILABLE: &str =
+    "replay_source_unavailable";
 const S3_PATH_ENCODE_SET: &AsciiSet = &NON_ALPHANUMERIC
     .remove(b'-')
     .remove(b'.')
@@ -178,11 +203,12 @@ pub(crate) fn ensure_local_write_owner(
     if !routing_hint.distributed || routing_hint.is_local_primary_owner {
         return Ok(());
     }
-    Err(S3Error::access_denied(&non_owner_write_message(
+    Err(S3Error::service_unavailable(&non_owner_write_message(
         routing_hint,
     )))
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn write_forward_target(
     bucket: &str,
     key: &str,
@@ -191,13 +217,21 @@ pub(crate) fn write_forward_target(
     headers: &HeaderMap,
     node_id: &str,
     placement: &PlacementViewState,
+    cluster_auth_token: Option<&str>,
 ) -> Result<Option<ForwardWriteTarget>, S3Error> {
     if !routing_hint.distributed {
         return Ok(None);
     }
 
-    let envelope =
-        forwarded_write_envelope_from_headers(headers, operation, bucket, key, node_id, placement);
+    let envelope = forwarded_write_envelope_from_headers(
+        headers,
+        operation,
+        bucket,
+        key,
+        node_id,
+        placement,
+        cluster_auth_token,
+    );
     let replica_count = write_replica_count_for_membership_count(placement.members.len());
     match resolve_forwarded_write_envelope(&envelope, node_id, placement, replica_count) {
         ForwardedWriteResolution::ExecuteLocal { .. } => Ok(None),
@@ -206,34 +240,34 @@ pub(crate) fn write_forward_target(
         }
         ForwardedWriteResolution::Reject { reason } => match reason {
             ForwardedWriteRejectReason::MissingPrimaryOwner
-            | ForwardedWriteRejectReason::MissingForwardTarget => Err(S3Error::access_denied(
-                &non_owner_write_message(routing_hint),
-            )),
+            | ForwardedWriteRejectReason::MissingForwardTarget => Err(
+                S3Error::service_unavailable(&non_owner_write_message(routing_hint)),
+            ),
             ForwardedWriteRejectReason::StaleEpoch {
                 local_epoch,
                 request_epoch,
-            } => Err(S3Error::access_denied(&format!(
+            } => Err(S3Error::service_unavailable(&format!(
                 "Write forwarding rejected due to stale placement epoch (local={local_epoch}, request={request_epoch})"
             ))),
             ForwardedWriteRejectReason::FutureEpoch {
                 local_epoch,
                 request_epoch,
-            } => Err(S3Error::access_denied(&format!(
+            } => Err(S3Error::service_unavailable(&format!(
                 "Write forwarding rejected due to future placement epoch (local={local_epoch}, request={request_epoch})"
             ))),
             ForwardedWriteRejectReason::ViewIdMismatch {
                 local_view_id,
                 request_view_id,
-            } => Err(S3Error::access_denied(&format!(
+            } => Err(S3Error::service_unavailable(&format!(
                 "Write forwarding rejected due to placement view mismatch (local={local_view_id}, request={request_view_id})"
             ))),
-            ForwardedWriteRejectReason::ForwardLoop { node } => Err(S3Error::access_denied(
+            ForwardedWriteRejectReason::ForwardLoop { node } => Err(S3Error::service_unavailable(
                 &format!("Write forwarding loop detected while routing request (node={node})"),
             )),
             ForwardedWriteRejectReason::HopLimitExceeded {
                 hop_count,
                 max_hops,
-            } => Err(S3Error::access_denied(&format!(
+            } => Err(S3Error::service_unavailable(&format!(
                 "Write forwarding hop limit exceeded ({hop_count}/{max_hops})"
             ))),
         },
@@ -245,6 +279,534 @@ pub(crate) fn write_replica_count_for_membership_count(membership_count: usize) 
         1
     } else {
         membership_count.min(DISTRIBUTED_WRITE_REPLICA_TARGET)
+    }
+}
+
+pub(crate) fn pending_replication_queue_path(data_dir: &str) -> PathBuf {
+    PathBuf::from(data_dir)
+        .join(RUNTIME_STATE_DIR)
+        .join(PENDING_REPLICATION_QUEUE_FILE)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn persist_pending_replication_from_quorum_outcome(
+    state: &AppState,
+    operation: ReplicationMutationOperation,
+    idempotency_key: &str,
+    bucket: &str,
+    key: &str,
+    version_id: Option<&str>,
+    placement: &PlacementViewState,
+    outcome: &ObjectWriteQuorumOutcome,
+) {
+    let created_at_unix_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or_default();
+    let Some(pending_operation) = pending_replication_operation_from_quorum_outcome(
+        operation,
+        idempotency_key,
+        bucket,
+        key,
+        version_id,
+        state.node_id.as_ref(),
+        placement,
+        outcome,
+        created_at_unix_ms,
+    ) else {
+        return;
+    };
+
+    let queue_path = pending_replication_queue_path(state.config.data_dir.as_str());
+    let pending_idempotency_key = pending_operation.idempotency_key.clone();
+    match enqueue_pending_replication_operation_persisted(queue_path.as_path(), pending_operation) {
+        Ok(PendingReplicationEnqueueOutcome::Inserted) => {
+            tracing::warn!(
+                operation = %operation.as_str(),
+                bucket = %bucket,
+                key = %key,
+                pending_targets = outcome.pending_nodes.len(),
+                rejected_targets = outcome.rejected_nodes.len(),
+                "Persisted pending replication operation after partial replica acknowledgements"
+            );
+        }
+        Ok(PendingReplicationEnqueueOutcome::AlreadyTracked) => {
+            tracing::debug!(
+                operation = %operation.as_str(),
+                bucket = %bucket,
+                key = %key,
+                idempotency_key = %pending_idempotency_key,
+                "Pending replication operation already tracked"
+            );
+        }
+        Err(error) => {
+            tracing::warn!(
+                operation = %operation.as_str(),
+                bucket = %bucket,
+                key = %key,
+                error = ?error,
+                "Failed to persist pending replication operation"
+            );
+            return;
+        }
+    }
+
+    for target in &outcome.rejected_nodes {
+        match record_pending_replication_failure_with_backoff_persisted(
+            queue_path.as_path(),
+            pending_idempotency_key.as_str(),
+            target,
+            Some(INITIAL_REPLICA_FAILURE_REASON),
+            created_at_unix_ms,
+            PendingReplicationRetryPolicy::default(),
+        ) {
+            Ok(PendingReplicationFailureWithBackoffOutcome::Updated {
+                attempts,
+                next_retry_at_unix_ms,
+            }) => {
+                tracing::debug!(
+                    operation = %operation.as_str(),
+                    bucket = %bucket,
+                    key = %key,
+                    target_node = %target,
+                    attempts,
+                    next_retry_at_unix_ms,
+                    "Recorded initial pending replication target failure"
+                );
+            }
+            Ok(PendingReplicationFailureWithBackoffOutcome::NotFound)
+            | Ok(PendingReplicationFailureWithBackoffOutcome::TargetNotTracked) => {}
+            Err(error) => {
+                tracing::warn!(
+                    operation = %operation.as_str(),
+                    bucket = %bucket,
+                    key = %key,
+                    target_node = %target,
+                    error = ?error,
+                    "Failed to record pending replication target failure"
+                );
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PendingReplicationReplaySummary {
+    pub scanned: usize,
+    pub leased: usize,
+    pub acknowledged: usize,
+    pub failed: usize,
+    pub skipped: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PendingReplicationReplayOutcome {
+    Applied,
+    Dropped,
+}
+
+pub(crate) async fn replay_pending_replication_backlog_once(
+    state: &AppState,
+    max_candidates: usize,
+    lease_ms: u64,
+) -> std::io::Result<PendingReplicationReplaySummary> {
+    if max_candidates == 0 {
+        return Ok(PendingReplicationReplaySummary::default());
+    }
+
+    let queue_path = pending_replication_queue_path(state.config.data_dir.as_str());
+    let now_unix_ms = unix_ms_now();
+    let candidates = pending_replication_replay_candidates_from_disk(
+        queue_path.as_path(),
+        now_unix_ms,
+        max_candidates,
+    )?;
+    let mut summary = PendingReplicationReplaySummary {
+        scanned: candidates.len(),
+        ..PendingReplicationReplaySummary::default()
+    };
+
+    for candidate in candidates {
+        let lease_outcome = lease_pending_replication_target_for_replay_persisted(
+            queue_path.as_path(),
+            candidate.idempotency_key.as_str(),
+            candidate.target_node.as_str(),
+            unix_ms_now(),
+            lease_ms,
+        )?;
+        if !matches!(
+            lease_outcome,
+            PendingReplicationReplayLeaseOutcome::Updated { .. }
+        ) {
+            summary.skipped += 1;
+            continue;
+        }
+        summary.leased += 1;
+
+        match replay_pending_replication_candidate(state, &candidate).await {
+            Ok(replay_outcome) => {
+                let ack_outcome = acknowledge_pending_replication_target_persisted(
+                    queue_path.as_path(),
+                    candidate.idempotency_key.as_str(),
+                    candidate.target_node.as_str(),
+                )?;
+                match ack_outcome {
+                    PendingReplicationAcknowledgeOutcome::Updated { .. }
+                    | PendingReplicationAcknowledgeOutcome::AlreadyAcked => {
+                        summary.acknowledged += 1;
+                    }
+                    PendingReplicationAcknowledgeOutcome::NotFound
+                    | PendingReplicationAcknowledgeOutcome::TargetNotTracked => {
+                        summary.skipped += 1;
+                    }
+                }
+                if matches!(replay_outcome, PendingReplicationReplayOutcome::Dropped) {
+                    summary.skipped += 1;
+                }
+            }
+            Err(error) => {
+                summary.failed += 1;
+                let record_outcome = record_pending_replication_failure_with_backoff_persisted(
+                    queue_path.as_path(),
+                    candidate.idempotency_key.as_str(),
+                    candidate.target_node.as_str(),
+                    Some(error.as_str()),
+                    unix_ms_now(),
+                    PendingReplicationRetryPolicy::default(),
+                )?;
+                tracing::warn!(
+                    operation = %candidate.operation.as_str(),
+                    bucket = %candidate.bucket,
+                    key = %candidate.key,
+                    target_node = %candidate.target_node,
+                    error = %error,
+                    failure_outcome = ?record_outcome,
+                    "Pending replication replay attempt failed"
+                );
+            }
+        }
+    }
+
+    Ok(summary)
+}
+
+async fn replay_pending_replication_candidate(
+    state: &AppState,
+    candidate: &PendingReplicationReplayCandidate,
+) -> Result<PendingReplicationReplayOutcome, String> {
+    if !pending_replication_target_is_current_owner(state, candidate) {
+        tracing::debug!(
+            operation = %candidate.operation.as_str(),
+            bucket = %candidate.bucket,
+            key = %candidate.key,
+            target_node = %candidate.target_node,
+            "Skipping pending replication replay for target outside current owner set"
+        );
+        return Ok(PendingReplicationReplayOutcome::Dropped);
+    }
+
+    match candidate.operation {
+        ReplicationMutationOperation::PutObject
+        | ReplicationMutationOperation::CopyObject
+        | ReplicationMutationOperation::CompleteMultipartUpload => {
+            replay_pending_replication_put(state, candidate).await
+        }
+        ReplicationMutationOperation::DeleteObject
+        | ReplicationMutationOperation::DeleteObjectVersion => {
+            replay_pending_replication_delete(state, candidate).await
+        }
+    }
+}
+
+fn pending_replication_target_is_current_owner(
+    state: &AppState,
+    candidate: &PendingReplicationReplayCandidate,
+) -> bool {
+    let peers = state.active_cluster_peers();
+    let membership_count = peers.len().saturating_add(1);
+    let replica_count = write_replica_count_for_membership_count(membership_count);
+    let alignment = pending_replication_replay_owner_alignment(
+        candidate.key.as_str(),
+        state.node_id.as_ref(),
+        peers.as_slice(),
+        candidate.target_node.as_str(),
+        replica_count,
+    );
+    if !alignment.local_is_owner {
+        tracing::debug!(
+            operation = %candidate.operation.as_str(),
+            bucket = %candidate.bucket,
+            key = %candidate.key,
+            local_node = %state.node_id,
+            target_node = %candidate.target_node,
+            current_owners = ?alignment.owners,
+            "Skipping pending replication replay because local node is outside current owner set"
+        );
+        return false;
+    }
+
+    alignment.target_is_owner
+}
+
+async fn replay_pending_replication_put(
+    state: &AppState,
+    candidate: &PendingReplicationReplayCandidate,
+) -> Result<PendingReplicationReplayOutcome, String> {
+    let read_result = if let Some(version_id) = candidate.version_id.as_deref() {
+        state
+            .storage
+            .get_object_version(
+                candidate.bucket.as_str(),
+                candidate.key.as_str(),
+                version_id,
+            )
+            .await
+    } else {
+        state
+            .storage
+            .get_object(candidate.bucket.as_str(), candidate.key.as_str())
+            .await
+    };
+    let (mut reader, meta) = match read_result {
+        Ok(value) => value,
+        Err(StorageError::NotFound(_)) => {
+            tracing::debug!(
+                operation = %candidate.operation.as_str(),
+                bucket = %candidate.bucket,
+                key = %candidate.key,
+                version_id = ?candidate.version_id,
+                target_node = %candidate.target_node,
+                reason = PENDING_REPLICATION_REPLAY_FAILURE_REASON_SOURCE_UNAVAILABLE,
+                "Skipping pending replication replay because source object is no longer available"
+            );
+            return Ok(PendingReplicationReplayOutcome::Dropped);
+        }
+        Err(error) => {
+            return Err(format!(
+                "{}: failed to read source object for replay: {error}",
+                PENDING_REPLICATION_REPLAY_FAILURE_REASON_SOURCE_UNAVAILABLE
+            ));
+        }
+    };
+
+    let mut body = Vec::new();
+    reader
+        .read_to_end(&mut body)
+        .await
+        .map_err(|error| format!("failed to read source object payload for replay: {error}"))?;
+
+    let path_and_query = presigned_replica_path_and_query(
+        state,
+        "PUT",
+        candidate.target_node.as_str(),
+        candidate.bucket.as_str(),
+        candidate.key.as_str(),
+        &[],
+    )
+    .ok_or_else(|| "failed to build presigned replay path for replica PUT".to_string())?;
+
+    let mut headers = HeaderMap::new();
+    if let Ok(value) = HeaderValue::from_str(meta.content_type.as_str()) {
+        headers.insert(header::CONTENT_TYPE, value);
+    }
+    if let (Some(algorithm), Some(value)) = (meta.checksum_algorithm, meta.checksum_value.as_ref())
+    {
+        headers.insert(
+            header::HeaderName::from_static("x-amz-checksum-algorithm"),
+            HeaderValue::from_static(checksum_algorithm_header_value(algorithm)),
+        );
+        if let Ok(header_value) = HeaderValue::from_str(value) {
+            headers.insert(
+                header::HeaderName::from_static(algorithm.header_name()),
+                header_value,
+            );
+        }
+    }
+
+    let envelope = replay_forwarded_write_envelope(
+        state,
+        candidate,
+        ForwardedWriteOperation::ReplicatePutObject,
+    );
+    let response = forward_replica_put_to_target(
+        state,
+        candidate.target_node.as_str(),
+        path_and_query.as_str(),
+        &headers,
+        body,
+        candidate.version_id.as_deref(),
+        &envelope,
+    )
+    .await
+    .map_err(|error| format!("{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: {error:?}"))?;
+    if response.status().is_success() {
+        return Ok(PendingReplicationReplayOutcome::Applied);
+    }
+
+    Err(format!(
+        "{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: replica PUT replay returned status {}",
+        response.status().as_u16()
+    ))
+}
+
+async fn replay_pending_replication_delete(
+    state: &AppState,
+    candidate: &PendingReplicationReplayCandidate,
+) -> Result<PendingReplicationReplayOutcome, String> {
+    if should_drop_non_version_delete_replay(state, candidate).await {
+        tracing::debug!(
+            operation = %candidate.operation.as_str(),
+            bucket = %candidate.bucket,
+            key = %candidate.key,
+            target_node = %candidate.target_node,
+            reason = "non_version_delete_replay_stale_or_unsafe",
+            "Dropping pending replication replay for non-versioned delete"
+        );
+        return Ok(PendingReplicationReplayOutcome::Dropped);
+    }
+
+    let mut extra_query = Vec::<(&str, &str)>::new();
+    if let Some(version_id) = candidate.version_id.as_deref() {
+        extra_query.push(("versionId", version_id));
+    }
+    let path_and_query = presigned_replica_path_and_query(
+        state,
+        "DELETE",
+        candidate.target_node.as_str(),
+        candidate.bucket.as_str(),
+        candidate.key.as_str(),
+        extra_query.as_slice(),
+    )
+    .ok_or_else(|| "failed to build presigned replay path for replica DELETE".to_string())?;
+    let headers = HeaderMap::new();
+    let envelope = replay_forwarded_write_envelope(
+        state,
+        candidate,
+        ForwardedWriteOperation::ReplicateDeleteObject,
+    );
+    let response = forward_replica_delete_to_target(
+        state,
+        candidate.target_node.as_str(),
+        path_and_query.as_str(),
+        &headers,
+        &envelope,
+    )
+    .await
+    .map_err(|error| format!("{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: {error:?}"))?;
+    if response.status().is_success() {
+        return Ok(PendingReplicationReplayOutcome::Applied);
+    }
+
+    Err(format!(
+        "{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: replica DELETE replay returned status {}",
+        response.status().as_u16()
+    ))
+}
+
+async fn should_drop_non_version_delete_replay(
+    state: &AppState,
+    candidate: &PendingReplicationReplayCandidate,
+) -> bool {
+    if !matches!(
+        candidate.operation,
+        ReplicationMutationOperation::DeleteObject
+    ) || candidate.version_id.is_some()
+    {
+        return false;
+    }
+
+    match state
+        .storage
+        .head_object(candidate.bucket.as_str(), candidate.key.as_str())
+        .await
+    {
+        Ok(meta) => {
+            // Conservative safety posture: if we cannot prove that the pending delete is newer
+            // than the local current object, drop replay to avoid deleting data written later.
+            let Some(last_modified_unix_ms) =
+                object_last_modified_unix_ms(meta.last_modified.as_str())
+            else {
+                return true;
+            };
+            // Equal timestamps are also unsafe: storage timestamp precision may collide for a
+            // delete operation and a subsequent recreate in the same millisecond.
+            last_modified_unix_ms >= candidate.created_at_unix_ms
+        }
+        Err(StorageError::NotFound(_)) => false,
+        Err(_) => false,
+    }
+}
+
+fn object_last_modified_unix_ms(last_modified: &str) -> Option<u64> {
+    DateTime::parse_from_rfc3339(last_modified)
+        .map(|value| value.timestamp_millis() as u64)
+        .or_else(|_| {
+            DateTime::parse_from_rfc2822(last_modified).map(|value| value.timestamp_millis() as u64)
+        })
+        .ok()
+}
+
+fn replay_forwarded_write_envelope(
+    state: &AppState,
+    candidate: &PendingReplicationReplayCandidate,
+    operation: ForwardedWriteOperation,
+) -> ForwardedWriteEnvelope {
+    let placement = PlacementViewState::from_membership(
+        state.placement_epoch(),
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
+    let mut envelope = ForwardedWriteEnvelope::new(
+        operation,
+        candidate.bucket.as_str(),
+        candidate.key.as_str(),
+        state.node_id.as_ref(),
+        state.node_id.as_ref(),
+        candidate.idempotency_key.as_str(),
+        &placement,
+    );
+    envelope.visited_nodes = vec![state.node_id.to_string()];
+    envelope.hop_count = 1;
+    envelope
+}
+
+fn presigned_replica_path_and_query(
+    state: &AppState,
+    method: &'static str,
+    target_node: &str,
+    bucket: &str,
+    key: &str,
+    extra_query_params: &[(&str, &str)],
+) -> Option<String> {
+    let scheme = internal_peer_transport_scheme(state).ok()?;
+    let url = generate_presigned_url(PresignRequest {
+        method,
+        scheme,
+        host: target_node,
+        path: &format!("/{bucket}/{key}"),
+        extra_query_params,
+        access_key: state.config.access_key.as_str(),
+        secret_key: state.config.secret_key.as_str(),
+        region: state.config.region.as_str(),
+        now: chrono::Utc::now(),
+        expires_secs: 60,
+    })
+    .ok()?;
+    let parsed = reqwest::Url::parse(&url).ok()?;
+    let mut path = parsed.path().to_string();
+    if let Some(query) = parsed.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    Some(path)
+}
+
+fn checksum_algorithm_header_value(algorithm: ChecksumAlgorithm) -> &'static str {
+    match algorithm {
+        ChecksumAlgorithm::CRC32 => "CRC32",
+        ChecksumAlgorithm::CRC32C => "CRC32C",
+        ChecksumAlgorithm::SHA1 => "SHA1",
+        ChecksumAlgorithm::SHA256 => "SHA256",
     }
 }
 
@@ -299,6 +861,7 @@ fn canonical_query_string(params: &HashMap<String, String>) -> String {
 }
 
 pub(crate) async fn forward_write_to_target(
+    state: &AppState,
     method: Method,
     target: &str,
     path_and_query: &str,
@@ -306,11 +869,11 @@ pub(crate) async fn forward_write_to_target(
     body: Vec<u8>,
     envelope: &ForwardedWriteEnvelope,
 ) -> Result<Response<Body>, S3Error> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(S3Error::internal)?;
-    let url = format!("http://{target}{path_and_query}");
+    let transport =
+        build_internal_peer_http_client(state, None, std::time::Duration::from_secs(10))?;
+    attest_internal_peer_target(state, target, std::time::Duration::from_secs(10))?;
+    let url = format!("{}://{target}{path_and_query}", transport.scheme);
+    let client = transport.client;
     let mut request_builder = client.request(method, &url);
 
     for (name, value) in headers {
@@ -319,10 +882,7 @@ pub(crate) async fn forward_write_to_target(
         }
         request_builder = request_builder.header(name, value);
     }
-    request_builder = request_builder.header(
-        INTERNAL_FORWARDED_BY_HEADER,
-        envelope.visited_nodes.join(","),
-    );
+    request_builder = request_builder.header(FORWARDED_BY_HEADER, envelope.visited_nodes.join(","));
     if !headers.contains_key(INTERNAL_FORWARD_EPOCH_HEADER) {
         request_builder = request_builder.header(
             INTERNAL_FORWARD_EPOCH_HEADER,
@@ -371,17 +931,30 @@ pub(crate) async fn forward_write_to_target(
         INTERNAL_TRUSTED_FORWARD_IDEMPOTENCY_KEY_HEADER,
         &envelope.idempotency_key,
     );
+    if let Some(token) = state
+        .config
+        .cluster_auth_token()
+        .filter(|token| !token.trim().is_empty())
+    {
+        request_builder = request_builder.header(INTERNAL_AUTH_TOKEN_HEADER, token);
+    }
 
     if !body.is_empty() {
         request_builder = request_builder.body(body);
     }
 
     let forwarded = request_builder.send().await.map_err(|err| {
-        S3Error::access_denied(&format!(
+        S3Error::service_unavailable(&format!(
             "Write forwarding to primary owner failed ({target}): {err}"
         ))
     })?;
     let status = forwarded.status();
+    if is_internal_forwarding_transport_reject_status(status) {
+        return Err(S3Error::service_unavailable(&format!(
+            "Write forwarding to primary owner failed ({target}): upstream peer rejected internal forwarding request with status {}",
+            status.as_u16()
+        )));
+    }
     let forwarded_headers = forwarded.headers().clone();
     let forwarded_body = forwarded.bytes().await.map_err(S3Error::internal)?;
 
@@ -396,7 +969,12 @@ pub(crate) async fn forward_write_to_target(
     Ok(response)
 }
 
+fn is_internal_forwarding_transport_reject_status(status: StatusCode) -> bool {
+    matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+}
+
 pub(crate) async fn forward_replica_put_to_target(
+    state: &AppState,
     target: &str,
     path_and_query: &str,
     headers: &HeaderMap,
@@ -418,6 +996,7 @@ pub(crate) async fn forward_replica_put_to_target(
         }
     }
     forward_write_to_target(
+        state,
         Method::PUT,
         target,
         path_and_query,
@@ -429,6 +1008,7 @@ pub(crate) async fn forward_replica_put_to_target(
 }
 
 pub(crate) async fn forward_replica_delete_to_target(
+    state: &AppState,
     target: &str,
     path_and_query: &str,
     headers: &HeaderMap,
@@ -440,6 +1020,7 @@ pub(crate) async fn forward_replica_delete_to_target(
         HeaderValue::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_DELETE),
     );
     forward_write_to_target(
+        state,
         Method::DELETE,
         target,
         path_and_query,
@@ -451,6 +1032,7 @@ pub(crate) async fn forward_replica_delete_to_target(
 }
 
 pub(crate) async fn forward_replica_head_to_target(
+    state: &AppState,
     target: &str,
     path_and_query: &str,
     headers: &HeaderMap,
@@ -462,6 +1044,7 @@ pub(crate) async fn forward_replica_head_to_target(
         HeaderValue::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_HEAD),
     );
     forward_write_to_target(
+        state,
         Method::HEAD,
         target,
         path_and_query,
@@ -472,26 +1055,61 @@ pub(crate) async fn forward_replica_head_to_target(
     .await
 }
 
-pub(crate) fn is_internal_replica_put_request(headers: &HeaderMap) -> bool {
-    is_internal_replica_operation_request(headers, INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_PUT)
-}
-
-pub(crate) fn is_internal_replica_delete_request(headers: &HeaderMap) -> bool {
+pub(crate) fn is_internal_replica_put_request(
+    headers: &HeaderMap,
+    cluster_auth_token: Option<&str>,
+    local_node_id: &str,
+    cluster_peers: &[String],
+) -> bool {
     is_internal_replica_operation_request(
         headers,
-        INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_DELETE,
+        INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_PUT,
+        cluster_auth_token,
+        local_node_id,
+        cluster_peers,
     )
 }
 
-pub(crate) fn internal_replica_version_id(headers: &HeaderMap) -> Option<String> {
-    if !is_internal_replica_put_request(headers) {
+pub(crate) fn is_internal_replica_delete_request(
+    headers: &HeaderMap,
+    cluster_auth_token: Option<&str>,
+    local_node_id: &str,
+    cluster_peers: &[String],
+) -> bool {
+    is_internal_replica_operation_request(
+        headers,
+        INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_DELETE,
+        cluster_auth_token,
+        local_node_id,
+        cluster_peers,
+    )
+}
+
+pub(crate) fn internal_replica_version_id(
+    headers: &HeaderMap,
+    cluster_auth_token: Option<&str>,
+    local_node_id: &str,
+    cluster_peers: &[String],
+) -> Option<String> {
+    if !is_internal_replica_put_request(headers, cluster_auth_token, local_node_id, cluster_peers) {
         return None;
     }
     parse_last_header_string(headers, INTERNAL_TRUSTED_FORWARD_VERSION_ID_HEADER)
 }
 
-fn is_internal_replica_operation_request(headers: &HeaderMap, operation: &str) -> bool {
-    if !headers.contains_key(INTERNAL_FORWARDED_BY_HEADER) {
+fn is_internal_replica_operation_request(
+    headers: &HeaderMap,
+    operation: &str,
+    cluster_auth_token: Option<&str>,
+    local_node_id: &str,
+    cluster_peers: &[String],
+) -> bool {
+    if !internal_forward_request_is_trusted(
+        headers,
+        cluster_auth_token,
+        local_node_id,
+        cluster_peers,
+    ) {
         return false;
     }
     parse_last_header_string(headers, INTERNAL_TRUSTED_FORWARD_OPERATION_HEADER)
@@ -503,53 +1121,22 @@ fn should_skip_forwarded_request_header(name: &header::HeaderName) -> bool {
     name == header::CONNECTION
         || name == header::TRANSFER_ENCODING
         || name == header::CONTENT_LENGTH
+        || name.as_str().eq_ignore_ascii_case(FORWARDED_BY_HEADER)
         || name
             .as_str()
-            .eq_ignore_ascii_case(INTERNAL_FORWARDED_BY_HEADER)
+            .eq_ignore_ascii_case(INTERNAL_AUTH_TOKEN_HEADER)
 }
 
 fn should_skip_forwarded_response_header(name: &header::HeaderName) -> bool {
     name == header::TRANSFER_ENCODING
         || name == header::CONNECTION
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_FORWARDED_BY_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_FORWARD_EPOCH_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_FORWARD_VIEW_ID_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_FORWARD_HOP_COUNT_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_FORWARD_MAX_HOPS_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_FORWARD_IDEMPOTENCY_KEY_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_TRUSTED_FORWARD_EPOCH_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_TRUSTED_FORWARD_VIEW_ID_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_TRUSTED_FORWARD_HOP_COUNT_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_TRUSTED_FORWARD_MAX_HOPS_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_TRUSTED_FORWARD_IDEMPOTENCY_KEY_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_TRUSTED_FORWARD_OPERATION_HEADER)
-        || name
-            .as_str()
-            .eq_ignore_ascii_case(INTERNAL_TRUSTED_FORWARD_VERSION_ID_HEADER)
+        || is_internal_forwarding_protocol_header(name)
+}
+
+fn is_internal_forwarding_protocol_header(name: &header::HeaderName) -> bool {
+    INTERNAL_FORWARDING_PROTOCOL_HEADERS
+        .iter()
+        .any(|header_name| name.as_str().eq_ignore_ascii_case(header_name))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -565,8 +1152,14 @@ fn forwarded_write_envelope_from_headers(
     key: &str,
     node_id: &str,
     placement: &PlacementViewState,
+    cluster_auth_token: Option<&str>,
 ) -> ForwardedWriteEnvelope {
-    let is_forwarded_request = headers.contains_key(INTERNAL_FORWARDED_BY_HEADER);
+    let is_forwarded_request = internal_forward_request_is_trusted(
+        headers,
+        cluster_auth_token,
+        node_id,
+        placement.members.as_slice(),
+    );
     let mut envelope = ForwardedWriteEnvelope::new(
         operation,
         bucket,
@@ -609,6 +1202,22 @@ fn forwarded_write_envelope_from_headers(
     envelope
 }
 
+fn internal_forward_request_is_trusted(
+    headers: &HeaderMap,
+    cluster_auth_token: Option<&str>,
+    local_node_id: &str,
+    cluster_peers: &[String],
+) -> bool {
+    authenticate_forwarded_request(
+        headers,
+        FORWARDED_BY_HEADER,
+        cluster_auth_token,
+        local_node_id,
+        cluster_peers,
+    )
+    .trusted
+}
+
 fn parse_internal_forwarded_operation(
     headers: &HeaderMap,
     is_forwarded_request: bool,
@@ -642,7 +1251,7 @@ fn forward_idempotency_key(headers: &HeaderMap, is_forwarded_request: bool) -> S
 
 fn header_forwarded_by_nodes(headers: &HeaderMap) -> Vec<String> {
     headers
-        .get(INTERNAL_FORWARDED_BY_HEADER)
+        .get(FORWARDED_BY_HEADER)
         .and_then(|value| value.to_str().ok())
         .map(|value| {
             value
@@ -959,7 +1568,17 @@ pub(crate) async fn body_to_reader(
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use tempfile::TempDir;
     use tokio::io::AsyncReadExt;
+
+    use crate::config::{Config, MembershipProtocol, WriteDurabilityMode};
+    use crate::metadata::ClusterMetadataListingStrategy;
+    use crate::server::AppState;
+    use crate::storage::BucketMeta;
+    use crate::storage::placement::{
+        PendingReplicationOperation, PendingReplicationQueue, load_pending_replication_queue,
+        persist_pending_replication_queue,
+    };
 
     const TEST_PLACEMENT_EPOCH: u64 = 42;
 
@@ -1382,13 +2001,13 @@ mod tests {
     fn ensure_local_write_owner_rejects_non_owner_writes_with_forward_target() {
         let err = ensure_local_write_owner(&distributed_forwarding_hint())
             .expect_err("non-owner writes should be rejected");
-        assert_eq!(err.code.as_str(), "AccessDenied");
+        assert_eq!(err.code.as_str(), "ServiceUnavailable");
         assert!(err.message.contains("non-owner node"));
         assert!(err.message.contains("node-b:9000"));
     }
 
     #[test]
-    fn should_skip_forwarded_request_header_skips_only_transport_and_loop_headers() {
+    fn should_skip_forwarded_request_header_skips_transport_loop_and_auth_headers() {
         assert!(should_skip_forwarded_request_header(&header::CONNECTION));
         assert!(should_skip_forwarded_request_header(
             &header::TRANSFER_ENCODING
@@ -1397,7 +2016,10 @@ mod tests {
             &header::CONTENT_LENGTH
         ));
         assert!(should_skip_forwarded_request_header(
-            &header::HeaderName::from_static(INTERNAL_FORWARDED_BY_HEADER)
+            &header::HeaderName::from_static(FORWARDED_BY_HEADER)
+        ));
+        assert!(should_skip_forwarded_request_header(
+            &header::HeaderName::from_static(INTERNAL_AUTH_TOKEN_HEADER)
         ));
         assert!(!should_skip_forwarded_request_header(
             &header::HeaderName::from_static(INTERNAL_FORWARD_EPOCH_HEADER)
@@ -1426,7 +2048,7 @@ mod tests {
             &header::TRANSFER_ENCODING
         ));
         assert!(should_skip_forwarded_response_header(
-            &header::HeaderName::from_static(INTERNAL_FORWARDED_BY_HEADER)
+            &header::HeaderName::from_static(FORWARDED_BY_HEADER)
         ));
         assert!(should_skip_forwarded_response_header(
             &header::HeaderName::from_static(INTERNAL_FORWARD_EPOCH_HEADER)
@@ -1461,8 +2083,27 @@ mod tests {
         assert!(should_skip_forwarded_response_header(
             &header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_HEADER)
         ));
+        assert!(should_skip_forwarded_response_header(
+            &header::HeaderName::from_static(INTERNAL_AUTH_TOKEN_HEADER)
+        ));
         assert!(!should_skip_forwarded_response_header(
             &header::HeaderName::from_static("etag")
+        ));
+    }
+
+    #[test]
+    fn internal_forwarding_transport_reject_status_identifies_auth_rejects() {
+        assert!(is_internal_forwarding_transport_reject_status(
+            StatusCode::UNAUTHORIZED
+        ));
+        assert!(is_internal_forwarding_transport_reject_status(
+            StatusCode::FORBIDDEN
+        ));
+        assert!(!is_internal_forwarding_transport_reject_status(
+            StatusCode::NOT_FOUND
+        ));
+        assert!(!is_internal_forwarding_transport_reject_status(
+            StatusCode::SERVICE_UNAVAILABLE
         ));
     }
 
@@ -1501,6 +2142,7 @@ mod tests {
             "docs/object.txt",
             "node-a:9000",
             &placement,
+            None,
         );
 
         assert_eq!(envelope.placement_epoch, TEST_PLACEMENT_EPOCH);
@@ -1513,7 +2155,7 @@ mod tests {
     #[test]
     fn write_forward_target_rejects_looped_non_owner_request() {
         let mut headers = HeaderMap::new();
-        headers.insert(INTERNAL_FORWARDED_BY_HEADER, "node-a:9000".parse().unwrap());
+        headers.insert(FORWARDED_BY_HEADER, "node-a:9000".parse().unwrap());
         let peers = ["node-b:9000".to_string()];
         let placement =
             PlacementViewState::from_membership(TEST_PLACEMENT_EPOCH, "node-a:9000", &peers);
@@ -1526,9 +2168,10 @@ mod tests {
             &headers,
             "node-a:9000",
             &placement,
+            None,
         )
         .expect_err("forward loop should be rejected");
-        assert_eq!(err.code.as_str(), "AccessDenied");
+        assert_eq!(err.code.as_str(), "ServiceUnavailable");
         assert!(err.message.contains("loop"));
     }
 
@@ -1552,34 +2195,36 @@ mod tests {
         let placement =
             PlacementViewState::from_membership(TEST_PLACEMENT_EPOCH, local_node, &peers);
 
-        let target = write_forward_target(
-            "bucket-a",
-            &key,
+        let primary_owner = hint.primary_owner.clone().expect("primary should exist");
+        for operation in [
             ForwardedWriteOperation::PutObject,
-            &hint,
-            &headers,
-            local_node,
-            &placement,
-        )
-        .expect("forward target resolution should succeed")
-        .expect("non-primary key should return forward target");
+            ForwardedWriteOperation::GetObject,
+            ForwardedWriteOperation::HeadObject,
+        ] {
+            let target = write_forward_target(
+                "bucket-a",
+                &key,
+                operation.clone(),
+                &hint,
+                &headers,
+                local_node,
+                &placement,
+                None,
+            )
+            .expect("forward target resolution should succeed")
+            .expect("non-primary key should return forward target");
 
-        assert_eq!(
-            target.target,
-            hint.primary_owner.expect("primary should exist")
-        );
-        assert_eq!(
-            target.envelope.operation,
-            ForwardedWriteOperation::PutObject
-        );
-        assert_eq!(target.envelope.bucket, "bucket-a");
-        assert_eq!(target.envelope.key, key);
-        assert_eq!(target.envelope.hop_count, 1);
-        assert_eq!(target.envelope.max_hops, FORWARD_MAX_HOPS_DEFAULT);
-        assert_eq!(target.envelope.visited_nodes, vec![local_node.to_string()]);
-        assert_eq!(target.envelope.placement_epoch, TEST_PLACEMENT_EPOCH);
-        assert!(!target.envelope.placement_view_id.is_empty());
-        assert!(!target.envelope.idempotency_key.is_empty());
+            assert_eq!(target.target, primary_owner);
+            assert_eq!(target.envelope.operation, operation);
+            assert_eq!(target.envelope.bucket, "bucket-a");
+            assert_eq!(target.envelope.key, key);
+            assert_eq!(target.envelope.hop_count, 1);
+            assert_eq!(target.envelope.max_hops, FORWARD_MAX_HOPS_DEFAULT);
+            assert_eq!(target.envelope.visited_nodes, vec![local_node.to_string()]);
+            assert_eq!(target.envelope.placement_epoch, TEST_PLACEMENT_EPOCH);
+            assert!(!target.envelope.placement_view_id.is_empty());
+            assert!(!target.envelope.idempotency_key.is_empty());
+        }
     }
 
     #[test]
@@ -1599,7 +2244,7 @@ mod tests {
             .expect("expected at least one non-primary key");
 
         let mut headers = HeaderMap::new();
-        headers.insert(INTERNAL_FORWARDED_BY_HEADER, "node-x:9000".parse().unwrap());
+        headers.insert(FORWARDED_BY_HEADER, "node-x:9000".parse().unwrap());
         headers.insert(
             INTERNAL_FORWARD_VIEW_ID_HEADER,
             "wrong-view".parse().unwrap(),
@@ -1614,19 +2259,17 @@ mod tests {
             &headers,
             local_node,
             &placement,
+            None,
         )
         .expect_err("view mismatch should be rejected");
-        assert_eq!(err.code.as_str(), "AccessDenied");
+        assert_eq!(err.code.as_str(), "ServiceUnavailable");
         assert!(err.message.contains("view mismatch"));
     }
 
     #[test]
     fn forwarded_write_envelope_prefers_trusted_internal_headers_for_forwarded_requests() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            INTERNAL_FORWARDED_BY_HEADER,
-            "node-a:9000".parse().expect("header"),
-        );
+        headers.insert(FORWARDED_BY_HEADER, "node-a:9000".parse().expect("header"));
         headers.insert(
             INTERNAL_FORWARD_EPOCH_HEADER,
             "999".parse().expect("header"),
@@ -1680,6 +2323,7 @@ mod tests {
             "docs/object.txt",
             "node-a:9000",
             &placement,
+            None,
         );
 
         assert_eq!(envelope.placement_epoch, 42);
@@ -1690,12 +2334,212 @@ mod tests {
     }
 
     #[test]
-    fn forwarded_write_envelope_uses_trusted_internal_operation_for_replica_writes() {
+    fn forwarded_write_envelope_ignores_forwarded_metadata_when_auth_token_is_missing() {
+        let mut headers = HeaderMap::new();
+        headers.insert(FORWARDED_BY_HEADER, "node-a:9000".parse().expect("header"));
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_EPOCH_HEADER,
+            "42".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_VIEW_ID_HEADER,
+            "trusted-view".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_HOP_COUNT_HEADER,
+            "2".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_MAX_HOPS_HEADER,
+            "6".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_IDEMPOTENCY_KEY_HEADER,
+            "trusted-idempotency".parse().expect("header"),
+        );
+
+        let placement = PlacementViewState::from_membership(
+            TEST_PLACEMENT_EPOCH,
+            "node-a:9000",
+            &["node-b:9000".to_string()],
+        );
+        let envelope = forwarded_write_envelope_from_headers(
+            &headers,
+            ForwardedWriteOperation::PutObject,
+            "bucket",
+            "docs/object.txt",
+            "node-a:9000",
+            &placement,
+            Some("shared-secret"),
+        );
+
+        assert_eq!(envelope.placement_epoch, TEST_PLACEMENT_EPOCH);
+        assert_eq!(envelope.placement_view_id, placement.view_id);
+        assert_eq!(envelope.hop_count, 0);
+        assert_eq!(envelope.max_hops, FORWARD_MAX_HOPS_DEFAULT);
+        assert_ne!(envelope.idempotency_key, "trusted-idempotency");
+    }
+
+    #[test]
+    fn forwarded_write_envelope_uses_forwarded_metadata_when_auth_token_matches() {
+        let mut headers = HeaderMap::new();
+        headers.insert(FORWARDED_BY_HEADER, "node-b:9000".parse().expect("header"));
+        headers.insert(
+            INTERNAL_AUTH_TOKEN_HEADER,
+            "shared-secret".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_EPOCH_HEADER,
+            "42".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_VIEW_ID_HEADER,
+            "trusted-view".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_HOP_COUNT_HEADER,
+            "2".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_MAX_HOPS_HEADER,
+            "6".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_IDEMPOTENCY_KEY_HEADER,
+            "trusted-idempotency".parse().expect("header"),
+        );
+
+        let placement = PlacementViewState::from_membership(
+            TEST_PLACEMENT_EPOCH,
+            "node-a:9000",
+            &["node-b:9000".to_string()],
+        );
+        let envelope = forwarded_write_envelope_from_headers(
+            &headers,
+            ForwardedWriteOperation::PutObject,
+            "bucket",
+            "docs/object.txt",
+            "node-a:9000",
+            &placement,
+            Some("shared-secret"),
+        );
+
+        assert_eq!(envelope.placement_epoch, 42);
+        assert_eq!(envelope.placement_view_id, "trusted-view");
+        assert_eq!(envelope.hop_count, 2);
+        assert_eq!(envelope.max_hops, 6);
+        assert_eq!(envelope.idempotency_key, "trusted-idempotency");
+    }
+
+    #[test]
+    fn forwarded_write_envelope_ignores_forwarded_metadata_when_sender_not_in_peer_allowlist() {
+        let mut headers = HeaderMap::new();
+        headers.insert(FORWARDED_BY_HEADER, "node-x:9000".parse().expect("header"));
+        headers.insert(
+            INTERNAL_AUTH_TOKEN_HEADER,
+            "shared-secret".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_EPOCH_HEADER,
+            "42".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_VIEW_ID_HEADER,
+            "trusted-view".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_HOP_COUNT_HEADER,
+            "2".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_MAX_HOPS_HEADER,
+            "6".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_IDEMPOTENCY_KEY_HEADER,
+            "trusted-idempotency".parse().expect("header"),
+        );
+
+        let placement = PlacementViewState::from_membership(
+            TEST_PLACEMENT_EPOCH,
+            "node-a:9000",
+            &["node-b:9000".to_string()],
+        );
+        let envelope = forwarded_write_envelope_from_headers(
+            &headers,
+            ForwardedWriteOperation::PutObject,
+            "bucket",
+            "docs/object.txt",
+            "node-a:9000",
+            &placement,
+            Some("shared-secret"),
+        );
+
+        assert_eq!(envelope.placement_epoch, TEST_PLACEMENT_EPOCH);
+        assert_eq!(envelope.placement_view_id, placement.view_id);
+        assert_eq!(envelope.hop_count, 0);
+        assert_eq!(envelope.max_hops, FORWARD_MAX_HOPS_DEFAULT);
+        assert_ne!(envelope.idempotency_key, "trusted-idempotency");
+    }
+
+    #[test]
+    fn forwarded_write_envelope_ignores_forwarded_metadata_when_chain_has_duplicate_hops() {
         let mut headers = HeaderMap::new();
         headers.insert(
-            INTERNAL_FORWARDED_BY_HEADER,
-            "node-a:9000".parse().expect("header"),
+            FORWARDED_BY_HEADER,
+            "node-a:9000,node-a:9000".parse().expect("header"),
         );
+        headers.insert(
+            INTERNAL_AUTH_TOKEN_HEADER,
+            "shared-secret".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_EPOCH_HEADER,
+            "42".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_VIEW_ID_HEADER,
+            "trusted-view".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_HOP_COUNT_HEADER,
+            "2".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_MAX_HOPS_HEADER,
+            "6".parse().expect("header"),
+        );
+        headers.insert(
+            INTERNAL_TRUSTED_FORWARD_IDEMPOTENCY_KEY_HEADER,
+            "trusted-idempotency".parse().expect("header"),
+        );
+
+        let placement = PlacementViewState::from_membership(
+            TEST_PLACEMENT_EPOCH,
+            "node-a:9000",
+            &["node-b:9000".to_string()],
+        );
+        let envelope = forwarded_write_envelope_from_headers(
+            &headers,
+            ForwardedWriteOperation::PutObject,
+            "bucket",
+            "docs/object.txt",
+            "node-a:9000",
+            &placement,
+            Some("shared-secret"),
+        );
+
+        assert_eq!(envelope.placement_epoch, TEST_PLACEMENT_EPOCH);
+        assert_eq!(envelope.placement_view_id, placement.view_id);
+        assert_eq!(envelope.hop_count, 0);
+        assert_eq!(envelope.max_hops, FORWARD_MAX_HOPS_DEFAULT);
+        assert_ne!(envelope.idempotency_key, "trusted-idempotency");
+    }
+
+    #[test]
+    fn forwarded_write_envelope_uses_trusted_internal_operation_for_replica_writes() {
+        let mut headers = HeaderMap::new();
+        headers.insert(FORWARDED_BY_HEADER, "node-a:9000".parse().expect("header"));
         headers.insert(
             INTERNAL_TRUSTED_FORWARD_OPERATION_HEADER,
             INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_PUT
@@ -1715,6 +2559,7 @@ mod tests {
             "docs/object.txt",
             "node-a:9000",
             &placement,
+            None,
         );
 
         assert_eq!(
@@ -1726,10 +2571,7 @@ mod tests {
     #[test]
     fn forwarded_write_envelope_uses_trusted_internal_operation_for_replica_heads() {
         let mut headers = HeaderMap::new();
-        headers.insert(
-            INTERNAL_FORWARDED_BY_HEADER,
-            "node-a:9000".parse().expect("header"),
-        );
+        headers.insert(FORWARDED_BY_HEADER, "node-a:9000".parse().expect("header"));
         headers.insert(
             INTERNAL_TRUSTED_FORWARD_OPERATION_HEADER,
             INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_HEAD
@@ -1749,6 +2591,7 @@ mod tests {
             "docs/object.txt",
             "node-a:9000",
             &placement,
+            None,
         );
 
         assert_eq!(
@@ -1766,14 +2609,27 @@ mod tests {
                 .parse()
                 .expect("header"),
         );
-        assert!(!is_internal_replica_put_request(&headers));
+        let peers = ["node-b:9000".to_string()];
+        assert!(!is_internal_replica_put_request(
+            &headers,
+            None,
+            "node-a:9000",
+            &peers,
+        ));
 
-        headers.insert(
-            INTERNAL_FORWARDED_BY_HEADER,
-            "node-a:9000".parse().expect("header"),
-        );
-        assert!(is_internal_replica_put_request(&headers));
-        assert!(!is_internal_replica_delete_request(&headers));
+        headers.insert(FORWARDED_BY_HEADER, "node-a:9000".parse().expect("header"));
+        assert!(is_internal_replica_put_request(
+            &headers,
+            None,
+            "node-a:9000",
+            &peers,
+        ));
+        assert!(!is_internal_replica_delete_request(
+            &headers,
+            None,
+            "node-a:9000",
+            &peers,
+        ));
     }
 
     #[test]
@@ -1785,14 +2641,27 @@ mod tests {
                 .parse()
                 .expect("header"),
         );
-        assert!(!is_internal_replica_delete_request(&headers));
+        let peers = ["node-b:9000".to_string()];
+        assert!(!is_internal_replica_delete_request(
+            &headers,
+            None,
+            "node-a:9000",
+            &peers,
+        ));
 
-        headers.insert(
-            INTERNAL_FORWARDED_BY_HEADER,
-            "node-a:9000".parse().expect("header"),
-        );
-        assert!(is_internal_replica_delete_request(&headers));
-        assert!(!is_internal_replica_put_request(&headers));
+        headers.insert(FORWARDED_BY_HEADER, "node-a:9000".parse().expect("header"));
+        assert!(is_internal_replica_delete_request(
+            &headers,
+            None,
+            "node-a:9000",
+            &peers,
+        ));
+        assert!(!is_internal_replica_put_request(
+            &headers,
+            None,
+            "node-a:9000",
+            &peers,
+        ));
     }
 
     #[test]
@@ -1945,5 +2814,307 @@ mod tests {
                 .and_then(|v| v.to_str().ok()),
             Some("10")
         );
+    }
+
+    #[test]
+    fn object_last_modified_unix_ms_parses_supported_formats() {
+        let rfc3339 = object_last_modified_unix_ms("2026-03-03T12:34:56Z");
+        assert!(rfc3339.is_some());
+
+        let rfc2822 = object_last_modified_unix_ms("Tue, 03 Mar 2026 12:34:56 +0000");
+        assert!(rfc2822.is_some());
+    }
+
+    #[test]
+    fn object_last_modified_unix_ms_rejects_invalid_values() {
+        assert!(object_last_modified_unix_ms("not-a-date").is_none());
+        assert!(object_last_modified_unix_ms("").is_none());
+    }
+
+    async fn distributed_replay_test_state() -> (TempDir, AppState) {
+        let temp_dir = TempDir::new().expect("tempdir should be creatable");
+        let config = Config {
+            port: 0,
+            address: "127.0.0.1".to_string(),
+            internal_bind_addr: None,
+            data_dir: temp_dir.path().to_string_lossy().to_string(),
+            access_key: "minioadmin".to_string(),
+            secret_key: "minioadmin".to_string(),
+            additional_credentials: Vec::new(),
+            region: "us-east-1".to_string(),
+            node_id: "node-a:9000".to_string(),
+            cluster_peers: vec!["node-b:9000".to_string()],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            write_durability_mode: WriteDurabilityMode::DegradedSuccess,
+            metadata_listing_strategy: ClusterMetadataListingStrategy::LocalNodeOnly,
+            cluster_auth_token: None,
+            cluster_peer_tls_cert_path: None,
+            cluster_peer_tls_key_path: None,
+            cluster_peer_tls_ca_path: None,
+            cluster_peer_tls_cert_sha256: None,
+            erasure_coding: false,
+            chunk_size: 10 * 1024 * 1024,
+            parity_shards: 0,
+            min_disk_headroom_bytes: 0,
+        };
+        let state = AppState::from_config(config)
+            .await
+            .expect("app state should be creatable");
+        let bucket = BucketMeta {
+            name: "photos".to_string(),
+            created_at: "2026-03-03T00:00:00.000Z".to_string(),
+            region: "us-east-1".to_string(),
+            versioning: false,
+        };
+        state
+            .storage
+            .create_bucket(&bucket)
+            .await
+            .expect("bucket create should succeed");
+        (temp_dir, state)
+    }
+
+    fn persist_single_pending_replication_target(
+        state: &AppState,
+        idempotency_key: &str,
+        operation: ReplicationMutationOperation,
+        key: &str,
+        target_node: &str,
+        version_id: Option<&str>,
+        created_at_unix_ms: u64,
+    ) {
+        let queue_path = pending_replication_queue_path(state.config.data_dir.as_str());
+        let peers = state.active_cluster_peers();
+        let placement = PlacementViewState::from_membership(
+            state.placement_epoch(),
+            state.node_id.as_ref(),
+            peers.as_slice(),
+        );
+        let pending_operation = PendingReplicationOperation::new(
+            idempotency_key,
+            operation,
+            "photos",
+            key,
+            version_id,
+            state.node_id.as_ref(),
+            &placement,
+            &[target_node.to_string()],
+            created_at_unix_ms,
+        )
+        .expect("pending operation should be created");
+        let queue = PendingReplicationQueue {
+            operations: vec![pending_operation],
+        };
+        persist_pending_replication_queue(queue_path.as_path(), &queue)
+            .expect("queue should persist");
+    }
+
+    #[tokio::test]
+    async fn replay_pending_replication_backlog_drops_stale_non_version_delete() {
+        let (_temp_dir, state) = distributed_replay_test_state().await;
+        state
+            .storage
+            .put_object(
+                "photos",
+                "docs/stale-delete.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"current-data".to_vec())),
+                None,
+            )
+            .await
+            .expect("seed object write should succeed");
+        persist_single_pending_replication_target(
+            &state,
+            "replay-delete-stale",
+            ReplicationMutationOperation::DeleteObject,
+            "docs/stale-delete.txt",
+            "node-b:9000",
+            None,
+            0,
+        );
+
+        let summary = replay_pending_replication_backlog_once(&state, 16, 30_000)
+            .await
+            .expect("replay cycle should succeed");
+        assert_eq!(
+            summary,
+            PendingReplicationReplaySummary {
+                scanned: 1,
+                leased: 1,
+                acknowledged: 1,
+                failed: 0,
+                skipped: 1,
+            }
+        );
+
+        let queue_path = pending_replication_queue_path(state.config.data_dir.as_str());
+        let queue =
+            load_pending_replication_queue(queue_path.as_path()).expect("queue should load");
+        assert!(queue.operations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_pending_replication_backlog_drops_non_version_delete_when_timestamp_equals_current_object()
+     {
+        let (_temp_dir, state) = distributed_replay_test_state().await;
+        state
+            .storage
+            .put_object(
+                "photos",
+                "docs/equal-timestamp-delete.txt",
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"current-data".to_vec())),
+                None,
+            )
+            .await
+            .expect("seed object write should succeed");
+        let current_meta = state
+            .storage
+            .head_object("photos", "docs/equal-timestamp-delete.txt")
+            .await
+            .expect("seed object metadata should be readable");
+        let current_last_modified_unix_ms =
+            object_last_modified_unix_ms(current_meta.last_modified.as_str())
+                .expect("seed object timestamp should parse");
+
+        persist_single_pending_replication_target(
+            &state,
+            "replay-delete-equal-timestamp",
+            ReplicationMutationOperation::DeleteObject,
+            "docs/equal-timestamp-delete.txt",
+            "node-b:9000",
+            None,
+            current_last_modified_unix_ms,
+        );
+
+        let summary = replay_pending_replication_backlog_once(&state, 16, 30_000)
+            .await
+            .expect("replay cycle should succeed");
+        assert_eq!(
+            summary,
+            PendingReplicationReplaySummary {
+                scanned: 1,
+                leased: 1,
+                acknowledged: 1,
+                failed: 0,
+                skipped: 1,
+            }
+        );
+
+        let queue_path = pending_replication_queue_path(state.config.data_dir.as_str());
+        let queue =
+            load_pending_replication_queue(queue_path.as_path()).expect("queue should load");
+        assert!(queue.operations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_pending_replication_backlog_drops_put_when_source_object_is_missing() {
+        let (_temp_dir, state) = distributed_replay_test_state().await;
+        persist_single_pending_replication_target(
+            &state,
+            "replay-put-missing-source",
+            ReplicationMutationOperation::PutObject,
+            "docs/missing-source.txt",
+            "node-b:9000",
+            None,
+            0,
+        );
+
+        let summary = replay_pending_replication_backlog_once(&state, 16, 30_000)
+            .await
+            .expect("replay cycle should succeed");
+        assert_eq!(
+            summary,
+            PendingReplicationReplaySummary {
+                scanned: 1,
+                leased: 1,
+                acknowledged: 1,
+                failed: 0,
+                skipped: 1,
+            }
+        );
+
+        let queue_path = pending_replication_queue_path(state.config.data_dir.as_str());
+        let queue =
+            load_pending_replication_queue(queue_path.as_path()).expect("queue should load");
+        assert!(queue.operations.is_empty());
+    }
+
+    fn find_key_with_target_owner_and_local_excluded(
+        local_node_id: &str,
+        peers: &[String],
+        target_node: &str,
+    ) -> String {
+        let membership_count = peers.len().saturating_add(1);
+        let replica_count = write_replica_count_for_membership_count(membership_count);
+        for attempt in 0..10_000 {
+            let key = format!("docs/replay-topology-shift-{attempt}.txt");
+            let plan = crate::storage::placement::object_write_plan_with_self(
+                &key,
+                local_node_id,
+                peers,
+                replica_count,
+            );
+            let local_is_owner = plan.owners.iter().any(|owner| owner == local_node_id);
+            let target_is_owner = plan.owners.iter().any(|owner| owner == target_node);
+            if !local_is_owner && target_is_owner {
+                return key;
+            }
+        }
+        panic!("failed to find key where local node is excluded from owner set");
+    }
+
+    #[tokio::test]
+    async fn replay_pending_replication_backlog_drops_when_local_node_is_no_longer_owner() {
+        let (_temp_dir, state) = distributed_replay_test_state().await;
+        let shifted_peers = vec!["node-b:9000".to_string(), "node-c:9000".to_string()];
+        let key = find_key_with_target_owner_and_local_excluded(
+            state.node_id.as_ref(),
+            shifted_peers.as_slice(),
+            "node-b:9000",
+        );
+        state
+            .storage
+            .put_object(
+                "photos",
+                key.as_str(),
+                "text/plain",
+                Box::pin(std::io::Cursor::new(b"replay-payload".to_vec())),
+                None,
+            )
+            .await
+            .expect("seed object write should succeed");
+        persist_single_pending_replication_target(
+            &state,
+            "replay-local-not-owner",
+            ReplicationMutationOperation::PutObject,
+            key.as_str(),
+            "node-b:9000",
+            None,
+            unix_ms_now(),
+        );
+        state
+            .apply_membership_peers(shifted_peers)
+            .await
+            .expect("membership transition should succeed");
+
+        let summary = replay_pending_replication_backlog_once(&state, 16, 30_000)
+            .await
+            .expect("replay cycle should succeed");
+        assert_eq!(
+            summary,
+            PendingReplicationReplaySummary {
+                scanned: 1,
+                leased: 1,
+                acknowledged: 1,
+                failed: 0,
+                skipped: 1,
+            }
+        );
+
+        let queue_path = pending_replication_queue_path(state.config.data_dir.as_str());
+        let queue =
+            load_pending_replication_queue(queue_path.as_path()).expect("queue should load");
+        assert!(queue.operations.is_empty());
     }
 }

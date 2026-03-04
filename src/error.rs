@@ -31,6 +31,7 @@ pub enum S3ErrorCode {
     EntityTooSmall,
     ExpiredPresignedUrl,
     SignatureDoesNotMatch,
+    ServiceUnavailable,
 }
 
 impl S3ErrorCode {
@@ -56,6 +57,7 @@ impl S3ErrorCode {
             Self::EntityTooSmall => "EntityTooSmall",
             Self::ExpiredPresignedUrl => "AccessDenied",
             Self::SignatureDoesNotMatch => "SignatureDoesNotMatch",
+            Self::ServiceUnavailable => "ServiceUnavailable",
         }
     }
 
@@ -74,6 +76,7 @@ impl S3ErrorCode {
             Self::InternalError => StatusCode::INTERNAL_SERVER_ERROR,
             Self::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
+            Self::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::BAD_REQUEST,
         }
     }
@@ -207,6 +210,14 @@ impl S3Error {
         }
     }
 
+    pub fn service_unavailable(msg: &str) -> Self {
+        Self {
+            code: S3ErrorCode::ServiceUnavailable,
+            message: msg.to_string(),
+            resource: None,
+        }
+    }
+
     pub fn signature_mismatch() -> Self {
         Self {
             code: S3ErrorCode::SignatureDoesNotMatch,
@@ -321,6 +332,10 @@ mod tests {
         assert_eq!(
             S3ErrorCode::InvalidRange.status_code(),
             StatusCode::RANGE_NOT_SATISFIABLE
+        );
+        assert_eq!(
+            S3ErrorCode::ServiceUnavailable.status_code(),
+            StatusCode::SERVICE_UNAVAILABLE
         );
     }
 

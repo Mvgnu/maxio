@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 #[serde(rename = "ListAllMyBucketsResult")]
 pub struct ListAllMyBucketsResult {
     #[serde(rename = "Owner")]
@@ -9,7 +9,7 @@ pub struct ListAllMyBucketsResult {
     pub buckets: Buckets,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Owner {
     #[serde(rename = "ID")]
     pub id: String,
@@ -17,13 +17,13 @@ pub struct Owner {
     pub display_name: String,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct Buckets {
     #[serde(rename = "Bucket", default)]
     pub bucket: Vec<BucketEntry>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize)]
 pub struct BucketEntry {
     #[serde(rename = "Name")]
     pub name: String,

@@ -21,6 +21,7 @@
     presignObjectApi,
     uploadObjectApi,
   } from '$lib/api'
+  import type { MetadataCoverage } from '$lib/api'
   import {
     buildObjectBreadcrumbs,
     formatObjectSize,
@@ -57,6 +58,7 @@
   let showCreateFolder = $state(false)
   let newFolderName = $state('')
   let creatingFolder = $state(false)
+  let metadataCoverage = $state<MetadataCoverage | null>(null)
 
   function autofocus(node: HTMLElement) {
     node.focus()
@@ -80,7 +82,9 @@
         files = result.data.files
         prefixes = result.data.prefixes
         emptyPrefixes = new Set(result.data.emptyPrefixes || [])
+        metadataCoverage = result.data.metadataCoverage
       } else {
+        metadataCoverage = null
         error = errorMessageOrFallback(
           result.error,
           `Failed to load objects (${result.status})`
@@ -88,6 +92,7 @@
       }
     } catch (err) {
       console.error('fetchObjects failed:', err)
+      metadataCoverage = null
       error = 'Failed to connect to server'
     } finally {
       loading = false
@@ -271,6 +276,19 @@
   {#if error}
     <div class="rounded-sm border border-destructive/50 bg-destructive/10 px-4 py-2 text-sm text-destructive">
       {error}
+    </div>
+  {/if}
+
+  {#if metadataCoverage && !metadataCoverage.complete}
+    <div class="rounded-sm border border-amber-500/40 bg-amber-500/10 px-4 py-2 text-sm text-amber-900 dark:text-amber-200">
+      <span class="font-medium">
+        Distributed metadata coverage is partial ({metadataCoverage.respondedNodes.length}/{metadataCoverage.expectedNodes.length} nodes responded).
+      </span>
+      {#if metadataCoverage.missingNodes.length > 0}
+        <span class="ml-1">
+          Missing: {metadataCoverage.missingNodes.join(', ')}.
+        </span>
+      {/if}
     </div>
   {/if}
 

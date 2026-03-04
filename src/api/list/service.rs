@@ -1,12 +1,52 @@
-use std::collections::{BTreeSet, HashMap};
-use std::path::{Component, Path};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::S3Error;
-use crate::server::AppState;
+use crate::metadata::{
+    ClusterMetadataListingStrategy, MetadataNodeObjectsPage, MetadataNodeVersionsPage,
+    MetadataQuery, MetadataVersionsQuery, ObjectMetadataState, ObjectVersionMetadataState,
+    assess_cluster_metadata_fan_in_snapshot_for_topology_responders,
+    assess_cluster_metadata_fan_in_snapshot_for_topology_single_responder,
+    cluster_metadata_readiness_reject_reason, list_object_versions_page_from_persisted_state,
+    list_objects_page_from_persisted_state, load_persisted_metadata_state,
+    merge_cluster_list_object_versions_page_with_topology_snapshot,
+    merge_cluster_list_objects_page_with_topology_snapshot,
+    merge_cluster_list_objects_page_with_topology_snapshot_and_marker,
+};
+use crate::server::{AppState, RuntimeTopologySnapshot};
 use crate::storage::{ObjectMeta, StorageError};
 use crate::xml::types::{CommonPrefix, DeleteMarkerEntry, ObjectEntry, VersionEntry};
 
 const MAX_KEYS_CAP: usize = 1000;
+const PERSISTED_METADATA_STATE_FILE: &str = "cluster-metadata-state.json";
+type PaginatedVersionsPage = (Vec<ObjectMeta>, bool, Option<(String, String)>);
+
+#[derive(Debug, Clone, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+struct ListV2ContinuationTokenPayload {
+    start_after: String,
+    snapshot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+struct DecodedListV2ContinuationToken {
+    start_after: String,
+    snapshot_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub(super) struct ListMetadataCoverage {
+    pub(super) expected_nodes: usize,
+    pub(super) responded_nodes: usize,
+    pub(super) missing_nodes: usize,
+    pub(super) unexpected_nodes: usize,
+    pub(super) complete: bool,
+    pub(super) snapshot_id: String,
+    pub(super) source: &'static str,
+    pub(super) strategy_cluster_authoritative: bool,
+    pub(super) strategy_ready: bool,
+    pub(super) strategy_gap: Option<&'static str>,
+    pub(super) strategy_reject_reason: Option<&'static str>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BucketGetOperation {
@@ -46,6 +86,353 @@ pub(super) fn resolve_bucket_get_operation(
     }
 
     Ok(BucketGetOperation::ListV1)
+}
+
+pub(super) fn metadata_coverage_for_topology(
+    topology: &RuntimeTopologySnapshot,
+    strategy: ClusterMetadataListingStrategy,
+) -> Option<ListMetadataCoverage> {
+    let responder_nodes = [topology.node_id.clone()];
+    metadata_coverage_for_topology_responders(topology, strategy, responder_nodes.as_slice())
+}
+
+pub(super) fn metadata_coverage_for_topology_responders(
+    topology: &RuntimeTopologySnapshot,
+    strategy: ClusterMetadataListingStrategy,
+    responder_nodes: &[String],
+) -> Option<ListMetadataCoverage> {
+    if !topology.is_distributed() {
+        return None;
+    }
+    let snapshot_assessment = assess_cluster_metadata_fan_in_snapshot_for_topology_responders(
+        strategy,
+        Some(topology.membership_view_id.as_str()),
+        topology.node_id.as_str(),
+        topology.membership_nodes.as_slice(),
+        responder_nodes,
+    )
+    .unwrap_or_else(|_| {
+        assess_cluster_metadata_fan_in_snapshot_for_topology_single_responder(
+            strategy,
+            Some(topology.membership_view_id.as_str()),
+            topology.node_id.as_str(),
+            topology.membership_nodes.as_slice(),
+            topology.node_id.as_str(),
+        )
+    });
+    let readiness = snapshot_assessment.readiness_assessment;
+    let coverage = snapshot_assessment.coverage;
+
+    Some(ListMetadataCoverage {
+        expected_nodes: coverage.expected_nodes.len(),
+        responded_nodes: coverage.responded_nodes.len(),
+        missing_nodes: coverage.missing_nodes.len(),
+        unexpected_nodes: coverage.unexpected_nodes.len(),
+        complete: coverage.complete,
+        snapshot_id: snapshot_assessment.snapshot_id,
+        source: strategy.as_str(),
+        strategy_cluster_authoritative: readiness.cluster_authoritative,
+        strategy_ready: readiness.ready,
+        strategy_gap: readiness.gap.map(|gap| gap.as_str()),
+        strategy_reject_reason: cluster_metadata_readiness_reject_reason(&readiness)
+            .map(|gap| gap.as_str()),
+    })
+}
+
+pub(super) fn ensure_distributed_listing_strategy_ready(
+    coverage: Option<&ListMetadataCoverage>,
+) -> Result<(), S3Error> {
+    let Some(coverage) = coverage else {
+        return Ok(());
+    };
+
+    if let Some(reason) = coverage.strategy_reject_reason {
+        let message = format!(
+            "Distributed metadata listing strategy is not ready for this request ({reason})"
+        );
+        return Err(S3Error::service_unavailable(message.as_str()));
+    }
+
+    Ok(())
+}
+
+pub(super) fn ensure_consensus_index_peer_fan_in_transport_ready(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    internal_local_only: bool,
+) -> Result<(), S3Error> {
+    if internal_local_only
+        || !topology.is_distributed()
+        || state.metadata_listing_strategy != ClusterMetadataListingStrategy::ConsensusIndex
+    {
+        return Ok(());
+    }
+
+    let has_cluster_auth_token = state
+        .config
+        .cluster_auth_token()
+        .is_some_and(|value| !value.trim().is_empty());
+    if has_cluster_auth_token {
+        return Ok(());
+    }
+
+    Err(S3Error::service_unavailable(
+        "Distributed metadata listing strategy is not ready for this request (consensus-index-peer-fan-in-auth-token-missing)",
+    ))
+}
+
+pub(super) fn should_use_consensus_index_persisted_object_listing_state(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    internal_local_only: bool,
+) -> bool {
+    !internal_local_only
+        && topology.is_distributed()
+        && state.metadata_listing_strategy == ClusterMetadataListingStrategy::ConsensusIndex
+}
+
+fn persisted_metadata_state_path(data_dir: &str) -> PathBuf {
+    PathBuf::from(data_dir)
+        .join(".maxio-runtime")
+        .join(PERSISTED_METADATA_STATE_FILE)
+}
+
+fn load_consensus_index_persisted_metadata_state(
+    state: &AppState,
+    operation: &str,
+) -> Result<crate::metadata::PersistedMetadataState, S3Error> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        S3Error::service_unavailable(&format!(
+            "Distributed metadata listing operation '{}' cannot load consensus metadata state: {}",
+            operation, err
+        ))
+    })
+}
+
+fn build_consensus_v2_query(
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    query: &ListV2Query,
+    snapshot_id: Option<&str>,
+) -> MetadataQuery {
+    let mut metadata_query = MetadataQuery::new(bucket);
+    metadata_query.prefix = (!query.prefix.is_empty()).then_some(query.prefix.clone());
+    metadata_query.view_id = Some(topology.membership_view_id.clone());
+    metadata_query.snapshot_id = snapshot_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    metadata_query.max_keys = query.max_keys;
+    metadata_query.continuation_token = query.continuation_token.clone().or_else(|| {
+        query
+            .effective_start
+            .as_deref()
+            .map(|start_after| encode_continuation_token_with_snapshot(start_after, snapshot_id))
+    });
+    metadata_query
+}
+
+fn build_consensus_v1_query(
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    query: &ListV1Query,
+    snapshot_id: Option<&str>,
+) -> MetadataQuery {
+    let mut metadata_query = MetadataQuery::new(bucket);
+    metadata_query.prefix = (!query.prefix.is_empty()).then_some(query.prefix.clone());
+    metadata_query.view_id = Some(topology.membership_view_id.clone());
+    metadata_query.snapshot_id = snapshot_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    metadata_query.max_keys = query.max_keys;
+    metadata_query.continuation_token = query
+        .marker
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .map(|marker| encode_continuation_token_with_snapshot(marker, snapshot_id));
+    metadata_query
+}
+
+fn build_consensus_versions_query(
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    query: &ListVersionsQuery,
+    snapshot_id: Option<&str>,
+) -> MetadataVersionsQuery {
+    let mut metadata_query = MetadataVersionsQuery::new(bucket);
+    metadata_query.prefix = (!query.prefix.is_empty()).then_some(query.prefix.clone());
+    metadata_query.view_id = Some(topology.membership_view_id.clone());
+    metadata_query.snapshot_id = snapshot_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    metadata_query.key_marker = query.key_marker.clone();
+    metadata_query.version_id_marker = query.version_id_marker.clone();
+    metadata_query.max_keys = query.max_keys;
+    metadata_query
+}
+
+fn hydrate_objects_from_consensus_states(
+    operation: &str,
+    objects: &[ObjectMeta],
+    states: &[ObjectMetadataState],
+) -> Result<Vec<ObjectMeta>, S3Error> {
+    let mut by_key_and_version = BTreeMap::<(String, String), ObjectMeta>::new();
+    let mut by_key = BTreeMap::<String, ObjectMeta>::new();
+    for object in objects {
+        let version_id = object.version_id.as_deref().unwrap_or("null").to_string();
+        by_key_and_version
+            .entry((object.key.clone(), version_id))
+            .or_insert_with(|| object.clone());
+        by_key
+            .entry(object.key.clone())
+            .or_insert_with(|| object.clone());
+    }
+
+    let mut page = Vec::with_capacity(states.len());
+    for state in states {
+        let version_id = state
+            .latest_version_id
+            .as_deref()
+            .unwrap_or("null")
+            .to_string();
+        let key = state.key.clone();
+        let hydrated = by_key_and_version
+            .get(&(key.clone(), version_id))
+            .cloned()
+            .or_else(|| {
+                if state.latest_version_id.is_none() {
+                    by_key.get(&key).cloned()
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| {
+                S3Error::service_unavailable(&format!(
+                    "Distributed metadata listing operation '{}' cannot hydrate canonical metadata row for key '{}'",
+                    operation, key
+                ))
+            })?;
+        page.push(hydrated);
+    }
+    Ok(page)
+}
+
+fn hydrate_versions_from_consensus_states(
+    operation: &str,
+    versions: &[ObjectMeta],
+    states: &[ObjectVersionMetadataState],
+) -> Result<Vec<ObjectMeta>, S3Error> {
+    let mut by_key_and_version = BTreeMap::<(String, String), ObjectMeta>::new();
+    for version in versions {
+        let version_id = version.version_id.as_deref().unwrap_or("null").to_string();
+        by_key_and_version
+            .entry((version.key.clone(), version_id))
+            .or_insert_with(|| version.clone());
+    }
+
+    let mut page = Vec::with_capacity(states.len());
+    for state in states {
+        let key = state.key.clone();
+        let version_id = state.version_id.clone();
+        let hydrated = by_key_and_version
+            .get(&(key.clone(), version_id.clone()))
+            .cloned()
+            .ok_or_else(|| {
+                S3Error::service_unavailable(&format!(
+                    "Distributed metadata listing operation '{}' cannot hydrate canonical metadata row for key '{}' version '{}'",
+                    operation, key, version_id
+                ))
+            })?;
+        page.push(hydrated);
+    }
+    Ok(page)
+}
+
+pub(super) fn paginate_objects_v2_from_consensus_index_persisted_state(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    query: &ListV2Query,
+    all_objects: &[ObjectMeta],
+    snapshot_id: Option<&str>,
+) -> Result<(Vec<ObjectMeta>, bool), S3Error> {
+    let persisted_state = load_consensus_index_persisted_metadata_state(state, "ListObjectsV2")?;
+    let metadata_query = build_consensus_v2_query(topology, bucket, query, snapshot_id);
+    let canonical_page = list_objects_page_from_persisted_state(&persisted_state, &metadata_query)
+        .map_err(|err| {
+            S3Error::service_unavailable(&format!(
+                "Distributed metadata listing operation 'ListObjectsV2' cannot query consensus metadata state: {:?}",
+                err
+            ))
+        })?;
+    let hydrated = hydrate_objects_from_consensus_states(
+        "ListObjectsV2",
+        all_objects,
+        canonical_page.objects.as_slice(),
+    )?;
+    Ok((hydrated, canonical_page.is_truncated))
+}
+
+pub(super) fn paginate_objects_v1_from_consensus_index_persisted_state(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    query: &ListV1Query,
+    all_objects: &[ObjectMeta],
+    snapshot_id: Option<&str>,
+) -> Result<(Vec<ObjectMeta>, bool), S3Error> {
+    let persisted_state = load_consensus_index_persisted_metadata_state(state, "ListObjectsV1")?;
+    let metadata_query = build_consensus_v1_query(topology, bucket, query, snapshot_id);
+    let canonical_page = list_objects_page_from_persisted_state(&persisted_state, &metadata_query)
+        .map_err(|err| {
+            S3Error::service_unavailable(&format!(
+                "Distributed metadata listing operation 'ListObjectsV1' cannot query consensus metadata state: {:?}",
+                err
+            ))
+        })?;
+    let hydrated = hydrate_objects_from_consensus_states(
+        "ListObjectsV1",
+        all_objects,
+        canonical_page.objects.as_slice(),
+    )?;
+    Ok((hydrated, canonical_page.is_truncated))
+}
+
+pub(super) fn paginate_versions_from_consensus_index_persisted_state(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    query: &ListVersionsQuery,
+    all_versions: &[ObjectMeta],
+    snapshot_id: Option<&str>,
+) -> Result<PaginatedVersionsPage, S3Error> {
+    let persisted_state =
+        load_consensus_index_persisted_metadata_state(state, "ListObjectVersions")?;
+    let metadata_query = build_consensus_versions_query(topology, bucket, query, snapshot_id);
+    let canonical_page =
+        list_object_versions_page_from_persisted_state(&persisted_state, &metadata_query)
+            .map_err(|err| {
+                S3Error::service_unavailable(&format!(
+                    "Distributed metadata listing operation 'ListObjectVersions' cannot query consensus metadata state: {:?}",
+                    err
+                ))
+            })?;
+    let hydrated = hydrate_versions_from_consensus_states(
+        "ListObjectVersions",
+        all_versions,
+        canonical_page.versions.as_slice(),
+    )?;
+    let next_markers = match (
+        canonical_page.next_key_marker,
+        canonical_page.next_version_id_marker,
+    ) {
+        (Some(key), Some(version_id)) => Some((key, version_id)),
+        _ => None,
+    };
+    Ok((hydrated, canonical_page.is_truncated, next_markers))
 }
 
 pub(super) async fn ensure_bucket_exists(state: &AppState, bucket: &str) -> Result<(), S3Error> {
@@ -103,14 +490,27 @@ pub(super) struct ListV2Query {
 }
 
 impl ListV2Query {
-    pub(super) fn from_params(params: &HashMap<String, String>) -> Result<Self, S3Error> {
+    pub(super) fn from_params(
+        params: &HashMap<String, String>,
+        expected_snapshot_id: Option<&str>,
+    ) -> Result<Self, S3Error> {
         let start_after = params.get("start-after").cloned();
         let continuation_token = params.get("continuation-token").cloned();
+        let expected_snapshot_id = expected_snapshot_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
         let effective_start = if let Some(token) = continuation_token.as_deref() {
-            Some(
-                decode_continuation_token(token)
-                    .ok_or_else(|| S3Error::invalid_argument("Invalid continuation token"))?,
-            )
+            let decoded = decode_list_v2_continuation_token(token)
+                .ok_or_else(|| S3Error::invalid_argument("Invalid continuation token"))?;
+            let decoded_snapshot_id = decoded
+                .snapshot_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty());
+            if expected_snapshot_id.is_some() && decoded_snapshot_id != expected_snapshot_id {
+                return Err(S3Error::invalid_argument("Invalid continuation token"));
+            }
+            Some(decoded.start_after)
         } else {
             start_after.clone()
         };
@@ -198,17 +598,61 @@ fn parse_max_keys(params: &HashMap<String, String>) -> Result<usize, S3Error> {
     Ok(max_keys.min(MAX_KEYS_CAP))
 }
 
+#[cfg(test)]
 pub(super) fn decode_continuation_token(token: &str) -> Option<String> {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD
-        .decode(token)
-        .ok()
-        .and_then(|bytes| String::from_utf8(bytes).ok())
+    decode_list_v2_continuation_token(token).map(|decoded| decoded.start_after)
 }
 
-pub(super) fn encode_continuation_token(key: &str) -> String {
+fn decode_list_v2_continuation_token(token: &str) -> Option<DecodedListV2ContinuationToken> {
     use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(key)
+    let decoded = base64::engine::general_purpose::STANDARD
+        .decode(token)
+        .ok()
+        .and_then(|bytes| String::from_utf8(bytes).ok())?;
+    if let Ok(payload) = serde_json::from_str::<ListV2ContinuationTokenPayload>(&decoded) {
+        let start_after = payload.start_after.trim();
+        if start_after.is_empty() {
+            return None;
+        }
+        return Some(DecodedListV2ContinuationToken {
+            start_after: start_after.to_string(),
+            snapshot_id: payload
+                .snapshot_id
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
+        });
+    }
+
+    let start_after = decoded.trim();
+    if start_after.is_empty() {
+        return None;
+    }
+
+    Some(DecodedListV2ContinuationToken {
+        start_after: start_after.to_string(),
+        snapshot_id: None,
+    })
+}
+
+#[cfg(test)]
+pub(super) fn encode_continuation_token(key: &str) -> String {
+    encode_continuation_token_with_snapshot(key, None)
+}
+
+pub(super) fn encode_continuation_token_with_snapshot(
+    key: &str,
+    snapshot_id: Option<&str>,
+) -> String {
+    use base64::Engine;
+    let payload = ListV2ContinuationTokenPayload {
+        start_after: key.to_string(),
+        snapshot_id: snapshot_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned),
+    };
+    let encoded_payload = serde_json::to_string(&payload).unwrap_or_else(|_| key.to_string());
+    base64::engine::general_purpose::STANDARD.encode(encoded_payload)
 }
 
 pub(super) fn filter_objects_after<'a>(
@@ -231,6 +675,219 @@ pub(super) fn paginate_objects(
     let is_truncated = filtered_objects.len() > max_keys;
     let page = filtered_objects.into_iter().take(max_keys).collect();
     (page, is_truncated)
+}
+
+pub(super) fn paginate_objects_v2_for_topology(
+    topology: &RuntimeTopologySnapshot,
+    strategy: ClusterMetadataListingStrategy,
+    bucket: &str,
+    query: &ListV2Query,
+    all_objects: &[ObjectMeta],
+) -> Result<(Vec<ObjectMeta>, bool), S3Error> {
+    if !topology.is_distributed() {
+        let filtered = filter_objects_after(all_objects, query.effective_start.as_deref());
+        let (page, is_truncated) = paginate_objects(filtered, query.max_keys);
+        return Ok((page.into_iter().cloned().collect(), is_truncated));
+    }
+
+    let filtered_states = all_objects
+        .iter()
+        .filter(|object| {
+            query
+                .effective_start
+                .as_deref()
+                .map(|start| object.key.as_str() > start)
+                .unwrap_or(true)
+        })
+        .map(|object| ObjectMetadataState {
+            bucket: bucket.to_string(),
+            key: object.key.clone(),
+            latest_version_id: object.version_id.clone(),
+            is_delete_marker: object.is_delete_marker,
+        })
+        .collect::<Vec<_>>();
+
+    let mut metadata_query = MetadataQuery::new(bucket);
+    metadata_query.prefix = (!query.prefix.is_empty()).then_some(query.prefix.clone());
+    metadata_query.view_id = Some(topology.membership_view_id.clone());
+    metadata_query.max_keys = query.max_keys;
+
+    let node_pages = vec![MetadataNodeObjectsPage {
+        node_id: topology.node_id.clone(),
+        objects: filtered_states,
+    }];
+    let merged = merge_cluster_list_objects_page_with_topology_snapshot(
+        &metadata_query,
+        strategy,
+        topology.node_id.as_str(),
+        topology.membership_nodes.as_slice(),
+        node_pages.as_slice(),
+    )
+    .map_err(|_| S3Error::internal("Failed to merge distributed metadata listing page"))?;
+
+    let object_lookup = all_objects
+        .iter()
+        .cloned()
+        .map(|object| (object.key.clone(), object))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let page = merged
+        .page
+        .objects
+        .into_iter()
+        .filter_map(|object| object_lookup.get(&object.key).cloned())
+        .collect::<Vec<_>>();
+
+    Ok((page, merged.page.is_truncated))
+}
+
+pub(super) fn paginate_objects_v1_for_topology(
+    topology: &RuntimeTopologySnapshot,
+    strategy: ClusterMetadataListingStrategy,
+    bucket: &str,
+    query: &ListV1Query,
+    all_objects: &[ObjectMeta],
+) -> Result<(Vec<ObjectMeta>, bool), S3Error> {
+    if !topology.is_distributed() {
+        let filtered = filter_objects_after(all_objects, query.marker.as_deref());
+        let (page, is_truncated) = paginate_objects(filtered, query.max_keys);
+        return Ok((page.into_iter().cloned().collect(), is_truncated));
+    }
+
+    let object_states = all_objects
+        .iter()
+        .map(|object| ObjectMetadataState {
+            bucket: bucket.to_string(),
+            key: object.key.clone(),
+            latest_version_id: object.version_id.clone(),
+            is_delete_marker: object.is_delete_marker,
+        })
+        .collect::<Vec<_>>();
+
+    let mut metadata_query = MetadataQuery::new(bucket);
+    metadata_query.prefix = (!query.prefix.is_empty()).then_some(query.prefix.clone());
+    metadata_query.view_id = Some(topology.membership_view_id.clone());
+    metadata_query.max_keys = query.max_keys;
+
+    let node_pages = vec![MetadataNodeObjectsPage {
+        node_id: topology.node_id.clone(),
+        objects: object_states,
+    }];
+    let merged = merge_cluster_list_objects_page_with_topology_snapshot_and_marker(
+        &metadata_query,
+        query.marker.as_deref(),
+        strategy,
+        topology.node_id.as_str(),
+        topology.membership_nodes.as_slice(),
+        node_pages.as_slice(),
+    )
+    .map_err(|_| S3Error::internal("Failed to merge distributed metadata listing page"))?;
+
+    let object_lookup = all_objects
+        .iter()
+        .cloned()
+        .map(|object| (object.key.clone(), object))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let page = merged
+        .page
+        .objects
+        .into_iter()
+        .filter_map(|object| object_lookup.get(&object.key).cloned())
+        .collect::<Vec<_>>();
+
+    Ok((page, merged.page.is_truncated))
+}
+
+pub(super) fn paginate_versions_for_topology(
+    topology: &RuntimeTopologySnapshot,
+    strategy: ClusterMetadataListingStrategy,
+    bucket: &str,
+    query: &ListVersionsQuery,
+    all_versions: &[ObjectMeta],
+) -> Result<PaginatedVersionsPage, S3Error> {
+    if !topology.is_distributed() {
+        let filtered = filter_versions_after(
+            all_versions,
+            query.key_marker.as_deref(),
+            query.version_id_marker.as_deref(),
+        );
+        let (page, is_truncated, next_markers) = paginate_versions(filtered, query.max_keys);
+        return Ok((
+            page.into_iter().cloned().collect(),
+            is_truncated,
+            next_markers,
+        ));
+    }
+
+    let latest_per_key = latest_version_per_key(all_versions);
+    let version_states = all_versions
+        .iter()
+        .map(|version| {
+            let version_id = version.version_id.as_deref().unwrap_or("null").to_string();
+            let is_latest = latest_per_key
+                .get(&version.key)
+                .is_some_and(|latest| latest == &version_id);
+            ObjectVersionMetadataState {
+                bucket: bucket.to_string(),
+                key: version.key.clone(),
+                version_id,
+                is_delete_marker: version.is_delete_marker,
+                is_latest,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let mut metadata_query = MetadataVersionsQuery::new(bucket);
+    metadata_query.prefix = (!query.prefix.is_empty()).then_some(query.prefix.clone());
+    metadata_query.view_id = Some(topology.membership_view_id.clone());
+    metadata_query.key_marker = query.key_marker.clone();
+    metadata_query.version_id_marker = query.version_id_marker.clone();
+    metadata_query.max_keys = query.max_keys;
+
+    let node_pages = vec![MetadataNodeVersionsPage {
+        node_id: topology.node_id.clone(),
+        versions: version_states,
+    }];
+    let merged = merge_cluster_list_object_versions_page_with_topology_snapshot(
+        &metadata_query,
+        strategy,
+        topology.node_id.as_str(),
+        topology.membership_nodes.as_slice(),
+        node_pages.as_slice(),
+    )
+    .map_err(|_| S3Error::internal("Failed to merge distributed metadata versions page"))?;
+
+    let version_lookup = all_versions
+        .iter()
+        .cloned()
+        .map(|version| {
+            (
+                (
+                    version.key.clone(),
+                    version.version_id.as_deref().unwrap_or("null").to_string(),
+                ),
+                version,
+            )
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let page = merged
+        .page
+        .versions
+        .into_iter()
+        .filter_map(|version| {
+            version_lookup
+                .get(&(version.key, version.version_id))
+                .cloned()
+        })
+        .collect::<Vec<_>>();
+    let next_markers = match (
+        merged.page.next_key_marker,
+        merged.page.next_version_id_marker,
+    ) {
+        (Some(key), Some(version_id)) => Some((key, version_id)),
+        _ => None,
+    };
+
+    Ok((page, merged.page.is_truncated, next_markers))
 }
 
 pub(super) fn split_by_delimiter(
@@ -373,7 +1030,11 @@ pub(super) fn split_version_entries(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::MembershipProtocol;
     use crate::error::S3ErrorCode;
+    use crate::membership::MembershipEngineStatus;
+    use crate::metadata::ClusterMetadataListingStrategy;
+    use crate::server::{RuntimeMode, RuntimeTopologySnapshot};
 
     fn object_meta(key: &str, version_id: Option<&str>, is_delete_marker: bool) -> ObjectMeta {
         ObjectMeta {
@@ -395,6 +1056,25 @@ mod tests {
         let key = "docs/nested/file.txt";
         let token = encode_continuation_token(key);
         assert_eq!(decode_continuation_token(&token), Some(key.to_string()));
+    }
+
+    #[test]
+    fn continuation_token_with_snapshot_roundtrip() {
+        let token = encode_continuation_token_with_snapshot("docs/a.txt", Some("snapshot-1"));
+        let decoded = decode_list_v2_continuation_token(&token).expect("token should decode");
+        assert_eq!(decoded.start_after, "docs/a.txt");
+        assert_eq!(decoded.snapshot_id.as_deref(), Some("snapshot-1"));
+    }
+
+    #[test]
+    fn continuation_token_legacy_payload_decodes_without_snapshot() {
+        let key = "docs/legacy.txt";
+        use base64::Engine;
+        let legacy_token = base64::engine::general_purpose::STANDARD.encode(key);
+        let decoded =
+            decode_list_v2_continuation_token(&legacy_token).expect("legacy token should decode");
+        assert_eq!(decoded.start_after, key);
+        assert!(decoded.snapshot_id.is_none());
     }
 
     #[test]
@@ -611,7 +1291,7 @@ mod tests {
     fn list_v2_query_rejects_invalid_max_keys() {
         let mut params = HashMap::<String, String>::new();
         params.insert("max-keys".to_string(), "abc".to_string());
-        let err = match ListV2Query::from_params(&params) {
+        let err = match ListV2Query::from_params(&params, None) {
             Ok(_) => panic!("invalid max-keys should fail"),
             Err(err) => err,
         };
@@ -625,7 +1305,7 @@ mod tests {
     fn list_v2_query_rejects_invalid_continuation_token() {
         let mut params = HashMap::<String, String>::new();
         params.insert("continuation-token".to_string(), "%%%".to_string());
-        let err = match ListV2Query::from_params(&params) {
+        let err = match ListV2Query::from_params(&params, None) {
             Ok(_) => panic!("invalid continuation token should fail"),
             Err(err) => err,
         };
@@ -640,7 +1320,7 @@ mod tests {
         let mut params = HashMap::<String, String>::new();
         params.insert("delimiter".to_string(), String::new());
 
-        let err = match ListV2Query::from_params(&params) {
+        let err = match ListV2Query::from_params(&params, None) {
             Ok(_) => panic!("empty delimiter should fail"),
             Err(err) => err,
         };
@@ -648,6 +1328,318 @@ mod tests {
             err.code,
             crate::error::S3ErrorCode::InvalidArgument
         ));
+    }
+
+    #[test]
+    fn list_v2_query_rejects_snapshot_mismatched_continuation_token() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert(
+            "continuation-token".to_string(),
+            encode_continuation_token_with_snapshot("docs/a.txt", Some("snapshot-a")),
+        );
+
+        let err = match ListV2Query::from_params(&params, Some("snapshot-b")) {
+            Ok(_) => panic!("snapshot-mismatched continuation token should fail"),
+            Err(err) => err,
+        };
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::InvalidArgument
+        ));
+    }
+
+    #[test]
+    fn list_v2_query_accepts_snapshot_matched_continuation_token() {
+        let mut params = HashMap::<String, String>::new();
+        params.insert(
+            "continuation-token".to_string(),
+            encode_continuation_token_with_snapshot("docs/a.txt", Some("snapshot-a")),
+        );
+        let query = ListV2Query::from_params(&params, Some("snapshot-a"))
+            .expect("snapshot-bound continuation token should parse");
+        assert_eq!(query.effective_start.as_deref(), Some("docs/a.txt"));
+    }
+
+    #[test]
+    fn paginate_objects_v2_for_topology_distributed_uses_metadata_merge_contract() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+        let objects = vec![
+            object_meta("docs/a.txt", None, false),
+            object_meta("docs/b.txt", None, false),
+            object_meta("docs/c.txt", None, false),
+        ];
+        let query = ListV2Query {
+            prefix: "docs/".to_string(),
+            delimiter: None,
+            max_keys: 2,
+            start_after: None,
+            continuation_token: None,
+            effective_start: None,
+        };
+
+        let (page, is_truncated) = paginate_objects_v2_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            "photos",
+            &query,
+            objects.as_slice(),
+        )
+        .expect("distributed pagination should succeed");
+        assert_eq!(
+            page.iter()
+                .map(|meta| meta.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs/a.txt", "docs/b.txt"]
+        );
+        assert!(is_truncated);
+    }
+
+    #[test]
+    fn paginate_objects_v2_for_topology_distributed_honors_effective_start() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+        let objects = vec![
+            object_meta("docs/a.txt", None, false),
+            object_meta("docs/b.txt", None, false),
+            object_meta("docs/c.txt", None, false),
+        ];
+        let query = ListV2Query {
+            prefix: "docs/".to_string(),
+            delimiter: None,
+            max_keys: 2,
+            start_after: Some("docs/a.txt".to_string()),
+            continuation_token: None,
+            effective_start: Some("docs/a.txt".to_string()),
+        };
+
+        let (page, is_truncated) = paginate_objects_v2_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            "photos",
+            &query,
+            objects.as_slice(),
+        )
+        .expect("distributed pagination should succeed");
+        assert_eq!(
+            page.iter()
+                .map(|meta| meta.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs/b.txt", "docs/c.txt"]
+        );
+        assert!(!is_truncated);
+    }
+
+    #[test]
+    fn paginate_objects_v1_for_topology_distributed_uses_metadata_merge_contract() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+        let objects = vec![
+            object_meta("docs/a.txt", None, false),
+            object_meta("docs/b.txt", None, false),
+            object_meta("docs/c.txt", None, false),
+        ];
+        let query = ListV1Query {
+            prefix: "docs/".to_string(),
+            delimiter: None,
+            max_keys: 2,
+            marker: Some("docs/a.txt".to_string()),
+        };
+
+        let (page, is_truncated) = paginate_objects_v1_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            "photos",
+            &query,
+            objects.as_slice(),
+        )
+        .expect("distributed pagination should succeed");
+        assert_eq!(
+            page.iter()
+                .map(|meta| meta.key.as_str())
+                .collect::<Vec<_>>(),
+            vec!["docs/b.txt", "docs/c.txt"]
+        );
+        assert!(!is_truncated);
+    }
+
+    #[test]
+    fn paginate_versions_for_topology_distributed_uses_metadata_merge_contract() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+        let versions = vec![
+            object_meta("docs/a.txt", Some("v3"), false),
+            object_meta("docs/a.txt", Some("v2"), false),
+            object_meta("docs/b.txt", Some("v1"), false),
+        ];
+        let query = ListVersionsQuery {
+            prefix: "docs/".to_string(),
+            key_marker: None,
+            version_id_marker: None,
+            max_keys: 2,
+        };
+
+        let (page, is_truncated, next_markers) = paginate_versions_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            "photos",
+            &query,
+            versions.as_slice(),
+        )
+        .expect("distributed versions pagination should succeed");
+
+        assert_eq!(
+            page.iter()
+                .map(|meta| {
+                    (
+                        meta.key.as_str(),
+                        meta.version_id.as_deref().unwrap_or("null"),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![("docs/a.txt", "v3"), ("docs/a.txt", "v2")]
+        );
+        assert!(is_truncated);
+        assert_eq!(
+            next_markers,
+            Some(("docs/a.txt".to_string(), "v2".to_string()))
+        );
+    }
+
+    #[test]
+    fn paginate_versions_for_topology_distributed_honors_markers() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+        let versions = vec![
+            object_meta("docs/a.txt", Some("v3"), false),
+            object_meta("docs/a.txt", Some("v2"), false),
+            object_meta("docs/a.txt", Some("v1"), false),
+            object_meta("docs/b.txt", Some("v2"), false),
+        ];
+        let query = ListVersionsQuery {
+            prefix: "docs/".to_string(),
+            key_marker: Some("docs/a.txt".to_string()),
+            version_id_marker: Some("v2".to_string()),
+            max_keys: 2,
+        };
+
+        let (page, is_truncated, next_markers) = paginate_versions_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            "photos",
+            &query,
+            versions.as_slice(),
+        )
+        .expect("distributed versions pagination should succeed");
+
+        assert_eq!(
+            page.iter()
+                .map(|meta| {
+                    (
+                        meta.key.as_str(),
+                        meta.version_id.as_deref().unwrap_or("null"),
+                    )
+                })
+                .collect::<Vec<_>>(),
+            vec![("docs/a.txt", "v1"), ("docs/b.txt", "v2")]
+        );
+        assert!(!is_truncated);
+        assert!(next_markers.is_none());
     }
 
     #[test]
@@ -691,6 +1683,312 @@ mod tests {
         assert!(matches!(
             err.code,
             crate::error::S3ErrorCode::InvalidArgument
+        ));
+    }
+
+    #[test]
+    fn metadata_coverage_for_standalone_topology_is_none() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Standalone,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec![],
+            membership_nodes: vec!["node-a.internal:9000".to_string()],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-1".to_string(),
+            placement_epoch: 1,
+        };
+
+        assert!(
+            metadata_coverage_for_topology(
+                &topology,
+                ClusterMetadataListingStrategy::LocalNodeOnly
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn metadata_coverage_for_distributed_topology_local_node_only_reports_local_fan_in() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+
+        let coverage = metadata_coverage_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::LocalNodeOnly,
+        )
+        .expect("distributed topology should report coverage");
+        assert_eq!(
+            coverage,
+            ListMetadataCoverage {
+                expected_nodes: 1,
+                responded_nodes: 1,
+                missing_nodes: 0,
+                unexpected_nodes: 0,
+                complete: true,
+                snapshot_id: coverage.snapshot_id.clone(),
+                source: "local-node-only",
+                strategy_cluster_authoritative: false,
+                strategy_ready: false,
+                strategy_gap: Some("strategy-not-cluster-authoritative"),
+                strategy_reject_reason: None,
+            }
+        );
+    }
+
+    #[test]
+    fn metadata_coverage_for_distributed_topology_reports_incomplete_fan_in_for_aggregation() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+
+        let coverage = metadata_coverage_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+        )
+        .expect("distributed topology should report coverage");
+        assert_eq!(
+            coverage,
+            ListMetadataCoverage {
+                expected_nodes: 2,
+                responded_nodes: 1,
+                missing_nodes: 1,
+                unexpected_nodes: 0,
+                complete: false,
+                snapshot_id: coverage.snapshot_id.clone(),
+                source: "request-time-aggregation",
+                strategy_cluster_authoritative: true,
+                strategy_ready: false,
+                strategy_gap: Some("missing-expected-nodes"),
+                strategy_reject_reason: Some("missing-expected-nodes"),
+            }
+        );
+    }
+
+    #[test]
+    fn metadata_coverage_for_distributed_topology_handles_invalid_local_node_id() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "   ".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec!["node-a.internal:9000".to_string(), "   ".to_string()],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+
+        let coverage = metadata_coverage_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::ConsensusIndex,
+        )
+        .expect("distributed topology should report coverage");
+        assert_eq!(
+            coverage,
+            ListMetadataCoverage {
+                expected_nodes: 1,
+                responded_nodes: 0,
+                missing_nodes: 1,
+                unexpected_nodes: 0,
+                complete: false,
+                snapshot_id: coverage.snapshot_id.clone(),
+                source: "consensus-index",
+                strategy_cluster_authoritative: true,
+                strategy_ready: false,
+                strategy_gap: Some("missing-expected-nodes"),
+                strategy_reject_reason: Some("missing-expected-nodes"),
+            }
+        );
+        assert_eq!(coverage.snapshot_id.len(), 64);
+    }
+
+    #[test]
+    fn metadata_coverage_snapshot_id_changes_when_strategy_changes() {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+
+        let local_only = metadata_coverage_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::LocalNodeOnly,
+        )
+        .expect("distributed topology should report coverage");
+        let consensus = metadata_coverage_for_topology(
+            &topology,
+            ClusterMetadataListingStrategy::ConsensusIndex,
+        )
+        .expect("distributed topology should report coverage");
+
+        assert_eq!(local_only.snapshot_id.len(), 64);
+        assert_eq!(consensus.snapshot_id.len(), 64);
+        assert_ne!(local_only.snapshot_id, consensus.snapshot_id);
+    }
+
+    #[test]
+    fn metadata_coverage_for_consensus_fallback_keeps_source_and_uses_cluster_execution_readiness()
+    {
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-2".to_string(),
+            placement_epoch: 2,
+        };
+
+        let responders = vec![
+            "node-a.internal:9000".to_string(),
+            "node-b.internal:9000".to_string(),
+        ];
+        let coverage = metadata_coverage_for_topology_responders(
+            &topology,
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            responders.as_slice(),
+        )
+        .expect("distributed topology should report coverage");
+        assert_eq!(
+            coverage,
+            ListMetadataCoverage {
+                expected_nodes: 2,
+                responded_nodes: 2,
+                missing_nodes: 0,
+                unexpected_nodes: 0,
+                complete: true,
+                snapshot_id: coverage.snapshot_id.clone(),
+                source: "consensus-index",
+                strategy_cluster_authoritative: true,
+                strategy_ready: true,
+                strategy_gap: None,
+                strategy_reject_reason: None,
+            }
+        );
+    }
+
+    #[test]
+    fn distributed_listing_strategy_readiness_allows_non_authoritative_local_mode() {
+        let coverage = ListMetadataCoverage {
+            expected_nodes: 2,
+            responded_nodes: 1,
+            missing_nodes: 1,
+            unexpected_nodes: 0,
+            complete: false,
+            snapshot_id: "snapshot-local".to_string(),
+            source: "local-node-only",
+            strategy_cluster_authoritative: false,
+            strategy_ready: false,
+            strategy_gap: Some("strategy-not-cluster-authoritative"),
+            strategy_reject_reason: None,
+        };
+
+        let result = ensure_distributed_listing_strategy_ready(Some(&coverage));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn distributed_listing_strategy_readiness_rejects_unready_authoritative_mode() {
+        let coverage = ListMetadataCoverage {
+            expected_nodes: 2,
+            responded_nodes: 1,
+            missing_nodes: 1,
+            unexpected_nodes: 0,
+            complete: false,
+            snapshot_id: "snapshot-agg".to_string(),
+            source: "request-time-aggregation",
+            strategy_cluster_authoritative: true,
+            strategy_ready: false,
+            strategy_gap: Some("missing-expected-nodes"),
+            strategy_reject_reason: Some("missing-expected-nodes"),
+        };
+
+        let err = ensure_distributed_listing_strategy_ready(Some(&coverage))
+            .expect_err("authoritative distributed listing should fail when not ready");
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::ServiceUnavailable
         ));
     }
 }

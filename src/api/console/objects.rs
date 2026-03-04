@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use axum::{
     Json,
@@ -7,9 +7,40 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use futures::TryStreamExt;
+use quick_xml::de::from_str;
 
 use super::{response, storage};
-use crate::server::AppState;
+use crate::metadata::{ClusterMetadataListingStrategy, ObjectMetadataState};
+use crate::server::{AppState, runtime_topology_snapshot};
+use crate::storage::{ObjectMeta, StorageError};
+
+#[derive(serde::Deserialize)]
+#[serde(rename = "ListBucketResult")]
+struct PeerListBucketResultV2 {
+    #[serde(rename = "IsTruncated")]
+    is_truncated: bool,
+    #[serde(rename = "NextContinuationToken")]
+    next_continuation_token: Option<String>,
+    #[serde(rename = "Contents", default)]
+    contents: Vec<PeerObjectEntry>,
+}
+
+#[derive(serde::Deserialize)]
+struct PeerObjectEntry {
+    #[serde(rename = "Key")]
+    key: String,
+    #[serde(rename = "LastModified")]
+    last_modified: String,
+    #[serde(rename = "ETag")]
+    etag: String,
+    #[serde(rename = "Size")]
+    size: u64,
+}
+
+struct ClusterObjectListingFanIn {
+    responded_nodes: Vec<String>,
+    objects: Vec<ObjectMeta>,
+}
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +57,8 @@ struct ListObjectsResponse {
     files: Vec<ObjectListFileDto>,
     prefixes: Vec<String>,
     empty_prefixes: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata_coverage: Option<storage::MetadataCoverageDto>,
 }
 
 #[derive(serde::Serialize)]
@@ -39,17 +72,40 @@ struct UploadObjectResponse {
 pub(super) struct ListObjectsParams {
     prefix: Option<String>,
     delimiter: Option<String>,
+    #[serde(rename = "x-maxio-internal-metadata-scope")]
+    internal_metadata_scope: Option<String>,
 }
 
 pub(super) async fn list_objects(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
     Query(params): Query<ListObjectsParams>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
     }
 
+    let mut strategy_params = HashMap::new();
+    if let Some(scope) = params.internal_metadata_scope.as_deref() {
+        strategy_params.insert(
+            storage::INTERNAL_METADATA_SCOPE_QUERY_PARAM.to_string(),
+            scope.to_string(),
+        );
+    }
+    let topology = runtime_topology_snapshot(&state);
+    let internal_local_only = storage::is_trusted_internal_local_metadata_scope_request(
+        &state,
+        &headers,
+        &strategy_params,
+    );
+    if let Some(resp) = storage::reject_consensus_index_peer_fan_in_transport_unready(
+        &state,
+        &topology,
+        internal_local_only,
+    ) {
+        return resp;
+    }
     let prefix = params.prefix.unwrap_or_default();
     let delimiter = params.delimiter.unwrap_or_else(|| "/".to_string());
     if let Some(resp) = storage::validate_list_prefix(&prefix) {
@@ -59,10 +115,59 @@ pub(super) async fn list_objects(
         return resp;
     }
 
-    let all_objects = match state.storage.list_objects(&bucket, &prefix).await {
-        Ok(objects) => objects,
-        Err(e) => return storage::map_bucket_storage_err(e),
+    let should_fan_in = storage::should_attempt_cluster_object_listing_fan_in(
+        &state,
+        &topology,
+        internal_local_only,
+    );
+    let (all_objects, metadata_coverage) = if should_fan_in {
+        let fan_in =
+            match fetch_cluster_object_listing_fan_in(&state, &topology, &bucket, &prefix).await {
+                Ok(fan_in) => fan_in,
+                Err(err) => return storage::map_bucket_storage_err(err),
+            };
+        let coverage = storage::list_metadata_fan_in_coverage_for_responders(
+            &state,
+            fan_in.responded_nodes.as_slice(),
+        );
+        let merged = merge_object_listing_objects(fan_in.objects);
+        if state.metadata_listing_strategy == ClusterMetadataListingStrategy::ConsensusIndex
+            && !internal_local_only
+        {
+            let canonical_rows = match storage::load_consensus_object_metadata_rows_for_prefix(
+                &state,
+                &topology,
+                &bucket,
+                prefix.as_str(),
+                "ListConsoleObjects",
+            ) {
+                Ok(rows) => rows,
+                Err(err) => return *err,
+            };
+            let canonical = match hydrate_objects_from_consensus_states(
+                "ListConsoleObjects",
+                merged.as_slice(),
+                canonical_rows.as_slice(),
+            ) {
+                Ok(objects) => objects,
+                Err(message) => return response::error(StatusCode::SERVICE_UNAVAILABLE, message),
+            };
+            (canonical, coverage)
+        } else {
+            (merged, coverage)
+        }
+    } else {
+        let objects = match state.storage.list_objects(&bucket, &prefix).await {
+            Ok(objects) => objects,
+            Err(e) => return storage::map_bucket_storage_err(e),
+        };
+        (objects, storage::list_metadata_coverage(&state))
     };
+    if !internal_local_only {
+        if let Some(resp) = storage::reject_unready_metadata_listing(metadata_coverage.as_ref()) {
+            return resp;
+        }
+    }
 
     let mut files = Vec::new();
     let mut prefix_set = BTreeSet::new();
@@ -100,8 +205,164 @@ pub(super) async fn list_objects(
             files,
             prefixes,
             empty_prefixes,
+            metadata_coverage,
         },
     )
+}
+
+async fn fetch_cluster_object_listing_fan_in(
+    state: &AppState,
+    topology: &crate::server::RuntimeTopologySnapshot,
+    bucket: &str,
+    prefix: &str,
+) -> Result<ClusterObjectListingFanIn, StorageError> {
+    let local_objects = state.storage.list_objects(bucket, prefix).await?;
+    let mut responded_nodes = vec![topology.node_id.clone()];
+    let mut objects = local_objects;
+
+    for peer in &topology.cluster_peers {
+        match fetch_peer_local_object_listing(state, peer, bucket, prefix).await {
+            Ok(mut peer_objects) => {
+                responded_nodes.push(peer.clone());
+                objects.append(&mut peer_objects);
+            }
+            Err(err) => {
+                tracing::warn!(
+                    peer = %peer,
+                    bucket,
+                    error = %err,
+                    "Console object list fan-in peer request failed"
+                );
+            }
+        }
+    }
+
+    Ok(ClusterObjectListingFanIn {
+        responded_nodes,
+        objects,
+    })
+}
+
+async fn fetch_peer_local_object_listing(
+    state: &AppState,
+    peer: &str,
+    bucket: &str,
+    prefix: &str,
+) -> Result<Vec<ObjectMeta>, String> {
+    let path = format!("/{bucket}");
+    let mut collected = Vec::new();
+    let mut next_continuation_token: Option<String> = None;
+    let mut seen_tokens = HashSet::<String>::new();
+
+    loop {
+        let mut query = vec![
+            ("list-type", "2"),
+            ("max-keys", "1000"),
+            (
+                storage::INTERNAL_METADATA_SCOPE_QUERY_PARAM,
+                storage::INTERNAL_METADATA_SCOPE_LOCAL_ONLY,
+            ),
+        ];
+        if !prefix.is_empty() {
+            query.push(("prefix", prefix));
+        }
+        if let Some(token) = next_continuation_token.as_deref() {
+            query.push(("continuation-token", token));
+        }
+
+        let response =
+            storage::send_internal_peer_get(state, peer, path.as_str(), query.as_slice()).await?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "peer object list status {}",
+                response.status().as_u16()
+            ));
+        }
+
+        let body = response.text().await.map_err(|err| err.to_string())?;
+        let parsed = from_str::<PeerListBucketResultV2>(&body).map_err(|err| err.to_string())?;
+
+        for object in parsed.contents {
+            collected.push(ObjectMeta {
+                key: object.key,
+                size: object.size,
+                etag: object.etag,
+                content_type: "application/octet-stream".to_string(),
+                last_modified: object.last_modified,
+                version_id: None,
+                is_delete_marker: false,
+                storage_format: None,
+                checksum_algorithm: None,
+                checksum_value: None,
+            });
+        }
+
+        if !parsed.is_truncated {
+            break;
+        }
+
+        let token = parsed
+            .next_continuation_token
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned)
+            .ok_or_else(|| {
+                "Peer object listing pagination failed (missing continuation token)".to_string()
+            })?;
+        if !seen_tokens.insert(token.clone()) {
+            return Err(
+                "Peer object listing pagination failed (continuation loop detected)".to_string(),
+            );
+        }
+        next_continuation_token = Some(token);
+    }
+
+    Ok(collected)
+}
+
+fn hydrate_objects_from_consensus_states(
+    operation: &str,
+    objects: &[ObjectMeta],
+    states: &[ObjectMetadataState],
+) -> Result<Vec<ObjectMeta>, String> {
+    let mut by_key = BTreeMap::<String, ObjectMeta>::new();
+    for object in objects {
+        by_key
+            .entry(object.key.clone())
+            .or_insert_with(|| object.clone());
+    }
+
+    let mut page = Vec::with_capacity(states.len());
+    for state in states {
+        let key = state.key.clone();
+        let hydrated = by_key.get(&key).cloned().ok_or_else(|| {
+            format!(
+                "Distributed metadata listing operation '{}' cannot hydrate canonical metadata row for key '{}'",
+                operation, key
+            )
+        })?;
+        page.push(hydrated);
+    }
+
+    Ok(page)
+}
+
+fn merge_object_listing_objects(objects: Vec<ObjectMeta>) -> Vec<ObjectMeta> {
+    let mut dedup = BTreeMap::<String, ObjectMeta>::new();
+    for object in objects {
+        match dedup.get_mut(&object.key) {
+            Some(current) => {
+                if object.last_modified > current.last_modified {
+                    *current = object;
+                }
+            }
+            None => {
+                dedup.insert(object.key.clone(), object);
+            }
+        }
+    }
+    dedup.into_values().collect::<Vec<_>>()
 }
 
 pub(super) async fn upload_object(
@@ -110,6 +371,7 @@ pub(super) async fn upload_object(
     headers: HeaderMap,
     body: axum::body::Body,
 ) -> impl IntoResponse {
+    let topology = runtime_topology_snapshot(&state);
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
     }
@@ -127,14 +389,27 @@ pub(super) async fn upload_object(
         .put_object(&bucket, &key, content_type, Box::pin(reader), None)
         .await
     {
-        Ok(result) => response::json(
-            StatusCode::OK,
-            UploadObjectResponse {
-                ok: true,
-                etag: result.etag,
-                size: result.size,
-            },
-        ),
+        Ok(result) => {
+            if let Err(err) = storage::persist_current_object_metadata_state(
+                &state,
+                &topology,
+                &bucket,
+                &key,
+                result.version_id.as_deref(),
+                false,
+            ) {
+                return *err;
+            }
+
+            response::json(
+                StatusCode::OK,
+                UploadObjectResponse {
+                    ok: true,
+                    etag: result.etag,
+                    size: result.size,
+                },
+            )
+        }
         Err(e) => storage::map_bucket_storage_err(e),
     }
 }
@@ -143,12 +418,33 @@ pub(super) async fn delete_object_api(
     State(state): State<AppState>,
     Path((bucket, key)): Path<(String, String)>,
 ) -> impl IntoResponse {
+    let topology = runtime_topology_snapshot(&state);
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
     }
 
     match state.storage.delete_object(&bucket, &key).await {
-        Ok(_) => response::ok(),
+        Ok(result) => {
+            let persist_result = if let Some(version_id) = result.version_id.as_deref() {
+                storage::persist_current_object_metadata_state(
+                    &state,
+                    &topology,
+                    &bucket,
+                    &key,
+                    Some(version_id),
+                    result.is_delete_marker,
+                )
+            } else {
+                storage::persist_deleted_current_object_metadata_state(
+                    &state, &topology, &bucket, &key,
+                )
+            };
+            if let Err(err) = persist_result {
+                return *err;
+            }
+
+            response::ok()
+        }
         Err(e) => storage::map_bucket_storage_err(e),
     }
 }
@@ -196,6 +492,7 @@ pub(super) async fn create_folder(
     Path(bucket): Path<String>,
     Json(body): Json<CreateFolderRequest>,
 ) -> impl IntoResponse {
+    let topology = runtime_topology_snapshot(&state);
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
     }
@@ -217,7 +514,19 @@ pub(super) async fn create_folder(
         )
         .await
     {
-        Ok(_) => response::ok(),
+        Ok(result) => {
+            if let Err(err) = storage::persist_current_object_metadata_state(
+                &state,
+                &topology,
+                &bucket,
+                &key,
+                result.version_id.as_deref(),
+                false,
+            ) {
+                return *err;
+            }
+            response::ok()
+        }
         Err(e) => storage::map_bucket_storage_err(e),
     }
 }

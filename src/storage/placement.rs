@@ -1,5 +1,9 @@
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::ErrorKind;
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Normalize a membership view into a sorted, unique node list.
 pub fn normalize_nodes(nodes: &[String]) -> Vec<String> {
@@ -126,14 +130,449 @@ pub struct ObjectRebalancePlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LocalRebalanceAction {
-    Receive {
-        from: Option<String>,
-        to: String,
+    Receive { from: Option<String>, to: String },
+    Send { from: String, to: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RebalanceObjectScope {
+    Object,
+    Chunk { chunk_index: u32 },
+}
+
+impl RebalanceObjectScope {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Object => "object",
+            Self::Chunk { .. } => "chunk",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRebalanceTransferState {
+    pub from: Option<String>,
+    pub to: String,
+    pub attempts: u32,
+    pub completed: bool,
+    pub last_error: Option<String>,
+    pub next_retry_at_unix_ms: Option<u64>,
+}
+
+impl PendingRebalanceTransferState {
+    fn pending(from: Option<&str>, to: &str) -> Option<Self> {
+        let from = from
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let to = to.trim();
+        if to.is_empty() {
+            return None;
+        }
+        if from.as_deref() == Some(to) {
+            return None;
+        }
+        Some(Self {
+            from,
+            to: to.to_string(),
+            attempts: 0,
+            completed: false,
+            last_error: None,
+            next_retry_at_unix_ms: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRebalanceOperation {
+    pub rebalance_id: String,
+    pub bucket: String,
+    pub key: String,
+    pub scope: RebalanceObjectScope,
+    pub coordinator_node: String,
+    pub placement_epoch: u64,
+    pub placement_view_id: String,
+    pub created_at_unix_ms: u64,
+    pub transfers: Vec<PendingRebalanceTransferState>,
+}
+
+impl PendingRebalanceOperation {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        rebalance_id: &str,
+        bucket: &str,
+        key: &str,
+        scope: RebalanceObjectScope,
+        coordinator_node: &str,
+        placement: &PlacementViewState,
+        transfers: &[RebalanceTransfer],
+        created_at_unix_ms: u64,
+    ) -> Option<Self> {
+        let rebalance_id = rebalance_id.trim();
+        let bucket = bucket.trim();
+        let key = key.trim();
+        let coordinator_node = coordinator_node.trim();
+        let placement_view_id = placement.view_id.trim();
+        if rebalance_id.is_empty()
+            || bucket.is_empty()
+            || key.is_empty()
+            || coordinator_node.is_empty()
+            || placement_view_id.is_empty()
+        {
+            return None;
+        }
+
+        let mut seen = BTreeSet::<(Option<String>, String)>::new();
+        let transfers = transfers
+            .iter()
+            .filter_map(|transfer| {
+                PendingRebalanceTransferState::pending(
+                    transfer.from.as_deref(),
+                    transfer.to.as_str(),
+                )
+            })
+            .filter(|transfer| seen.insert((transfer.from.clone(), transfer.to.clone())))
+            .collect::<Vec<_>>();
+        if transfers.is_empty() {
+            return None;
+        }
+
+        Some(Self {
+            rebalance_id: rebalance_id.to_string(),
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            scope,
+            coordinator_node: coordinator_node.to_string(),
+            placement_epoch: placement.epoch,
+            placement_view_id: placement_view_id.to_string(),
+            created_at_unix_ms,
+            transfers,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PendingRebalanceQueue {
+    pub operations: Vec<PendingRebalanceOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingRebalanceEnqueueOutcome {
+    Inserted,
+    AlreadyTracked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingRebalanceAcknowledgeOutcome {
+    Updated {
+        remaining_transfers: usize,
+        completed: bool,
     },
-    Send {
-        from: String,
-        to: String,
+    NotFound,
+    TransferNotTracked,
+    AlreadyCompleted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingRebalanceFailureOutcome {
+    Updated { attempts: u32 },
+    NotFound,
+    TransferNotTracked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingRebalanceLeaseOutcome {
+    Updated {
+        lease_expires_at_unix_ms: u64,
+        attempts: u32,
     },
+    NotFound,
+    TransferNotTracked,
+    AlreadyCompleted,
+    NotDue {
+        next_retry_at_unix_ms: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingRebalanceFailureWithBackoffOutcome {
+    Updated {
+        attempts: u32,
+        next_retry_at_unix_ms: u64,
+    },
+    NotFound,
+    TransferNotTracked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PendingRebalanceQueueSummary {
+    pub operations: usize,
+    pub pending_transfers: usize,
+    pub failed_transfers: usize,
+    pub max_attempts: u32,
+    pub oldest_created_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingRebalanceCandidate {
+    pub rebalance_id: String,
+    pub bucket: String,
+    pub key: String,
+    pub scope: RebalanceObjectScope,
+    pub coordinator_node: String,
+    pub placement_epoch: u64,
+    pub placement_view_id: String,
+    pub created_at_unix_ms: u64,
+    pub from: Option<String>,
+    pub to: String,
+    pub attempts: u32,
+    pub next_retry_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PendingRebalanceReplayCycleOutcome {
+    pub scanned_transfers: usize,
+    pub leased_transfers: usize,
+    pub acknowledged_transfers: usize,
+    pub failed_transfers: usize,
+    pub skipped_transfers: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReplicationMutationOperation {
+    PutObject,
+    CopyObject,
+    DeleteObject,
+    DeleteObjectVersion,
+    CompleteMultipartUpload,
+}
+
+impl ReplicationMutationOperation {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::PutObject => "put-object",
+            Self::CopyObject => "copy-object",
+            Self::DeleteObject => "delete-object",
+            Self::DeleteObjectVersion => "delete-object-version",
+            Self::CompleteMultipartUpload => "complete-multipart-upload",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingReplicationTargetState {
+    pub node: String,
+    pub attempts: u32,
+    pub acked: bool,
+    pub last_error: Option<String>,
+    pub next_retry_at_unix_ms: Option<u64>,
+}
+
+impl PendingReplicationTargetState {
+    fn pending(node: &str) -> Option<Self> {
+        let node = node.trim();
+        if node.is_empty() {
+            return None;
+        }
+        Some(Self {
+            node: node.to_string(),
+            attempts: 0,
+            acked: false,
+            last_error: None,
+            next_retry_at_unix_ms: None,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingReplicationOperation {
+    pub idempotency_key: String,
+    pub operation: ReplicationMutationOperation,
+    pub bucket: String,
+    pub key: String,
+    pub version_id: Option<String>,
+    pub coordinator_node: String,
+    pub placement_epoch: u64,
+    pub placement_view_id: String,
+    pub created_at_unix_ms: u64,
+    pub targets: Vec<PendingReplicationTargetState>,
+}
+
+impl PendingReplicationOperation {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        idempotency_key: &str,
+        operation: ReplicationMutationOperation,
+        bucket: &str,
+        key: &str,
+        version_id: Option<&str>,
+        coordinator_node: &str,
+        placement: &PlacementViewState,
+        target_nodes: &[String],
+        created_at_unix_ms: u64,
+    ) -> Option<Self> {
+        let idempotency_key = idempotency_key.trim();
+        let bucket = bucket.trim();
+        let key = key.trim();
+        let coordinator_node = coordinator_node.trim();
+        let placement_view_id = placement.view_id.trim();
+        if idempotency_key.is_empty()
+            || bucket.is_empty()
+            || key.is_empty()
+            || coordinator_node.is_empty()
+            || placement_view_id.is_empty()
+        {
+            return None;
+        }
+
+        let mut seen = BTreeSet::<String>::new();
+        let targets = target_nodes
+            .iter()
+            .filter_map(|node| PendingReplicationTargetState::pending(node))
+            .filter(|target| seen.insert(target.node.clone()))
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            return None;
+        }
+
+        let version_id = version_id
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+
+        Some(Self {
+            idempotency_key: idempotency_key.to_string(),
+            operation,
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            version_id,
+            coordinator_node: coordinator_node.to_string(),
+            placement_epoch: placement.epoch,
+            placement_view_id: placement_view_id.to_string(),
+            created_at_unix_ms,
+            targets,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct PendingReplicationQueue {
+    pub operations: Vec<PendingReplicationOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingReplicationEnqueueOutcome {
+    Inserted,
+    AlreadyTracked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingReplicationAcknowledgeOutcome {
+    Updated {
+        remaining_targets: usize,
+        completed: bool,
+    },
+    NotFound,
+    TargetNotTracked,
+    AlreadyAcked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingReplicationFailureOutcome {
+    Updated { attempts: u32 },
+    NotFound,
+    TargetNotTracked,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PendingReplicationQueueSummary {
+    pub operations: usize,
+    pub pending_targets: usize,
+    pub failed_targets: usize,
+    pub max_attempts: u32,
+    pub oldest_created_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingReplicationRetryPolicy {
+    pub base_delay_ms: u64,
+    pub max_delay_ms: u64,
+}
+
+impl PendingReplicationRetryPolicy {
+    pub const DEFAULT_BASE_DELAY_MS: u64 = 1_000;
+    pub const DEFAULT_MAX_DELAY_MS: u64 = 300_000;
+
+    pub fn normalized(self) -> Self {
+        let base_delay_ms = self.base_delay_ms.max(1);
+        let max_delay_ms = self.max_delay_ms.max(base_delay_ms);
+        Self {
+            base_delay_ms,
+            max_delay_ms,
+        }
+    }
+}
+
+impl Default for PendingReplicationRetryPolicy {
+    fn default() -> Self {
+        Self {
+            base_delay_ms: Self::DEFAULT_BASE_DELAY_MS,
+            max_delay_ms: Self::DEFAULT_MAX_DELAY_MS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingReplicationReplayCandidate {
+    pub idempotency_key: String,
+    pub operation: ReplicationMutationOperation,
+    pub bucket: String,
+    pub key: String,
+    pub version_id: Option<String>,
+    pub coordinator_node: String,
+    pub placement_epoch: u64,
+    pub placement_view_id: String,
+    pub created_at_unix_ms: u64,
+    pub target_node: String,
+    pub attempts: u32,
+    pub next_retry_at_unix_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingReplicationReplayOwnerAlignment {
+    pub owners: Vec<String>,
+    pub local_is_owner: bool,
+    pub target_is_owner: bool,
+}
+
+impl PendingReplicationReplayOwnerAlignment {
+    pub const fn should_replay(&self) -> bool {
+        self.local_is_owner && self.target_is_owner
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingReplicationReplayLeaseOutcome {
+    Updated {
+        lease_expires_at_unix_ms: u64,
+        attempts: u32,
+    },
+    NotFound,
+    TargetNotTracked,
+    AlreadyAcked,
+    NotDue {
+        next_retry_at_unix_ms: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingReplicationFailureWithBackoffOutcome {
+    Updated {
+        attempts: u32,
+        next_retry_at_unix_ms: u64,
+    },
+    NotFound,
+    TargetNotTracked,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -193,6 +632,8 @@ pub struct PlacementHandoffPlan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForwardedWriteOperation {
     PutObject,
+    GetObject,
+    HeadObject,
     CreateMultipartUpload,
     UploadMultipartPart,
     CompleteMultipartUpload,
@@ -409,6 +850,29 @@ pub fn object_write_plan_with_self(
     object_write_plan_for_membership(key, node_id, &membership, replica_count)
 }
 
+/// Evaluate replay ownership alignment for a pending replication target.
+///
+/// Replay is safe only when both the local coordinator node and replay target are in
+/// the current owner set for the object key.
+pub fn pending_replication_replay_owner_alignment(
+    key: &str,
+    node_id: &str,
+    peers: &[String],
+    target_node: &str,
+    replica_count: usize,
+) -> PendingReplicationReplayOwnerAlignment {
+    let plan = object_write_plan_with_self(key, node_id, peers, replica_count);
+    let target_node = target_node.trim();
+    let target_is_owner =
+        !target_node.is_empty() && plan.owners.iter().any(|owner| owner == target_node);
+
+    PendingReplicationReplayOwnerAlignment {
+        owners: plan.owners,
+        local_is_owner: plan.is_local_replica_owner,
+        target_is_owner,
+    }
+}
+
 /// Evaluate a write-ack quorum outcome against an object write plan.
 ///
 /// Only plan owners are considered for quorum accounting. Unknown observation nodes are ignored.
@@ -622,6 +1086,1095 @@ pub fn local_rebalance_actions(
     }
 
     actions
+}
+
+fn normalize_rebalance_transfer_from(from: Option<&str>) -> Option<String> {
+    from.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn rebalance_transfer_matches(
+    transfer: &PendingRebalanceTransferState,
+    from: &Option<String>,
+    to: &str,
+) -> bool {
+    transfer.to == to && &transfer.from == from
+}
+
+/// Insert a pending rebalance operation unless it is already tracked by rebalance id.
+pub fn enqueue_pending_rebalance_operation(
+    queue: &mut PendingRebalanceQueue,
+    operation: PendingRebalanceOperation,
+) -> PendingRebalanceEnqueueOutcome {
+    if queue
+        .operations
+        .iter()
+        .any(|existing| existing.rebalance_id == operation.rebalance_id)
+    {
+        return PendingRebalanceEnqueueOutcome::AlreadyTracked;
+    }
+    queue.operations.push(operation);
+    PendingRebalanceEnqueueOutcome::Inserted
+}
+
+/// Mark a rebalance transfer as complete and prune completed operations.
+pub fn acknowledge_pending_rebalance_transfer(
+    queue: &mut PendingRebalanceQueue,
+    rebalance_id: &str,
+    from_node: Option<&str>,
+    to_node: &str,
+) -> PendingRebalanceAcknowledgeOutcome {
+    let rebalance_id = rebalance_id.trim();
+    let to_node = to_node.trim();
+    if rebalance_id.is_empty() || to_node.is_empty() {
+        return PendingRebalanceAcknowledgeOutcome::NotFound;
+    }
+    let from_node = normalize_rebalance_transfer_from(from_node);
+
+    let Some(op_index) = queue
+        .operations
+        .iter()
+        .position(|op| op.rebalance_id == rebalance_id)
+    else {
+        return PendingRebalanceAcknowledgeOutcome::NotFound;
+    };
+
+    let Some(transfer_index) = queue.operations[op_index]
+        .transfers
+        .iter()
+        .position(|transfer| rebalance_transfer_matches(transfer, &from_node, to_node))
+    else {
+        return PendingRebalanceAcknowledgeOutcome::TransferNotTracked;
+    };
+
+    let transfer = &mut queue.operations[op_index].transfers[transfer_index];
+    if transfer.completed {
+        return PendingRebalanceAcknowledgeOutcome::AlreadyCompleted;
+    }
+    transfer.completed = true;
+    transfer.last_error = None;
+
+    let remaining_transfers = queue.operations[op_index]
+        .transfers
+        .iter()
+        .filter(|candidate| !candidate.completed)
+        .count();
+    if remaining_transfers == 0 {
+        queue.operations.remove(op_index);
+        return PendingRebalanceAcknowledgeOutcome::Updated {
+            remaining_transfers: 0,
+            completed: true,
+        };
+    }
+
+    PendingRebalanceAcknowledgeOutcome::Updated {
+        remaining_transfers,
+        completed: false,
+    }
+}
+
+/// Record a failed rebalance transfer attempt.
+pub fn record_pending_rebalance_failure(
+    queue: &mut PendingRebalanceQueue,
+    rebalance_id: &str,
+    from_node: Option<&str>,
+    to_node: &str,
+    error: Option<&str>,
+) -> PendingRebalanceFailureOutcome {
+    let rebalance_id = rebalance_id.trim();
+    let to_node = to_node.trim();
+    if rebalance_id.is_empty() || to_node.is_empty() {
+        return PendingRebalanceFailureOutcome::NotFound;
+    }
+    let from_node = normalize_rebalance_transfer_from(from_node);
+
+    let Some(operation) = queue
+        .operations
+        .iter_mut()
+        .find(|operation| operation.rebalance_id == rebalance_id)
+    else {
+        return PendingRebalanceFailureOutcome::NotFound;
+    };
+
+    let Some(transfer) = operation
+        .transfers
+        .iter_mut()
+        .find(|transfer| rebalance_transfer_matches(transfer, &from_node, to_node))
+    else {
+        return PendingRebalanceFailureOutcome::TransferNotTracked;
+    };
+
+    transfer.attempts = transfer.attempts.saturating_add(1);
+    transfer.completed = false;
+    transfer.last_error = error
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    PendingRebalanceFailureOutcome::Updated {
+        attempts: transfer.attempts,
+    }
+}
+
+/// Select due pending rebalance transfers in stable order for executor workers.
+pub fn pending_rebalance_candidates(
+    queue: &PendingRebalanceQueue,
+    now_unix_ms: u64,
+    max_candidates: usize,
+) -> Vec<PendingRebalanceCandidate> {
+    if max_candidates == 0 {
+        return Vec::new();
+    }
+
+    let mut candidates = queue
+        .operations
+        .iter()
+        .flat_map(|operation| {
+            operation
+                .transfers
+                .iter()
+                .filter(|transfer| !transfer.completed)
+                .filter(|transfer| {
+                    transfer
+                        .next_retry_at_unix_ms
+                        .is_none_or(|retry_at| retry_at <= now_unix_ms)
+                })
+                .map(|transfer| PendingRebalanceCandidate {
+                    rebalance_id: operation.rebalance_id.clone(),
+                    bucket: operation.bucket.clone(),
+                    key: operation.key.clone(),
+                    scope: operation.scope.clone(),
+                    coordinator_node: operation.coordinator_node.clone(),
+                    placement_epoch: operation.placement_epoch,
+                    placement_view_id: operation.placement_view_id.clone(),
+                    created_at_unix_ms: operation.created_at_unix_ms,
+                    from: transfer.from.clone(),
+                    to: transfer.to.clone(),
+                    attempts: transfer.attempts,
+                    next_retry_at_unix_ms: transfer.next_retry_at_unix_ms,
+                })
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        (
+            left.next_retry_at_unix_ms.unwrap_or(0),
+            left.created_at_unix_ms,
+            left.rebalance_id.as_str(),
+            left.from.as_deref().unwrap_or(""),
+            left.to.as_str(),
+        )
+            .cmp(&(
+                right.next_retry_at_unix_ms.unwrap_or(0),
+                right.created_at_unix_ms,
+                right.rebalance_id.as_str(),
+                right.from.as_deref().unwrap_or(""),
+                right.to.as_str(),
+            ))
+    });
+    candidates.truncate(max_candidates);
+    candidates
+}
+
+/// Lease a due rebalance transfer for execution processing.
+pub fn lease_pending_rebalance_transfer_for_execution(
+    queue: &mut PendingRebalanceQueue,
+    rebalance_id: &str,
+    from_node: Option<&str>,
+    to_node: &str,
+    now_unix_ms: u64,
+    lease_ms: u64,
+) -> PendingRebalanceLeaseOutcome {
+    let rebalance_id = rebalance_id.trim();
+    let to_node = to_node.trim();
+    if rebalance_id.is_empty() || to_node.is_empty() {
+        return PendingRebalanceLeaseOutcome::NotFound;
+    }
+    let from_node = normalize_rebalance_transfer_from(from_node);
+
+    let Some(operation) = queue
+        .operations
+        .iter_mut()
+        .find(|operation| operation.rebalance_id == rebalance_id)
+    else {
+        return PendingRebalanceLeaseOutcome::NotFound;
+    };
+
+    let Some(transfer) = operation
+        .transfers
+        .iter_mut()
+        .find(|transfer| rebalance_transfer_matches(transfer, &from_node, to_node))
+    else {
+        return PendingRebalanceLeaseOutcome::TransferNotTracked;
+    };
+
+    if transfer.completed {
+        return PendingRebalanceLeaseOutcome::AlreadyCompleted;
+    }
+
+    if let Some(next_retry_at_unix_ms) = transfer.next_retry_at_unix_ms {
+        if next_retry_at_unix_ms > now_unix_ms {
+            return PendingRebalanceLeaseOutcome::NotDue {
+                next_retry_at_unix_ms,
+            };
+        }
+    }
+
+    let lease_expires_at_unix_ms = now_unix_ms.saturating_add(lease_ms.max(1));
+    transfer.next_retry_at_unix_ms = Some(lease_expires_at_unix_ms);
+    PendingRebalanceLeaseOutcome::Updated {
+        lease_expires_at_unix_ms,
+        attempts: transfer.attempts,
+    }
+}
+
+/// Record a failed rebalance transfer attempt and schedule exponential-backoff retry.
+pub fn record_pending_rebalance_failure_with_backoff(
+    queue: &mut PendingRebalanceQueue,
+    rebalance_id: &str,
+    from_node: Option<&str>,
+    to_node: &str,
+    error: Option<&str>,
+    now_unix_ms: u64,
+    policy: PendingReplicationRetryPolicy,
+) -> PendingRebalanceFailureWithBackoffOutcome {
+    let outcome = record_pending_rebalance_failure(queue, rebalance_id, from_node, to_node, error);
+    let PendingRebalanceFailureOutcome::Updated { attempts } = outcome else {
+        return match outcome {
+            PendingRebalanceFailureOutcome::NotFound => {
+                PendingRebalanceFailureWithBackoffOutcome::NotFound
+            }
+            PendingRebalanceFailureOutcome::TransferNotTracked => {
+                PendingRebalanceFailureWithBackoffOutcome::TransferNotTracked
+            }
+            PendingRebalanceFailureOutcome::Updated { .. } => {
+                PendingRebalanceFailureWithBackoffOutcome::NotFound
+            }
+        };
+    };
+
+    let rebalance_id = rebalance_id.trim();
+    let to_node = to_node.trim();
+    let from_node = normalize_rebalance_transfer_from(from_node);
+
+    let Some(transfer) = queue
+        .operations
+        .iter_mut()
+        .find(|operation| operation.rebalance_id == rebalance_id)
+        .and_then(|operation| {
+            operation
+                .transfers
+                .iter_mut()
+                .find(|transfer| rebalance_transfer_matches(transfer, &from_node, to_node))
+        })
+    else {
+        return PendingRebalanceFailureWithBackoffOutcome::NotFound;
+    };
+
+    let retry_delay_ms = pending_replication_retry_backoff_ms(attempts, policy);
+    let next_retry_at_unix_ms = now_unix_ms.saturating_add(retry_delay_ms);
+    transfer.next_retry_at_unix_ms = Some(next_retry_at_unix_ms);
+
+    PendingRebalanceFailureWithBackoffOutcome::Updated {
+        attempts,
+        next_retry_at_unix_ms,
+    }
+}
+
+/// Build bounded, deterministic pending-rebalance diagnostics for runtime/console metrics.
+pub fn summarize_pending_rebalance_queue(
+    queue: &PendingRebalanceQueue,
+) -> PendingRebalanceQueueSummary {
+    let mut summary = PendingRebalanceQueueSummary {
+        operations: queue.operations.len(),
+        ..PendingRebalanceQueueSummary::default()
+    };
+
+    for operation in &queue.operations {
+        summary.oldest_created_at_unix_ms = match summary.oldest_created_at_unix_ms {
+            Some(existing) => Some(existing.min(operation.created_at_unix_ms)),
+            None => Some(operation.created_at_unix_ms),
+        };
+
+        for transfer in &operation.transfers {
+            if !transfer.completed {
+                summary.pending_transfers += 1;
+            }
+            if transfer.last_error.is_some() {
+                summary.failed_transfers += 1;
+            }
+            summary.max_attempts = summary.max_attempts.max(transfer.attempts);
+        }
+    }
+
+    summary
+}
+
+/// Replay due pending rebalance transfers once with persisted queue state.
+///
+/// The caller provides the transfer application function so runtime executors can
+/// supply transfer transport behavior while queue durability/state transitions stay
+/// centralized in placement.
+pub fn replay_pending_rebalance_transfers_once_with_apply_fn<F>(
+    path: &Path,
+    now_unix_ms: u64,
+    max_candidates: usize,
+    lease_ms: u64,
+    retry_policy: PendingReplicationRetryPolicy,
+    mut apply_fn: F,
+) -> std::io::Result<PendingRebalanceReplayCycleOutcome>
+where
+    F: FnMut(&PendingRebalanceCandidate) -> Result<(), String>,
+{
+    if max_candidates == 0 {
+        return Ok(PendingRebalanceReplayCycleOutcome::default());
+    }
+
+    let candidates = pending_rebalance_candidates_from_disk(path, now_unix_ms, max_candidates)?;
+    let mut outcome = PendingRebalanceReplayCycleOutcome::default();
+
+    for candidate in candidates {
+        outcome.scanned_transfers = outcome.scanned_transfers.saturating_add(1);
+        let lease_outcome = lease_pending_rebalance_transfer_for_execution_persisted(
+            path,
+            candidate.rebalance_id.as_str(),
+            candidate.from.as_deref(),
+            candidate.to.as_str(),
+            now_unix_ms,
+            lease_ms,
+        )?;
+        if !matches!(lease_outcome, PendingRebalanceLeaseOutcome::Updated { .. }) {
+            outcome.skipped_transfers = outcome.skipped_transfers.saturating_add(1);
+            continue;
+        }
+        outcome.leased_transfers = outcome.leased_transfers.saturating_add(1);
+
+        match apply_fn(&candidate) {
+            Ok(()) => {
+                let ack_outcome = acknowledge_pending_rebalance_transfer_persisted(
+                    path,
+                    candidate.rebalance_id.as_str(),
+                    candidate.from.as_deref(),
+                    candidate.to.as_str(),
+                )?;
+                if matches!(
+                    ack_outcome,
+                    PendingRebalanceAcknowledgeOutcome::Updated { .. }
+                ) {
+                    outcome.acknowledged_transfers =
+                        outcome.acknowledged_transfers.saturating_add(1);
+                } else {
+                    outcome.skipped_transfers = outcome.skipped_transfers.saturating_add(1);
+                }
+            }
+            Err(error) => {
+                let failure_outcome = record_pending_rebalance_failure_with_backoff_persisted(
+                    path,
+                    candidate.rebalance_id.as_str(),
+                    candidate.from.as_deref(),
+                    candidate.to.as_str(),
+                    Some(error.as_str()),
+                    now_unix_ms,
+                    retry_policy,
+                )?;
+                if matches!(
+                    failure_outcome,
+                    PendingRebalanceFailureWithBackoffOutcome::Updated { .. }
+                ) {
+                    outcome.failed_transfers = outcome.failed_transfers.saturating_add(1);
+                } else {
+                    outcome.skipped_transfers = outcome.skipped_transfers.saturating_add(1);
+                }
+            }
+        }
+    }
+
+    Ok(outcome)
+}
+
+/// Load the pending rebalance queue snapshot from disk.
+///
+/// Missing files are treated as an empty queue.
+pub fn load_pending_rebalance_queue(path: &Path) -> std::io::Result<PendingRebalanceQueue> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str::<PendingRebalanceQueue>(&raw)
+            .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(PendingRebalanceQueue::default()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Persist the pending rebalance queue snapshot using atomic replace semantics.
+pub fn persist_pending_rebalance_queue(
+    path: &Path,
+    queue: &PendingRebalanceQueue,
+) -> std::io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "rebalance queue path must include parent directory",
+        ));
+    };
+    std::fs::create_dir_all(parent)?;
+
+    let payload = serde_json::to_vec_pretty(queue)
+        .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))?;
+
+    let nanos_since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temp_file_name = format!(
+        ".{}.tmp-{}-{}",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("pending-rebalance"),
+        std::process::id(),
+        nanos_since_epoch
+    );
+    let temp_path = parent.join(temp_file_name);
+    std::fs::write(&temp_path, payload)?;
+    if let Err(error) = std::fs::rename(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Insert a pending rebalance operation with persisted queue state.
+pub fn enqueue_pending_rebalance_operation_persisted(
+    path: &Path,
+    operation: PendingRebalanceOperation,
+) -> std::io::Result<PendingRebalanceEnqueueOutcome> {
+    let mut queue = load_pending_rebalance_queue(path)?;
+    let outcome = enqueue_pending_rebalance_operation(&mut queue, operation);
+    if matches!(outcome, PendingRebalanceEnqueueOutcome::Inserted) {
+        persist_pending_rebalance_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Acknowledge a pending rebalance transfer with persisted queue state.
+pub fn acknowledge_pending_rebalance_transfer_persisted(
+    path: &Path,
+    rebalance_id: &str,
+    from_node: Option<&str>,
+    to_node: &str,
+) -> std::io::Result<PendingRebalanceAcknowledgeOutcome> {
+    let mut queue = load_pending_rebalance_queue(path)?;
+    let outcome =
+        acknowledge_pending_rebalance_transfer(&mut queue, rebalance_id, from_node, to_node);
+    if matches!(outcome, PendingRebalanceAcknowledgeOutcome::Updated { .. }) {
+        persist_pending_rebalance_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Record a rebalance transfer failure with persisted queue state.
+pub fn record_pending_rebalance_failure_persisted(
+    path: &Path,
+    rebalance_id: &str,
+    from_node: Option<&str>,
+    to_node: &str,
+    error: Option<&str>,
+) -> std::io::Result<PendingRebalanceFailureOutcome> {
+    let mut queue = load_pending_rebalance_queue(path)?;
+    let outcome =
+        record_pending_rebalance_failure(&mut queue, rebalance_id, from_node, to_node, error);
+    if matches!(outcome, PendingRebalanceFailureOutcome::Updated { .. }) {
+        persist_pending_rebalance_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Lease a due pending rebalance transfer with persisted queue state.
+pub fn lease_pending_rebalance_transfer_for_execution_persisted(
+    path: &Path,
+    rebalance_id: &str,
+    from_node: Option<&str>,
+    to_node: &str,
+    now_unix_ms: u64,
+    lease_ms: u64,
+) -> std::io::Result<PendingRebalanceLeaseOutcome> {
+    let mut queue = load_pending_rebalance_queue(path)?;
+    let outcome = lease_pending_rebalance_transfer_for_execution(
+        &mut queue,
+        rebalance_id,
+        from_node,
+        to_node,
+        now_unix_ms,
+        lease_ms,
+    );
+    if matches!(outcome, PendingRebalanceLeaseOutcome::Updated { .. }) {
+        persist_pending_rebalance_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Record a failed rebalance transfer attempt with backoff scheduling using persisted queue state.
+pub fn record_pending_rebalance_failure_with_backoff_persisted(
+    path: &Path,
+    rebalance_id: &str,
+    from_node: Option<&str>,
+    to_node: &str,
+    error: Option<&str>,
+    now_unix_ms: u64,
+    policy: PendingReplicationRetryPolicy,
+) -> std::io::Result<PendingRebalanceFailureWithBackoffOutcome> {
+    let mut queue = load_pending_rebalance_queue(path)?;
+    let outcome = record_pending_rebalance_failure_with_backoff(
+        &mut queue,
+        rebalance_id,
+        from_node,
+        to_node,
+        error,
+        now_unix_ms,
+        policy,
+    );
+    if matches!(
+        outcome,
+        PendingRebalanceFailureWithBackoffOutcome::Updated { .. }
+    ) {
+        persist_pending_rebalance_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Load persisted rebalance queue state and select due execution candidates in stable order.
+pub fn pending_rebalance_candidates_from_disk(
+    path: &Path,
+    now_unix_ms: u64,
+    max_candidates: usize,
+) -> std::io::Result<Vec<PendingRebalanceCandidate>> {
+    let queue = load_pending_rebalance_queue(path)?;
+    Ok(pending_rebalance_candidates(
+        &queue,
+        now_unix_ms,
+        max_candidates,
+    ))
+}
+
+/// Load persisted rebalance queue state and project deterministic queue diagnostics.
+pub fn summarize_pending_rebalance_queue_from_disk(
+    path: &Path,
+) -> std::io::Result<PendingRebalanceQueueSummary> {
+    let queue = load_pending_rebalance_queue(path)?;
+    Ok(summarize_pending_rebalance_queue(&queue))
+}
+
+/// Build a durable-replication backlog operation for non-acked replica owners.
+///
+/// Returns `None` when no backlog targets remain after quorum evaluation.
+#[allow(clippy::too_many_arguments)]
+pub fn pending_replication_operation_from_quorum_outcome(
+    operation: ReplicationMutationOperation,
+    idempotency_key: &str,
+    bucket: &str,
+    key: &str,
+    version_id: Option<&str>,
+    coordinator_node: &str,
+    placement: &PlacementViewState,
+    outcome: &ObjectWriteQuorumOutcome,
+    created_at_unix_ms: u64,
+) -> Option<PendingReplicationOperation> {
+    let mut target_nodes = outcome.pending_nodes.clone();
+    for node in &outcome.rejected_nodes {
+        if !target_nodes.iter().any(|pending| pending == node) {
+            target_nodes.push(node.clone());
+        }
+    }
+
+    PendingReplicationOperation::new(
+        idempotency_key,
+        operation,
+        bucket,
+        key,
+        version_id,
+        coordinator_node,
+        placement,
+        target_nodes.as_slice(),
+        created_at_unix_ms,
+    )
+}
+
+/// Insert a pending replication operation unless it is already tracked by idempotency key.
+pub fn enqueue_pending_replication_operation(
+    queue: &mut PendingReplicationQueue,
+    operation: PendingReplicationOperation,
+) -> PendingReplicationEnqueueOutcome {
+    if queue
+        .operations
+        .iter()
+        .any(|existing| existing.idempotency_key == operation.idempotency_key)
+    {
+        return PendingReplicationEnqueueOutcome::AlreadyTracked;
+    }
+    queue.operations.push(operation);
+    PendingReplicationEnqueueOutcome::Inserted
+}
+
+/// Mark a replication target as acknowledged and prune completed operations.
+pub fn acknowledge_pending_replication_target(
+    queue: &mut PendingReplicationQueue,
+    idempotency_key: &str,
+    target_node: &str,
+) -> PendingReplicationAcknowledgeOutcome {
+    let idempotency_key = idempotency_key.trim();
+    let target_node = target_node.trim();
+    if idempotency_key.is_empty() || target_node.is_empty() {
+        return PendingReplicationAcknowledgeOutcome::NotFound;
+    }
+
+    let Some(op_index) = queue
+        .operations
+        .iter()
+        .position(|op| op.idempotency_key == idempotency_key)
+    else {
+        return PendingReplicationAcknowledgeOutcome::NotFound;
+    };
+
+    let Some(target_index) = queue.operations[op_index]
+        .targets
+        .iter()
+        .position(|target| target.node == target_node)
+    else {
+        return PendingReplicationAcknowledgeOutcome::TargetNotTracked;
+    };
+
+    let target = &mut queue.operations[op_index].targets[target_index];
+    if target.acked {
+        return PendingReplicationAcknowledgeOutcome::AlreadyAcked;
+    }
+    target.acked = true;
+    target.last_error = None;
+
+    let remaining_targets = queue.operations[op_index]
+        .targets
+        .iter()
+        .filter(|candidate| !candidate.acked)
+        .count();
+    if remaining_targets == 0 {
+        queue.operations.remove(op_index);
+        return PendingReplicationAcknowledgeOutcome::Updated {
+            remaining_targets: 0,
+            completed: true,
+        };
+    }
+
+    PendingReplicationAcknowledgeOutcome::Updated {
+        remaining_targets,
+        completed: false,
+    }
+}
+
+/// Record a failed replication attempt for a tracked target.
+pub fn record_pending_replication_failure(
+    queue: &mut PendingReplicationQueue,
+    idempotency_key: &str,
+    target_node: &str,
+    error: Option<&str>,
+) -> PendingReplicationFailureOutcome {
+    let idempotency_key = idempotency_key.trim();
+    let target_node = target_node.trim();
+    if idempotency_key.is_empty() || target_node.is_empty() {
+        return PendingReplicationFailureOutcome::NotFound;
+    }
+
+    let Some(operation) = queue
+        .operations
+        .iter_mut()
+        .find(|op| op.idempotency_key == idempotency_key)
+    else {
+        return PendingReplicationFailureOutcome::NotFound;
+    };
+
+    let Some(target) = operation
+        .targets
+        .iter_mut()
+        .find(|candidate| candidate.node == target_node)
+    else {
+        return PendingReplicationFailureOutcome::TargetNotTracked;
+    };
+
+    target.attempts = target.attempts.saturating_add(1);
+    target.acked = false;
+    target.last_error = error
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    PendingReplicationFailureOutcome::Updated {
+        attempts: target.attempts,
+    }
+}
+
+/// Compute exponential backoff delay for pending replication retries.
+pub fn pending_replication_retry_backoff_ms(
+    attempts: u32,
+    policy: PendingReplicationRetryPolicy,
+) -> u64 {
+    let policy = policy.normalized();
+    let shift = attempts.saturating_sub(1).min(20);
+    let multiplier = 1_u64 << shift;
+    policy
+        .base_delay_ms
+        .saturating_mul(multiplier)
+        .min(policy.max_delay_ms)
+}
+
+/// Select due pending replication targets in stable order for replay workers.
+pub fn pending_replication_replay_candidates(
+    queue: &PendingReplicationQueue,
+    now_unix_ms: u64,
+    max_candidates: usize,
+) -> Vec<PendingReplicationReplayCandidate> {
+    if max_candidates == 0 {
+        return Vec::new();
+    }
+
+    let mut candidates = queue
+        .operations
+        .iter()
+        .flat_map(|operation| {
+            operation
+                .targets
+                .iter()
+                .filter(|target| !target.acked)
+                .filter(|target| {
+                    target
+                        .next_retry_at_unix_ms
+                        .is_none_or(|retry_at| retry_at <= now_unix_ms)
+                })
+                .map(|target| PendingReplicationReplayCandidate {
+                    idempotency_key: operation.idempotency_key.clone(),
+                    operation: operation.operation,
+                    bucket: operation.bucket.clone(),
+                    key: operation.key.clone(),
+                    version_id: operation.version_id.clone(),
+                    coordinator_node: operation.coordinator_node.clone(),
+                    placement_epoch: operation.placement_epoch,
+                    placement_view_id: operation.placement_view_id.clone(),
+                    created_at_unix_ms: operation.created_at_unix_ms,
+                    target_node: target.node.clone(),
+                    attempts: target.attempts,
+                    next_retry_at_unix_ms: target.next_retry_at_unix_ms,
+                })
+        })
+        .collect::<Vec<_>>();
+
+    candidates.sort_by(|left, right| {
+        (
+            left.next_retry_at_unix_ms.unwrap_or(0),
+            left.created_at_unix_ms,
+            left.idempotency_key.as_str(),
+            left.target_node.as_str(),
+        )
+            .cmp(&(
+                right.next_retry_at_unix_ms.unwrap_or(0),
+                right.created_at_unix_ms,
+                right.idempotency_key.as_str(),
+                right.target_node.as_str(),
+            ))
+    });
+    candidates.truncate(max_candidates);
+    candidates
+}
+
+/// Lease a due pending replication target for replay processing.
+pub fn lease_pending_replication_target_for_replay(
+    queue: &mut PendingReplicationQueue,
+    idempotency_key: &str,
+    target_node: &str,
+    now_unix_ms: u64,
+    lease_ms: u64,
+) -> PendingReplicationReplayLeaseOutcome {
+    let idempotency_key = idempotency_key.trim();
+    let target_node = target_node.trim();
+    if idempotency_key.is_empty() || target_node.is_empty() {
+        return PendingReplicationReplayLeaseOutcome::NotFound;
+    }
+
+    let Some(operation) = queue
+        .operations
+        .iter_mut()
+        .find(|operation| operation.idempotency_key == idempotency_key)
+    else {
+        return PendingReplicationReplayLeaseOutcome::NotFound;
+    };
+
+    let Some(target) = operation
+        .targets
+        .iter_mut()
+        .find(|target| target.node == target_node)
+    else {
+        return PendingReplicationReplayLeaseOutcome::TargetNotTracked;
+    };
+
+    if target.acked {
+        return PendingReplicationReplayLeaseOutcome::AlreadyAcked;
+    }
+
+    if let Some(next_retry_at_unix_ms) = target.next_retry_at_unix_ms {
+        if next_retry_at_unix_ms > now_unix_ms {
+            return PendingReplicationReplayLeaseOutcome::NotDue {
+                next_retry_at_unix_ms,
+            };
+        }
+    }
+
+    let lease_expires_at_unix_ms = now_unix_ms.saturating_add(lease_ms.max(1));
+    target.next_retry_at_unix_ms = Some(lease_expires_at_unix_ms);
+    PendingReplicationReplayLeaseOutcome::Updated {
+        lease_expires_at_unix_ms,
+        attempts: target.attempts,
+    }
+}
+
+/// Record a failed replication attempt and schedule exponential-backoff retry.
+pub fn record_pending_replication_failure_with_backoff(
+    queue: &mut PendingReplicationQueue,
+    idempotency_key: &str,
+    target_node: &str,
+    error: Option<&str>,
+    now_unix_ms: u64,
+    policy: PendingReplicationRetryPolicy,
+) -> PendingReplicationFailureWithBackoffOutcome {
+    let outcome = record_pending_replication_failure(queue, idempotency_key, target_node, error);
+    let PendingReplicationFailureOutcome::Updated { attempts } = outcome else {
+        return match outcome {
+            PendingReplicationFailureOutcome::NotFound => {
+                PendingReplicationFailureWithBackoffOutcome::NotFound
+            }
+            PendingReplicationFailureOutcome::TargetNotTracked => {
+                PendingReplicationFailureWithBackoffOutcome::TargetNotTracked
+            }
+            PendingReplicationFailureOutcome::Updated { .. } => {
+                PendingReplicationFailureWithBackoffOutcome::NotFound
+            }
+        };
+    };
+
+    let idempotency_key = idempotency_key.trim();
+    let target_node = target_node.trim();
+    let Some(target) = queue
+        .operations
+        .iter_mut()
+        .find(|operation| operation.idempotency_key == idempotency_key)
+        .and_then(|operation| {
+            operation
+                .targets
+                .iter_mut()
+                .find(|target| target.node == target_node)
+        })
+    else {
+        return PendingReplicationFailureWithBackoffOutcome::NotFound;
+    };
+
+    let retry_delay_ms = pending_replication_retry_backoff_ms(attempts, policy);
+    let next_retry_at_unix_ms = now_unix_ms.saturating_add(retry_delay_ms);
+    target.next_retry_at_unix_ms = Some(next_retry_at_unix_ms);
+
+    PendingReplicationFailureWithBackoffOutcome::Updated {
+        attempts,
+        next_retry_at_unix_ms,
+    }
+}
+
+/// Build bounded, deterministic queue diagnostics for runtime/console metrics.
+pub fn summarize_pending_replication_queue(
+    queue: &PendingReplicationQueue,
+) -> PendingReplicationQueueSummary {
+    let mut summary = PendingReplicationQueueSummary {
+        operations: queue.operations.len(),
+        ..PendingReplicationQueueSummary::default()
+    };
+
+    for operation in &queue.operations {
+        summary.oldest_created_at_unix_ms = match summary.oldest_created_at_unix_ms {
+            Some(existing) => Some(existing.min(operation.created_at_unix_ms)),
+            None => Some(operation.created_at_unix_ms),
+        };
+
+        for target in &operation.targets {
+            if !target.acked {
+                summary.pending_targets += 1;
+            }
+            if target.last_error.is_some() {
+                summary.failed_targets += 1;
+            }
+            summary.max_attempts = summary.max_attempts.max(target.attempts);
+        }
+    }
+
+    summary
+}
+
+/// Load the pending replication queue snapshot from disk.
+///
+/// Missing files are treated as an empty queue.
+pub fn load_pending_replication_queue(path: &Path) -> std::io::Result<PendingReplicationQueue> {
+    match std::fs::read_to_string(path) {
+        Ok(raw) => serde_json::from_str::<PendingReplicationQueue>(&raw)
+            .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error)),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(PendingReplicationQueue::default()),
+        Err(error) => Err(error),
+    }
+}
+
+/// Persist the pending replication queue snapshot using atomic replace semantics.
+pub fn persist_pending_replication_queue(
+    path: &Path,
+    queue: &PendingReplicationQueue,
+) -> std::io::Result<()> {
+    let Some(parent) = path.parent() else {
+        return Err(std::io::Error::new(
+            ErrorKind::InvalidInput,
+            "queue path must include parent directory",
+        ));
+    };
+    std::fs::create_dir_all(parent)?;
+
+    let payload = serde_json::to_vec_pretty(queue)
+        .map_err(|error| std::io::Error::new(ErrorKind::InvalidData, error))?;
+
+    let nanos_since_epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let temp_file_name = format!(
+        ".{}.tmp-{}-{}",
+        path.file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or("pending-replication"),
+        std::process::id(),
+        nanos_since_epoch
+    );
+    let temp_path = parent.join(temp_file_name);
+    std::fs::write(&temp_path, payload)?;
+    if let Err(error) = std::fs::rename(&temp_path, path) {
+        let _ = std::fs::remove_file(&temp_path);
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// Insert a pending replication operation with persisted queue state.
+pub fn enqueue_pending_replication_operation_persisted(
+    path: &Path,
+    operation: PendingReplicationOperation,
+) -> std::io::Result<PendingReplicationEnqueueOutcome> {
+    let mut queue = load_pending_replication_queue(path)?;
+    let outcome = enqueue_pending_replication_operation(&mut queue, operation);
+    if matches!(outcome, PendingReplicationEnqueueOutcome::Inserted) {
+        persist_pending_replication_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Acknowledge a pending replication target with persisted queue state.
+pub fn acknowledge_pending_replication_target_persisted(
+    path: &Path,
+    idempotency_key: &str,
+    target_node: &str,
+) -> std::io::Result<PendingReplicationAcknowledgeOutcome> {
+    let mut queue = load_pending_replication_queue(path)?;
+    let outcome = acknowledge_pending_replication_target(&mut queue, idempotency_key, target_node);
+    if matches!(
+        outcome,
+        PendingReplicationAcknowledgeOutcome::Updated { .. }
+    ) {
+        persist_pending_replication_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Record a replication failure with persisted queue state.
+pub fn record_pending_replication_failure_persisted(
+    path: &Path,
+    idempotency_key: &str,
+    target_node: &str,
+    error: Option<&str>,
+) -> std::io::Result<PendingReplicationFailureOutcome> {
+    let mut queue = load_pending_replication_queue(path)?;
+    let outcome =
+        record_pending_replication_failure(&mut queue, idempotency_key, target_node, error);
+    if matches!(outcome, PendingReplicationFailureOutcome::Updated { .. }) {
+        persist_pending_replication_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Lease a due pending replication target for replay processing with persisted queue state.
+pub fn lease_pending_replication_target_for_replay_persisted(
+    path: &Path,
+    idempotency_key: &str,
+    target_node: &str,
+    now_unix_ms: u64,
+    lease_ms: u64,
+) -> std::io::Result<PendingReplicationReplayLeaseOutcome> {
+    let mut queue = load_pending_replication_queue(path)?;
+    let outcome = lease_pending_replication_target_for_replay(
+        &mut queue,
+        idempotency_key,
+        target_node,
+        now_unix_ms,
+        lease_ms,
+    );
+    if matches!(
+        outcome,
+        PendingReplicationReplayLeaseOutcome::Updated { .. }
+    ) {
+        persist_pending_replication_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Record a failed replication attempt with backoff scheduling using persisted queue state.
+pub fn record_pending_replication_failure_with_backoff_persisted(
+    path: &Path,
+    idempotency_key: &str,
+    target_node: &str,
+    error: Option<&str>,
+    now_unix_ms: u64,
+    policy: PendingReplicationRetryPolicy,
+) -> std::io::Result<PendingReplicationFailureWithBackoffOutcome> {
+    let mut queue = load_pending_replication_queue(path)?;
+    let outcome = record_pending_replication_failure_with_backoff(
+        &mut queue,
+        idempotency_key,
+        target_node,
+        error,
+        now_unix_ms,
+        policy,
+    );
+    if matches!(
+        outcome,
+        PendingReplicationFailureWithBackoffOutcome::Updated { .. }
+    ) {
+        persist_pending_replication_queue(path, &queue)?;
+    }
+    Ok(outcome)
+}
+
+/// Load persisted queue state and select due replay candidates in stable order.
+pub fn pending_replication_replay_candidates_from_disk(
+    path: &Path,
+    now_unix_ms: u64,
+    max_candidates: usize,
+) -> std::io::Result<Vec<PendingReplicationReplayCandidate>> {
+    let queue = load_pending_replication_queue(path)?;
+    Ok(pending_replication_replay_candidates(
+        &queue,
+        now_unix_ms,
+        max_candidates,
+    ))
+}
+
+/// Load persisted queue state and project deterministic queue diagnostics.
+pub fn summarize_pending_replication_queue_from_disk(
+    path: &Path,
+) -> std::io::Result<PendingReplicationQueueSummary> {
+    let queue = load_pending_replication_queue(path)?;
+    Ok(summarize_pending_replication_queue(&queue))
 }
 
 /// Whether the local node is selected as an owner for an object chunk.
@@ -2267,6 +3820,1239 @@ mod tests {
                 primary_owner,
                 quorum_size: 2,
             }
+        );
+    }
+
+    #[test]
+    fn pending_replication_operation_new_normalizes_and_deduplicates_targets() {
+        let placement =
+            PlacementViewState::from_membership(7, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            " idem-1 ",
+            ReplicationMutationOperation::PutObject,
+            " bucket-a ",
+            " object.txt ",
+            Some(" v1 "),
+            " node-a:9000 ",
+            &placement,
+            &[
+                " node-b:9000 ".to_string(),
+                "node-c:9000".to_string(),
+                "node-b:9000".to_string(),
+            ],
+            42,
+        )
+        .expect("operation should build");
+
+        assert_eq!(operation.idempotency_key, "idem-1");
+        assert_eq!(operation.bucket, "bucket-a");
+        assert_eq!(operation.key, "object.txt");
+        assert_eq!(operation.version_id.as_deref(), Some("v1"));
+        assert_eq!(operation.coordinator_node, "node-a:9000");
+        assert_eq!(operation.placement_epoch, 7);
+        assert_eq!(operation.placement_view_id, placement.view_id);
+        assert_eq!(operation.targets.len(), 2);
+        assert_eq!(operation.targets[0].node, "node-b:9000");
+        assert_eq!(operation.targets[1].node, "node-c:9000");
+    }
+
+    #[test]
+    fn pending_replication_replay_owner_alignment_allows_when_local_and_target_are_current_owners()
+    {
+        let peers = vec!["node-b:9000".to_string(), "node-c:9000".to_string()];
+        let local = "node-a:9000";
+        let key = (0..4096)
+            .map(|idx| format!("replay/owner-alignment-allow-{idx}.txt"))
+            .find(|candidate| {
+                let plan = object_write_plan_with_self(candidate, local, &peers, 2);
+                plan.is_local_replica_owner
+                    && plan.owners.iter().any(|owner| owner == "node-b:9000")
+            })
+            .expect("expected a key where local and target are current owners");
+
+        let alignment =
+            pending_replication_replay_owner_alignment(&key, local, &peers, "node-b:9000", 2);
+        assert!(alignment.local_is_owner);
+        assert!(alignment.target_is_owner);
+        assert!(alignment.should_replay());
+    }
+
+    #[test]
+    fn pending_replication_replay_owner_alignment_rejects_when_local_is_not_owner() {
+        let peers = vec!["node-b:9000".to_string(), "node-c:9000".to_string()];
+        let local = "node-a:9000";
+        let (key, target) = (0..4096)
+            .map(|idx| format!("replay/owner-alignment-local-reject-{idx}.txt"))
+            .find_map(|candidate| {
+                let plan = object_write_plan_with_self(&candidate, local, &peers, 2);
+                if plan.is_local_replica_owner {
+                    return None;
+                }
+                plan.primary_owner.map(|target| (candidate, target))
+            })
+            .expect("expected a key where local node is outside current owner set");
+
+        let alignment =
+            pending_replication_replay_owner_alignment(&key, local, &peers, target.as_str(), 2);
+        assert!(!alignment.local_is_owner);
+        assert!(alignment.target_is_owner);
+        assert!(!alignment.should_replay());
+    }
+
+    #[test]
+    fn pending_replication_replay_owner_alignment_rejects_when_target_is_not_owner() {
+        let peers = vec!["node-b:9000".to_string(), "node-c:9000".to_string()];
+        let local = "node-a:9000";
+        let key = (0..4096)
+            .map(|idx| format!("replay/owner-alignment-target-reject-{idx}.txt"))
+            .find(|candidate| {
+                object_write_plan_with_self(candidate, local, &peers, 2).is_local_replica_owner
+            })
+            .expect("expected a key where local node is in current owner set");
+
+        let alignment =
+            pending_replication_replay_owner_alignment(&key, local, &peers, "node-z:9000", 2);
+        assert!(alignment.local_is_owner);
+        assert!(!alignment.target_is_owner);
+        assert!(!alignment.should_replay());
+    }
+
+    #[test]
+    fn pending_replication_operation_new_rejects_invalid_identity_or_empty_targets() {
+        let placement =
+            PlacementViewState::from_membership(1, "node-a:9000", &["node-b:9000".to_string()]);
+        assert!(
+            PendingReplicationOperation::new(
+                "",
+                ReplicationMutationOperation::DeleteObject,
+                "bucket-a",
+                "key",
+                None,
+                "node-a:9000",
+                &placement,
+                &["node-b:9000".to_string()],
+                1,
+            )
+            .is_none()
+        );
+        assert!(
+            PendingReplicationOperation::new(
+                "idem-2",
+                ReplicationMutationOperation::DeleteObject,
+                "bucket-a",
+                "key",
+                None,
+                "node-a:9000",
+                &placement,
+                &["   ".to_string()],
+                1,
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn pending_replication_operation_from_quorum_outcome_uses_pending_and_rejected_nodes() {
+        let placement = PlacementViewState::from_membership(
+            2,
+            "node-a:9000",
+            &["node-b:9000".to_string(), "node-c:9000".to_string()],
+        );
+        let outcome = ObjectWriteQuorumOutcome {
+            acked_nodes: vec!["node-a:9000".to_string()],
+            rejected_nodes: vec!["node-c:9000".to_string()],
+            pending_nodes: vec!["node-b:9000".to_string()],
+            ack_count: 1,
+            quorum_size: 2,
+            quorum_reached: false,
+        };
+
+        let pending = pending_replication_operation_from_quorum_outcome(
+            ReplicationMutationOperation::CompleteMultipartUpload,
+            "idem-quorum",
+            "bucket-a",
+            "key-a",
+            Some("v2"),
+            "node-a:9000",
+            &placement,
+            &outcome,
+            100,
+        )
+        .expect("pending operation should build");
+
+        assert_eq!(pending.targets.len(), 2);
+        assert!(
+            pending
+                .targets
+                .iter()
+                .any(|target| target.node == "node-b:9000")
+        );
+        assert!(
+            pending
+                .targets
+                .iter()
+                .any(|target| target.node == "node-c:9000")
+        );
+    }
+
+    #[test]
+    fn enqueue_pending_replication_operation_is_idempotent_by_idempotency_key() {
+        let placement =
+            PlacementViewState::from_membership(4, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-enqueue",
+            ReplicationMutationOperation::CopyObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            200,
+        )
+        .expect("operation should build");
+        let mut queue = PendingReplicationQueue::default();
+
+        assert_eq!(
+            enqueue_pending_replication_operation(&mut queue, operation.clone()),
+            PendingReplicationEnqueueOutcome::Inserted
+        );
+        assert_eq!(
+            enqueue_pending_replication_operation(&mut queue, operation),
+            PendingReplicationEnqueueOutcome::AlreadyTracked
+        );
+        assert_eq!(queue.operations.len(), 1);
+    }
+
+    #[test]
+    fn acknowledge_pending_replication_target_completes_and_prunes_operation() {
+        let placement = PlacementViewState::from_membership(
+            4,
+            "node-a:9000",
+            &["node-b:9000".to_string(), "node-c:9000".to_string()],
+        );
+        let operation = PendingReplicationOperation::new(
+            "idem-ack",
+            ReplicationMutationOperation::PutObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string(), "node-c:9000".to_string()],
+            300,
+        )
+        .expect("operation should build");
+        let mut queue = PendingReplicationQueue {
+            operations: vec![operation],
+        };
+
+        assert_eq!(
+            acknowledge_pending_replication_target(&mut queue, "idem-ack", "node-b:9000"),
+            PendingReplicationAcknowledgeOutcome::Updated {
+                remaining_targets: 1,
+                completed: false,
+            }
+        );
+        assert_eq!(
+            acknowledge_pending_replication_target(&mut queue, "idem-ack", "node-c:9000"),
+            PendingReplicationAcknowledgeOutcome::Updated {
+                remaining_targets: 0,
+                completed: true,
+            }
+        );
+        assert!(queue.operations.is_empty());
+    }
+
+    #[test]
+    fn record_pending_replication_failure_updates_attempts_and_summary() {
+        let placement =
+            PlacementViewState::from_membership(4, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-fail",
+            ReplicationMutationOperation::DeleteObjectVersion,
+            "bucket-a",
+            "key-a",
+            Some("v3"),
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            10,
+        )
+        .expect("operation should build");
+        let mut queue = PendingReplicationQueue {
+            operations: vec![operation],
+        };
+
+        assert_eq!(
+            record_pending_replication_failure(
+                &mut queue,
+                "idem-fail",
+                "node-b:9000",
+                Some("timeout"),
+            ),
+            PendingReplicationFailureOutcome::Updated { attempts: 1 }
+        );
+        assert_eq!(
+            record_pending_replication_failure(
+                &mut queue,
+                "idem-fail",
+                "node-b:9000",
+                Some("retry-timeout"),
+            ),
+            PendingReplicationFailureOutcome::Updated { attempts: 2 }
+        );
+
+        let summary = summarize_pending_replication_queue(&queue);
+        assert_eq!(summary.operations, 1);
+        assert_eq!(summary.pending_targets, 1);
+        assert_eq!(summary.failed_targets, 1);
+        assert_eq!(summary.max_attempts, 2);
+        assert_eq!(summary.oldest_created_at_unix_ms, Some(10));
+    }
+
+    #[test]
+    fn load_pending_replication_queue_returns_default_for_missing_file() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+
+        let queue =
+            load_pending_replication_queue(queue_path.as_path()).expect("load should succeed");
+        assert!(queue.operations.is_empty());
+    }
+
+    #[test]
+    fn persist_pending_replication_queue_roundtrips_operations() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+        let placement =
+            PlacementViewState::from_membership(9, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-persist",
+            ReplicationMutationOperation::PutObject,
+            "bucket-a",
+            "docs/readme.txt",
+            Some("v9"),
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            99,
+        )
+        .expect("operation should build");
+        let queue = PendingReplicationQueue {
+            operations: vec![operation],
+        };
+
+        persist_pending_replication_queue(queue_path.as_path(), &queue)
+            .expect("persist should succeed");
+        let loaded =
+            load_pending_replication_queue(queue_path.as_path()).expect("load should succeed");
+        assert_eq!(loaded, queue);
+    }
+
+    #[test]
+    fn load_pending_replication_queue_rejects_invalid_json() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+        std::fs::write(&queue_path, "{invalid-json").expect("invalid payload should be written");
+
+        let err = load_pending_replication_queue(queue_path.as_path())
+            .expect_err("invalid payload should fail");
+        assert_eq!(err.kind(), ErrorKind::InvalidData);
+    }
+
+    #[test]
+    fn persist_pending_replication_queue_replaces_existing_file() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+        std::fs::write(&queue_path, "{\"operations\":[{\"unexpected\":true}]}")
+            .expect("stale payload should be written");
+
+        let queue = PendingReplicationQueue::default();
+        persist_pending_replication_queue(queue_path.as_path(), &queue)
+            .expect("persist should succeed");
+        let loaded =
+            load_pending_replication_queue(queue_path.as_path()).expect("load should succeed");
+        assert!(loaded.operations.is_empty());
+    }
+
+    #[test]
+    fn enqueue_pending_replication_operation_persisted_is_idempotent() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+        let placement =
+            PlacementViewState::from_membership(5, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-persist-enqueue",
+            ReplicationMutationOperation::CopyObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            500,
+        )
+        .expect("operation should build");
+
+        let first = enqueue_pending_replication_operation_persisted(
+            queue_path.as_path(),
+            operation.clone(),
+        )
+        .expect("persisted enqueue should succeed");
+        let second =
+            enqueue_pending_replication_operation_persisted(queue_path.as_path(), operation)
+                .expect("persisted enqueue should succeed");
+
+        assert_eq!(first, PendingReplicationEnqueueOutcome::Inserted);
+        assert_eq!(second, PendingReplicationEnqueueOutcome::AlreadyTracked);
+
+        let loaded =
+            load_pending_replication_queue(queue_path.as_path()).expect("load should succeed");
+        assert_eq!(loaded.operations.len(), 1);
+    }
+
+    #[test]
+    fn acknowledge_pending_replication_target_persisted_prunes_completed_operation() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+        let placement =
+            PlacementViewState::from_membership(6, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-persist-ack",
+            ReplicationMutationOperation::PutObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            600,
+        )
+        .expect("operation should build");
+        persist_pending_replication_queue(
+            queue_path.as_path(),
+            &PendingReplicationQueue {
+                operations: vec![operation],
+            },
+        )
+        .expect("persist should succeed");
+
+        let outcome = acknowledge_pending_replication_target_persisted(
+            queue_path.as_path(),
+            "idem-persist-ack",
+            "node-b:9000",
+        )
+        .expect("persisted acknowledge should succeed");
+        assert_eq!(
+            outcome,
+            PendingReplicationAcknowledgeOutcome::Updated {
+                remaining_targets: 0,
+                completed: true,
+            }
+        );
+
+        let loaded =
+            load_pending_replication_queue(queue_path.as_path()).expect("load should succeed");
+        assert!(loaded.operations.is_empty());
+    }
+
+    #[test]
+    fn record_pending_replication_failure_persisted_updates_attempts() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+        let placement =
+            PlacementViewState::from_membership(7, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-persist-fail",
+            ReplicationMutationOperation::DeleteObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            700,
+        )
+        .expect("operation should build");
+        persist_pending_replication_queue(
+            queue_path.as_path(),
+            &PendingReplicationQueue {
+                operations: vec![operation],
+            },
+        )
+        .expect("persist should succeed");
+
+        let outcome = record_pending_replication_failure_persisted(
+            queue_path.as_path(),
+            "idem-persist-fail",
+            "node-b:9000",
+            Some("timeout"),
+        )
+        .expect("persisted failure recording should succeed");
+        assert_eq!(
+            outcome,
+            PendingReplicationFailureOutcome::Updated { attempts: 1 }
+        );
+
+        let loaded =
+            load_pending_replication_queue(queue_path.as_path()).expect("load should succeed");
+        let attempts = loaded
+            .operations
+            .first()
+            .and_then(|operation| operation.targets.first())
+            .map(|target| target.attempts);
+        assert_eq!(attempts, Some(1));
+    }
+
+    #[test]
+    fn summarize_pending_replication_queue_from_disk_reports_persisted_state() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+        let placement =
+            PlacementViewState::from_membership(8, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-persist-summary",
+            ReplicationMutationOperation::DeleteObjectVersion,
+            "bucket-a",
+            "key-a",
+            Some("v8"),
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            800,
+        )
+        .expect("operation should build");
+        persist_pending_replication_queue(
+            queue_path.as_path(),
+            &PendingReplicationQueue {
+                operations: vec![operation],
+            },
+        )
+        .expect("persist should succeed");
+
+        let summary = summarize_pending_replication_queue_from_disk(queue_path.as_path())
+            .expect("summary should succeed");
+        assert_eq!(summary.operations, 1);
+        assert_eq!(summary.pending_targets, 1);
+        assert_eq!(summary.oldest_created_at_unix_ms, Some(800));
+    }
+
+    #[test]
+    fn pending_replication_replay_candidates_select_due_targets_in_stable_order() {
+        let placement =
+            PlacementViewState::from_membership(11, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation_one = PendingReplicationOperation::new(
+            "idem-due-1",
+            ReplicationMutationOperation::PutObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string(), "node-c:9000".to_string()],
+            100,
+        )
+        .expect("operation should build");
+        let operation_two = PendingReplicationOperation::new(
+            "idem-due-2",
+            ReplicationMutationOperation::CopyObject,
+            "bucket-a",
+            "key-b",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-d:9000".to_string()],
+            200,
+        )
+        .expect("operation should build");
+
+        let mut queue = PendingReplicationQueue {
+            operations: vec![operation_one, operation_two],
+        };
+        queue.operations[0].targets[1].next_retry_at_unix_ms = Some(500);
+        queue.operations[1].targets[0].next_retry_at_unix_ms = Some(900);
+
+        let due = pending_replication_replay_candidates(&queue, 800, 2);
+        assert_eq!(due.len(), 2);
+        assert_eq!(due[0].idempotency_key, "idem-due-1");
+        assert_eq!(due[0].target_node, "node-b:9000");
+        assert_eq!(due[1].idempotency_key, "idem-due-1");
+        assert_eq!(due[1].target_node, "node-c:9000");
+    }
+
+    #[test]
+    fn lease_pending_replication_target_for_replay_updates_retry_window() {
+        let placement =
+            PlacementViewState::from_membership(12, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-lease",
+            ReplicationMutationOperation::DeleteObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            100,
+        )
+        .expect("operation should build");
+
+        let mut queue = PendingReplicationQueue {
+            operations: vec![operation],
+        };
+        queue.operations[0].targets[0].next_retry_at_unix_ms = Some(2_000);
+
+        assert_eq!(
+            lease_pending_replication_target_for_replay(
+                &mut queue,
+                "idem-lease",
+                "node-b:9000",
+                1_000,
+                100,
+            ),
+            PendingReplicationReplayLeaseOutcome::NotDue {
+                next_retry_at_unix_ms: 2_000
+            }
+        );
+
+        let outcome = lease_pending_replication_target_for_replay(
+            &mut queue,
+            "idem-lease",
+            "node-b:9000",
+            2_100,
+            100,
+        );
+        assert_eq!(
+            outcome,
+            PendingReplicationReplayLeaseOutcome::Updated {
+                lease_expires_at_unix_ms: 2_200,
+                attempts: 0,
+            }
+        );
+        assert_eq!(
+            queue.operations[0].targets[0].next_retry_at_unix_ms,
+            Some(2_200)
+        );
+    }
+
+    #[test]
+    fn record_pending_replication_failure_with_backoff_schedules_retry() {
+        let placement =
+            PlacementViewState::from_membership(13, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-backoff",
+            ReplicationMutationOperation::PutObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            10,
+        )
+        .expect("operation should build");
+        let mut queue = PendingReplicationQueue {
+            operations: vec![operation],
+        };
+        let policy = PendingReplicationRetryPolicy {
+            base_delay_ms: 100,
+            max_delay_ms: 500,
+        };
+
+        assert_eq!(pending_replication_retry_backoff_ms(1, policy), 100);
+        assert_eq!(pending_replication_retry_backoff_ms(2, policy), 200);
+        assert_eq!(pending_replication_retry_backoff_ms(4, policy), 500);
+
+        let first = record_pending_replication_failure_with_backoff(
+            &mut queue,
+            "idem-backoff",
+            "node-b:9000",
+            Some("timeout"),
+            1_000,
+            policy,
+        );
+        assert_eq!(
+            first,
+            PendingReplicationFailureWithBackoffOutcome::Updated {
+                attempts: 1,
+                next_retry_at_unix_ms: 1_100,
+            }
+        );
+
+        let second = record_pending_replication_failure_with_backoff(
+            &mut queue,
+            "idem-backoff",
+            "node-b:9000",
+            Some("retry-timeout"),
+            1_100,
+            policy,
+        );
+        assert_eq!(
+            second,
+            PendingReplicationFailureWithBackoffOutcome::Updated {
+                attempts: 2,
+                next_retry_at_unix_ms: 1_300,
+            }
+        );
+        assert_eq!(
+            queue.operations[0].targets[0].next_retry_at_unix_ms,
+            Some(1_300)
+        );
+    }
+
+    #[test]
+    fn lease_pending_replication_target_for_replay_persisted_updates_queue_state() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+        let placement =
+            PlacementViewState::from_membership(14, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-persist-lease",
+            ReplicationMutationOperation::DeleteObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            10,
+        )
+        .expect("operation should build");
+        persist_pending_replication_queue(
+            queue_path.as_path(),
+            &PendingReplicationQueue {
+                operations: vec![operation],
+            },
+        )
+        .expect("persist should succeed");
+
+        let outcome = lease_pending_replication_target_for_replay_persisted(
+            queue_path.as_path(),
+            "idem-persist-lease",
+            "node-b:9000",
+            20,
+            50,
+        )
+        .expect("persisted lease should succeed");
+        assert_eq!(
+            outcome,
+            PendingReplicationReplayLeaseOutcome::Updated {
+                lease_expires_at_unix_ms: 70,
+                attempts: 0,
+            }
+        );
+
+        let due = pending_replication_replay_candidates_from_disk(queue_path.as_path(), 69, 10)
+            .expect("candidate projection should succeed");
+        assert!(due.is_empty());
+        let due_after_expiry =
+            pending_replication_replay_candidates_from_disk(queue_path.as_path(), 70, 10)
+                .expect("candidate projection should succeed");
+        assert_eq!(due_after_expiry.len(), 1);
+    }
+
+    #[test]
+    fn record_pending_replication_failure_with_backoff_persisted_updates_retry_schedule() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-replication.json");
+        let placement =
+            PlacementViewState::from_membership(15, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingReplicationOperation::new(
+            "idem-persist-backoff",
+            ReplicationMutationOperation::PutObject,
+            "bucket-a",
+            "key-a",
+            None,
+            "node-a:9000",
+            &placement,
+            &["node-b:9000".to_string()],
+            10,
+        )
+        .expect("operation should build");
+        persist_pending_replication_queue(
+            queue_path.as_path(),
+            &PendingReplicationQueue {
+                operations: vec![operation],
+            },
+        )
+        .expect("persist should succeed");
+        let policy = PendingReplicationRetryPolicy {
+            base_delay_ms: 25,
+            max_delay_ms: 100,
+        };
+
+        let outcome = record_pending_replication_failure_with_backoff_persisted(
+            queue_path.as_path(),
+            "idem-persist-backoff",
+            "node-b:9000",
+            Some("timeout"),
+            50,
+            policy,
+        )
+        .expect("persisted backoff should succeed");
+        assert_eq!(
+            outcome,
+            PendingReplicationFailureWithBackoffOutcome::Updated {
+                attempts: 1,
+                next_retry_at_unix_ms: 75,
+            }
+        );
+
+        let due = pending_replication_replay_candidates_from_disk(queue_path.as_path(), 74, 10)
+            .expect("candidate projection should succeed");
+        assert!(due.is_empty());
+        let due_after =
+            pending_replication_replay_candidates_from_disk(queue_path.as_path(), 75, 10)
+                .expect("candidate projection should succeed");
+        assert_eq!(due_after.len(), 1);
+        assert_eq!(due_after[0].attempts, 1);
+    }
+
+    #[test]
+    fn pending_rebalance_operation_new_filters_invalid_and_duplicate_transfers() {
+        let placement = PlacementViewState::from_membership(
+            21,
+            "node-a:9000",
+            &["node-b:9000".to_string(), "node-c:9000".to_string()],
+        );
+        let transfers = vec![
+            RebalanceTransfer {
+                from: Some("node-a:9000".to_string()),
+                to: "node-b:9000".to_string(),
+            },
+            RebalanceTransfer {
+                from: Some("node-a:9000".to_string()),
+                to: "node-b:9000".to_string(),
+            },
+            RebalanceTransfer {
+                from: Some("node-c:9000".to_string()),
+                to: "node-c:9000".to_string(),
+            },
+            RebalanceTransfer {
+                from: None,
+                to: "node-c:9000".to_string(),
+            },
+        ];
+
+        let operation = PendingRebalanceOperation::new(
+            "rebalance-1",
+            "bucket-a",
+            "key-a",
+            RebalanceObjectScope::Object,
+            "node-a:9000",
+            &placement,
+            &transfers,
+            1_000,
+        )
+        .expect("operation should build");
+        assert_eq!(operation.transfers.len(), 2);
+        assert!(
+            operation
+                .transfers
+                .iter()
+                .any(|transfer| transfer.from.as_deref() == Some("node-a:9000")
+                    && transfer.to == "node-b:9000")
+        );
+        assert!(
+            operation
+                .transfers
+                .iter()
+                .any(|transfer| transfer.from.is_none() && transfer.to == "node-c:9000")
+        );
+    }
+
+    #[test]
+    fn pending_rebalance_enqueue_is_idempotent_by_rebalance_id() {
+        let placement =
+            PlacementViewState::from_membership(22, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingRebalanceOperation::new(
+            "rebalance-idem",
+            "bucket-a",
+            "key-a",
+            RebalanceObjectScope::Object,
+            "node-a:9000",
+            &placement,
+            &[RebalanceTransfer {
+                from: Some("node-a:9000".to_string()),
+                to: "node-b:9000".to_string(),
+            }],
+            10,
+        )
+        .expect("operation should build");
+
+        let mut queue = PendingRebalanceQueue::default();
+        assert_eq!(
+            enqueue_pending_rebalance_operation(&mut queue, operation.clone()),
+            PendingRebalanceEnqueueOutcome::Inserted
+        );
+        assert_eq!(
+            enqueue_pending_rebalance_operation(&mut queue, operation),
+            PendingRebalanceEnqueueOutcome::AlreadyTracked
+        );
+        assert_eq!(queue.operations.len(), 1);
+    }
+
+    #[test]
+    fn acknowledge_pending_rebalance_transfer_prunes_completed_operation() {
+        let placement = PlacementViewState::from_membership(
+            23,
+            "node-a:9000",
+            &["node-b:9000".to_string(), "node-c:9000".to_string()],
+        );
+        let operation = PendingRebalanceOperation::new(
+            "rebalance-ack",
+            "bucket-a",
+            "key-a",
+            RebalanceObjectScope::Object,
+            "node-a:9000",
+            &placement,
+            &[
+                RebalanceTransfer {
+                    from: Some("node-a:9000".to_string()),
+                    to: "node-b:9000".to_string(),
+                },
+                RebalanceTransfer {
+                    from: None,
+                    to: "node-c:9000".to_string(),
+                },
+            ],
+            100,
+        )
+        .expect("operation should build");
+        let mut queue = PendingRebalanceQueue {
+            operations: vec![operation],
+        };
+
+        assert_eq!(
+            acknowledge_pending_rebalance_transfer(
+                &mut queue,
+                "rebalance-ack",
+                Some("node-a:9000"),
+                "node-b:9000"
+            ),
+            PendingRebalanceAcknowledgeOutcome::Updated {
+                remaining_transfers: 1,
+                completed: false,
+            }
+        );
+        assert_eq!(
+            acknowledge_pending_rebalance_transfer(
+                &mut queue,
+                "rebalance-ack",
+                None,
+                "node-c:9000"
+            ),
+            PendingRebalanceAcknowledgeOutcome::Updated {
+                remaining_transfers: 0,
+                completed: true,
+            }
+        );
+        assert!(queue.operations.is_empty());
+    }
+
+    #[test]
+    fn pending_rebalance_candidates_select_due_transfers_in_stable_order() {
+        let placement = PlacementViewState::from_membership(
+            24,
+            "node-a:9000",
+            &["node-b:9000".to_string(), "node-c:9000".to_string()],
+        );
+        let op_one = PendingRebalanceOperation::new(
+            "rebalance-due-1",
+            "bucket-a",
+            "key-a",
+            RebalanceObjectScope::Object,
+            "node-a:9000",
+            &placement,
+            &[
+                RebalanceTransfer {
+                    from: Some("node-a:9000".to_string()),
+                    to: "node-b:9000".to_string(),
+                },
+                RebalanceTransfer {
+                    from: Some("node-c:9000".to_string()),
+                    to: "node-a:9000".to_string(),
+                },
+            ],
+            100,
+        )
+        .expect("operation should build");
+        let op_two = PendingRebalanceOperation::new(
+            "rebalance-due-2",
+            "bucket-a",
+            "key-b",
+            RebalanceObjectScope::Chunk { chunk_index: 1 },
+            "node-a:9000",
+            &placement,
+            &[RebalanceTransfer {
+                from: None,
+                to: "node-c:9000".to_string(),
+            }],
+            200,
+        )
+        .expect("operation should build");
+
+        let mut queue = PendingRebalanceQueue {
+            operations: vec![op_one, op_two],
+        };
+        queue.operations[0].transfers[1].next_retry_at_unix_ms = Some(900);
+
+        let due = pending_rebalance_candidates(&queue, 500, 2);
+        assert_eq!(due.len(), 2);
+        assert_eq!(due[0].rebalance_id, "rebalance-due-1");
+        assert_eq!(due[0].to, "node-b:9000");
+        assert_eq!(due[1].rebalance_id, "rebalance-due-2");
+        assert_eq!(due[1].to, "node-c:9000");
+    }
+
+    #[test]
+    fn lease_pending_rebalance_transfer_for_execution_updates_retry_window() {
+        let placement =
+            PlacementViewState::from_membership(25, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingRebalanceOperation::new(
+            "rebalance-lease",
+            "bucket-a",
+            "key-a",
+            RebalanceObjectScope::Object,
+            "node-a:9000",
+            &placement,
+            &[RebalanceTransfer {
+                from: Some("node-a:9000".to_string()),
+                to: "node-b:9000".to_string(),
+            }],
+            10,
+        )
+        .expect("operation should build");
+        let mut queue = PendingRebalanceQueue {
+            operations: vec![operation],
+        };
+
+        let outcome = lease_pending_rebalance_transfer_for_execution(
+            &mut queue,
+            "rebalance-lease",
+            Some("node-a:9000"),
+            "node-b:9000",
+            100,
+            50,
+        );
+        assert_eq!(
+            outcome,
+            PendingRebalanceLeaseOutcome::Updated {
+                lease_expires_at_unix_ms: 150,
+                attempts: 0,
+            }
+        );
+        assert_eq!(
+            queue.operations[0].transfers[0].next_retry_at_unix_ms,
+            Some(150)
+        );
+    }
+
+    #[test]
+    fn pending_rebalance_persisted_backoff_and_candidates_roundtrip() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-rebalance.json");
+        let placement =
+            PlacementViewState::from_membership(26, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingRebalanceOperation::new(
+            "rebalance-persist",
+            "bucket-a",
+            "key-a",
+            RebalanceObjectScope::Object,
+            "node-a:9000",
+            &placement,
+            &[RebalanceTransfer {
+                from: Some("node-a:9000".to_string()),
+                to: "node-b:9000".to_string(),
+            }],
+            50,
+        )
+        .expect("operation should build");
+
+        let enqueue =
+            enqueue_pending_rebalance_operation_persisted(queue_path.as_path(), operation)
+                .expect("enqueue should succeed");
+        assert_eq!(enqueue, PendingRebalanceEnqueueOutcome::Inserted);
+
+        let policy = PendingReplicationRetryPolicy {
+            base_delay_ms: 25,
+            max_delay_ms: 100,
+        };
+        let failure = record_pending_rebalance_failure_with_backoff_persisted(
+            queue_path.as_path(),
+            "rebalance-persist",
+            Some("node-a:9000"),
+            "node-b:9000",
+            Some("network"),
+            100,
+            policy,
+        )
+        .expect("backoff should succeed");
+        assert_eq!(
+            failure,
+            PendingRebalanceFailureWithBackoffOutcome::Updated {
+                attempts: 1,
+                next_retry_at_unix_ms: 125,
+            }
+        );
+
+        let before_due = pending_rebalance_candidates_from_disk(queue_path.as_path(), 124, 10)
+            .expect("candidate projection should succeed");
+        assert!(before_due.is_empty());
+
+        let due = pending_rebalance_candidates_from_disk(queue_path.as_path(), 125, 10)
+            .expect("candidate projection should succeed");
+        assert_eq!(due.len(), 1);
+        assert_eq!(due[0].attempts, 1);
+
+        let summary = summarize_pending_rebalance_queue_from_disk(queue_path.as_path())
+            .expect("summary should succeed");
+        assert_eq!(summary.operations, 1);
+        assert_eq!(summary.pending_transfers, 1);
+        assert_eq!(summary.failed_transfers, 1);
+        assert_eq!(summary.max_attempts, 1);
+        assert_eq!(summary.oldest_created_at_unix_ms, Some(50));
+    }
+
+    #[test]
+    fn replay_pending_rebalance_transfers_once_acknowledges_successful_apply() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-rebalance.json");
+        let placement =
+            PlacementViewState::from_membership(27, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingRebalanceOperation::new(
+            "rebalance-replay-ok",
+            "bucket-a",
+            "key-a",
+            RebalanceObjectScope::Object,
+            "node-a:9000",
+            &placement,
+            &[RebalanceTransfer {
+                from: Some("node-a:9000".to_string()),
+                to: "node-b:9000".to_string(),
+            }],
+            70,
+        )
+        .expect("operation should build");
+        let enqueue =
+            enqueue_pending_rebalance_operation_persisted(queue_path.as_path(), operation)
+                .expect("enqueue should succeed");
+        assert_eq!(enqueue, PendingRebalanceEnqueueOutcome::Inserted);
+
+        let mut applied = 0_usize;
+        let outcome = replay_pending_rebalance_transfers_once_with_apply_fn(
+            queue_path.as_path(),
+            500,
+            16,
+            50,
+            PendingReplicationRetryPolicy::default(),
+            |candidate| {
+                applied = applied.saturating_add(1);
+                assert_eq!(candidate.rebalance_id, "rebalance-replay-ok");
+                assert_eq!(candidate.to, "node-b:9000");
+                Ok(())
+            },
+        )
+        .expect("replay should succeed");
+        assert_eq!(applied, 1);
+        assert_eq!(
+            outcome,
+            PendingRebalanceReplayCycleOutcome {
+                scanned_transfers: 1,
+                leased_transfers: 1,
+                acknowledged_transfers: 1,
+                failed_transfers: 0,
+                skipped_transfers: 0,
+            }
+        );
+
+        let queue_after =
+            load_pending_rebalance_queue(queue_path.as_path()).expect("queue should load");
+        assert!(queue_after.operations.is_empty());
+    }
+
+    #[test]
+    fn replay_pending_rebalance_transfers_once_records_failure_with_backoff() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let queue_path = temp.path().join("pending-rebalance.json");
+        let placement =
+            PlacementViewState::from_membership(28, "node-a:9000", &["node-b:9000".to_string()]);
+        let operation = PendingRebalanceOperation::new(
+            "rebalance-replay-fail",
+            "bucket-a",
+            "key-a",
+            RebalanceObjectScope::Object,
+            "node-a:9000",
+            &placement,
+            &[RebalanceTransfer {
+                from: Some("node-a:9000".to_string()),
+                to: "node-b:9000".to_string(),
+            }],
+            80,
+        )
+        .expect("operation should build");
+        let enqueue =
+            enqueue_pending_rebalance_operation_persisted(queue_path.as_path(), operation)
+                .expect("enqueue should succeed");
+        assert_eq!(enqueue, PendingRebalanceEnqueueOutcome::Inserted);
+
+        let policy = PendingReplicationRetryPolicy {
+            base_delay_ms: 25,
+            max_delay_ms: 100,
+        };
+        let outcome = replay_pending_rebalance_transfers_once_with_apply_fn(
+            queue_path.as_path(),
+            700,
+            16,
+            50,
+            policy,
+            |_candidate| Err("transfer-failed".to_string()),
+        )
+        .expect("replay should succeed");
+        assert_eq!(
+            outcome,
+            PendingRebalanceReplayCycleOutcome {
+                scanned_transfers: 1,
+                leased_transfers: 1,
+                acknowledged_transfers: 0,
+                failed_transfers: 1,
+                skipped_transfers: 0,
+            }
+        );
+
+        let queue_after =
+            load_pending_rebalance_queue(queue_path.as_path()).expect("queue should load");
+        assert_eq!(queue_after.operations.len(), 1);
+        assert_eq!(queue_after.operations[0].transfers.len(), 1);
+        let transfer = &queue_after.operations[0].transfers[0];
+        assert_eq!(transfer.attempts, 1);
+        assert!(!transfer.completed);
+        assert_eq!(transfer.last_error.as_deref(), Some("transfer-failed"));
+        assert_eq!(transfer.next_retry_at_unix_ms, Some(725));
+    }
+
+    #[test]
+    fn replication_mutation_operation_labels_are_stable() {
+        assert_eq!(
+            ReplicationMutationOperation::PutObject.as_str(),
+            "put-object"
+        );
+        assert_eq!(
+            ReplicationMutationOperation::CopyObject.as_str(),
+            "copy-object"
+        );
+        assert_eq!(
+            ReplicationMutationOperation::DeleteObject.as_str(),
+            "delete-object"
+        );
+        assert_eq!(
+            ReplicationMutationOperation::DeleteObjectVersion.as_str(),
+            "delete-object-version"
+        );
+        assert_eq!(
+            ReplicationMutationOperation::CompleteMultipartUpload.as_str(),
+            "complete-multipart-upload"
         );
     }
 }

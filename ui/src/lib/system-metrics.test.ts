@@ -42,11 +42,12 @@ describe('system metrics loader', () => {
         version: '0.1.0',
         mode: 'distributed',
         nodeId: 'node-a',
-        clusterPeerCount: 2,
-        clusterPeers: ['node-b:9000', 'node-c:9000'],
-        membershipProtocol: 'raft',
-        placementEpoch: 4,
-        raw: '{"requestsTotal":12}',
+      clusterPeerCount: 2,
+      clusterPeers: ['node-b:9000', 'node-c:9000'],
+      membershipProtocol: 'raft',
+      membershipProtocolReady: null,
+      placementEpoch: 4,
+      raw: '{"requestsTotal":12}',
       },
       topology: {
         mode: 'distributed',
@@ -134,6 +135,7 @@ describe('system metrics loader', () => {
         clusterPeerCount: 2,
         clusterPeers: ['node-b:9000', 'node-c:9000'],
         membershipProtocol: 'gossip',
+        membershipProtocolReady: null,
         placementEpoch: 6,
         raw: '{"requestsTotal":12}',
       },
@@ -208,6 +210,7 @@ describe('system metrics loader', () => {
         clusterPeerCount: 2,
         clusterPeers: ['node-b:9000', 'node-c:9000'],
         membershipProtocol: 'gossip',
+        membershipProtocolReady: null,
         placementEpoch: 8,
         raw: '{"requestsTotal":12}',
       },
@@ -249,6 +252,7 @@ describe('system metrics loader', () => {
       clusterPeerCount: null,
       clusterPeers: [],
       membershipProtocol: null,
+      membershipProtocolReady: false,
       placementEpoch: 10,
       raw: 'raw metrics payload',
     }
@@ -306,6 +310,14 @@ describe('system metrics loader', () => {
       expect(result.data.healthOk).toBe(true)
       expect(result.data.healthStatus).toBe('ok')
       expect(result.data.healthWarnings).toEqual([])
+      expect(result.data.healthChecks).toEqual({
+        dataDirAccessible: null,
+        dataDirWritable: null,
+        storageDataPathReadable: null,
+        diskHeadroomSufficient: null,
+        peerConnectivityReady: null,
+        membershipProtocolReady: false,
+      })
       expect(result.data.raw).toBe('raw metrics payload')
     }
   })

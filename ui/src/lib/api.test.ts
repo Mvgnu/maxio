@@ -12,6 +12,8 @@ import {
   getRuntimeRebalanceApi,
   getRuntimeSummaryApi,
   getRuntimeTopologyApi,
+  listObjectsApi,
+  listVersionsApi,
   presignObjectApi,
   uploadObjectApi,
 } from './api'
@@ -71,6 +73,7 @@ describe('api client', () => {
           clusterPeerCount: 2,
           clusterPeers: ['node-b:9000', 'node-c:9000'],
           membershipProtocol: 'gossip',
+          membershipProtocolReady: true,
           placementEpoch: 7,
         }),
         {
@@ -91,6 +94,7 @@ describe('api client', () => {
       expect(result.data.clusterPeerCount).toBe(2)
       expect(result.data.clusterPeers).toEqual(['node-b:9000', 'node-c:9000'])
       expect(result.data.membershipProtocol).toBe('gossip')
+      expect(result.data.membershipProtocolReady).toBe(true)
       expect(result.data.placementEpoch).toBe(7)
     }
   })
@@ -112,6 +116,9 @@ describe('api client', () => {
           '# HELP maxio_membership_protocol_info Membership protocol configuration for runtime topology convergence.',
           '# TYPE maxio_membership_protocol_info gauge',
           'maxio_membership_protocol_info{protocol="gossip"} 1',
+          '# HELP maxio_membership_protocol_ready Membership protocol readiness (1=implemented/active, 0=placeholder/unimplemented).',
+          '# TYPE maxio_membership_protocol_ready gauge',
+          'maxio_membership_protocol_ready 0',
           '# TYPE maxio_placement_epoch gauge',
           'maxio_placement_epoch 9',
         ].join('\n'),
@@ -132,6 +139,7 @@ describe('api client', () => {
       expect(result.data.mode).toBeNull()
       expect(result.data.clusterPeers).toEqual([])
       expect(result.data.membershipProtocol).toBe('gossip')
+      expect(result.data.membershipProtocolReady).toBe(false)
       expect(result.data.placementEpoch).toBe(9)
     }
   })
@@ -305,6 +313,7 @@ describe('api client', () => {
             uptimeSeconds: 50.5,
             version: '0.1.0',
             membershipProtocol: 'raft',
+            membershipProtocolReady: true,
           },
           topology: {
             mode: 'distributed',
@@ -359,6 +368,7 @@ describe('api client', () => {
       expect(result.data.metrics.mode).toBe('distributed')
       expect(result.data.metrics.nodeId).toBe('node-a')
       expect(result.data.metrics.membershipProtocol).toBe('raft')
+      expect(result.data.metrics.membershipProtocolReady).toBe(true)
       expect(result.data.metrics.placementEpoch).toBe(14)
 
       expect(result.data.topology.mode).toBe('distributed')
@@ -694,6 +704,112 @@ describe('api client', () => {
       '/api/buckets/bucket%20name/objects/nested/path/my%20file%20%231.txt',
       '/api/buckets/bucket%20name/presign/nested/path/my%20file%20%231.txt?expires=3600',
     ])
+  })
+
+  it('parses object list metadata coverage from console response', async () => {
+    mockFetchSequence([
+      new Response(
+        JSON.stringify({
+          files: [
+            {
+              key: 'docs/a.txt',
+              size: 10,
+              lastModified: '2026-03-03T00:00:00Z',
+              etag: '"etag-a"',
+            },
+            {
+              key: 42,
+              size: 'bad',
+              lastModified: null,
+              etag: false,
+            },
+          ],
+          prefixes: ['docs/'],
+          emptyPrefixes: ['docs/empty/'],
+          metadataCoverage: {
+            complete: false,
+            expectedNodes: ['node-a:9000', 'node-b:9000'],
+            respondedNodes: ['node-a:9000'],
+            missingNodes: ['node-b:9000'],
+            source: 'local-node-only',
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      ),
+    ])
+
+    const result = await listObjectsApi('bucket-a', 'docs/', '/')
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.files).toEqual([
+        {
+          key: 'docs/a.txt',
+          size: 10,
+          lastModified: '2026-03-03T00:00:00Z',
+          etag: '"etag-a"',
+        },
+      ])
+      expect(result.data.prefixes).toEqual(['docs/'])
+      expect(result.data.emptyPrefixes).toEqual(['docs/empty/'])
+      expect(result.data.metadataCoverage).toEqual({
+        complete: false,
+        expectedNodes: ['node-a:9000', 'node-b:9000'],
+        respondedNodes: ['node-a:9000'],
+        missingNodes: ['node-b:9000'],
+        source: 'local-node-only',
+      })
+    }
+  })
+
+  it('parses version list metadata coverage with null fallback for invalid payloads', async () => {
+    mockFetchSequence([
+      new Response(
+        JSON.stringify({
+          versions: [
+            {
+              versionId: 'v1',
+              lastModified: '2026-03-03T00:00:00Z',
+              size: 99,
+              etag: '"etag-v1"',
+              isDeleteMarker: false,
+            },
+            {
+              versionId: 7,
+              lastModified: 9,
+              size: 'nope',
+              etag: null,
+              isDeleteMarker: 'false',
+            },
+          ],
+          metadataCoverage: {
+            complete: 'no',
+            expectedNodes: ['node-a:9000'],
+          },
+        }),
+        {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        }
+      ),
+    ])
+
+    const result = await listVersionsApi('bucket-a', 'docs/a.txt')
+    expect(result.ok).toBe(true)
+    if (result.ok) {
+      expect(result.data.versions).toEqual([
+        {
+          versionId: 'v1',
+          lastModified: '2026-03-03T00:00:00Z',
+          size: 99,
+          etag: '"etag-v1"',
+          isDeleteMarker: false,
+        },
+      ])
+      expect(result.data.metadataCoverage).toBeNull()
+    }
   })
 
   it('builds encoded download URLs for object and version routes', () => {

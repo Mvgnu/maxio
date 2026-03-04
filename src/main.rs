@@ -1,7 +1,10 @@
 use clap::Parser;
 use maxio::{config::Config, server, storage};
+use std::future::IntoFuture;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::Notify;
 use tracing_subscriber::EnvFilter;
 
 const LIFECYCLE_SWEEP_INTERVAL_SECS: u64 = 300;
@@ -25,11 +28,38 @@ async fn main() -> anyhow::Result<()> {
     let placement_epoch = topology.placement_epoch;
 
     spawn_lifecycle_worker(state.clone());
-
-    let app = server::build_router(state);
+    server::spawn_pending_replication_replay_worker(state.clone());
+    server::spawn_pending_rebalance_replay_worker(state.clone());
+    server::spawn_pending_membership_propagation_replay_worker(state.clone());
+    server::spawn_pending_metadata_repair_replay_worker(state.clone());
+    server::spawn_membership_convergence_probe_worker(state.clone());
 
     let addr = format!("{}:{}", config.address, config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let internal_bind_addr = config.internal_bind_addr().map(str::to_string);
+
+    let public_app = if internal_bind_addr.is_some() {
+        server::build_public_router(state.clone())
+    } else {
+        server::build_router(state.clone())
+    };
+
+    let internal_listener = if let Some(bind_addr) = internal_bind_addr.as_ref() {
+        if bind_addr == &addr {
+            return Err(anyhow::anyhow!(
+                "MAXIO_INTERNAL_BIND_ADDR ('{}') must differ from public listener '{}'",
+                bind_addr,
+                addr
+            ));
+        }
+        Some(tokio::net::TcpListener::bind(bind_addr).await?)
+    } else {
+        None
+    };
+    let internal_app = internal_listener
+        .as_ref()
+        .map(|_| server::build_internal_router(state.clone()));
+
     if config.access_key == "minioadmin" && config.secret_key == "minioadmin" {
         tracing::warn!(
             "WARNING: Using default credentials. Set MAXIO_ACCESS_KEY/MAXIO_SECRET_KEY (or MINIO_ROOT_USER/MINIO_ROOT_PASSWORD) for production use."
@@ -85,15 +115,68 @@ async fn main() -> anyhow::Result<()> {
         &config.address
     };
     tracing::info!("Web UI:     http://{}:{}/ui/", display_host, config.port);
+    if let Some(bind_addr) = internal_bind_addr.as_ref() {
+        tracing::info!(
+            "Internal:   http://{} (cluster control-plane only)",
+            bind_addr
+        );
+    }
 
-    axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal())
-    .await?;
+    if let (Some(internal_listener), Some(internal_app)) = (internal_listener, internal_app) {
+        let shutdown = Arc::new(Notify::new());
+
+        let public_server = axum::serve(
+            listener,
+            public_app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(wait_for_shutdown(shutdown.clone()))
+        .into_future();
+
+        let internal_server = axum::serve(
+            internal_listener,
+            internal_app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(wait_for_shutdown(shutdown.clone()))
+        .into_future();
+
+        tokio::pin!(public_server);
+        tokio::pin!(internal_server);
+
+        tokio::select! {
+            _ = shutdown_signal() => {
+                shutdown.notify_waiters();
+                let (public_result, internal_result) =
+                    tokio::join!(&mut public_server, &mut internal_server);
+                public_result?;
+                internal_result?;
+            }
+            public_result = &mut public_server => {
+                shutdown.notify_waiters();
+                let internal_result = (&mut internal_server).await;
+                public_result?;
+                internal_result?;
+            }
+            internal_result = &mut internal_server => {
+                shutdown.notify_waiters();
+                let public_result = (&mut public_server).await;
+                internal_result?;
+                public_result?;
+            }
+        }
+    } else {
+        axum::serve(
+            listener,
+            public_app.into_make_service_with_connect_info::<SocketAddr>(),
+        )
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
+    }
 
     Ok(())
+}
+
+async fn wait_for_shutdown(shutdown: Arc<Notify>) {
+    shutdown.notified().await;
 }
 
 async fn shutdown_signal() {

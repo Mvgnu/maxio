@@ -11,6 +11,7 @@
     deleteVersionApi,
     listVersionsApi,
   } from '$lib/api'
+  import type { MetadataCoverage } from '$lib/api'
   import { errorMessageOrFallback } from '$lib/error-message'
 
   interface Props {
@@ -30,6 +31,7 @@
   }
 
   let versions = $state<Version[]>([])
+  let metadataCoverage = $state<MetadataCoverage | null>(null)
   let loading = $state(true)
   let error = $state<string | null>(null)
 
@@ -40,11 +42,14 @@
       const result = await listVersionsApi(bucket, objectKey)
       if (result.ok) {
         versions = result.data.versions
+        metadataCoverage = result.data.metadataCoverage
       } else {
+        metadataCoverage = null
         error = errorMessageOrFallback(result.error, 'Failed to load versions')
       }
     } catch (err) {
       console.error('fetchVersions failed:', err)
+      metadataCoverage = null
       error = 'Failed to connect to server'
     } finally {
       loading = false
@@ -102,6 +107,19 @@
 
   {#if error}
     <div class="px-4 py-2 text-sm text-destructive">{error}</div>
+  {/if}
+
+  {#if metadataCoverage && !metadataCoverage.complete}
+    <div class="mx-4 mb-3 rounded-sm border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-200">
+      <span class="font-medium">
+        Distributed metadata coverage is partial ({metadataCoverage.respondedNodes.length}/{metadataCoverage.expectedNodes.length} nodes responded).
+      </span>
+      {#if metadataCoverage.missingNodes.length > 0}
+        <span class="ml-1">
+          Missing: {metadataCoverage.missingNodes.join(', ')}.
+        </span>
+      {/if}
+    </div>
   {/if}
 
   {#if loading}

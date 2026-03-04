@@ -1,4 +1,5 @@
 mod parsing;
+pub(crate) mod peer_transport;
 mod service;
 
 use axum::{
@@ -8,19 +9,27 @@ use axum::{
     response::Response,
 };
 use std::collections::HashMap;
+use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
 use tokio_util::io::ReaderStream;
 
 use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
 use crate::error::S3Error;
+use crate::metadata::{
+    ClusterMetadataListingStrategy, ObjectMetadataOperation, ObjectMetadataOperationError,
+    ObjectVersionMetadataOperation, ObjectVersionMetadataOperationError,
+    PersistedObjectMetadataOperationError, PersistedObjectVersionMetadataOperationError,
+    apply_object_metadata_operation_to_persisted_state,
+    apply_object_version_metadata_operation_to_persisted_state,
+};
 use crate::server::AppState;
 use crate::storage::placement::{
     ForwardedWriteEnvelope, ForwardedWriteOperation, ObjectWriteQuorumOutcome, PlacementViewState,
-    ReadRepairAction, ReadRepairExecutionPolicy, ReplicaObservation, WriteAckObservation,
-    object_read_repair_execution_plan_with_policy, object_write_plan_with_self,
-    object_write_quorum_outcome,
+    ReadRepairAction, ReadRepairExecutionPolicy, ReplicaObservation, ReplicationMutationOperation,
+    WriteAckObservation, object_read_repair_execution_plan_with_policy,
+    object_write_plan_with_self, object_write_quorum_outcome,
 };
-use crate::storage::{ChecksumAlgorithm, ObjectMeta};
+use crate::storage::{ChecksumAlgorithm, ObjectMeta, StorageError};
 use crate::xml::{response::to_xml, types::CopyObjectResult};
 use parsing::{
     MetadataDirective, parse_copy_source, parse_delete_objects_request, parse_metadata_directive,
@@ -36,12 +45,14 @@ use service::{
 };
 
 use super::multipart;
+use peer_transport::internal_peer_transport_scheme;
 use service::ensure_bucket_exists;
 pub(crate) use service::{body_to_reader, extract_checksum};
 pub(crate) use service::{
     ensure_local_write_owner, forward_replica_put_to_target, forward_write_to_target,
-    object_path_and_query, object_write_routing_hint, write_forward_target,
-    write_replica_count_for_membership_count,
+    object_path_and_query, object_write_routing_hint,
+    persist_pending_replication_from_quorum_outcome, replay_pending_replication_backlog_once,
+    write_forward_target, write_replica_count_for_membership_count,
 };
 
 pub async fn put_object(
@@ -51,7 +62,12 @@ pub async fn put_object(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
-    let internal_replica_put = is_internal_replica_put_request(&headers);
+    let internal_replica_put = is_internal_replica_put_request(
+        &headers,
+        state.config.cluster_auth_token(),
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
 
     if !internal_replica_put && headers.contains_key("x-amz-copy-source") {
         return copy_object(State(state), Path((bucket, key)), Query(params), headers).await;
@@ -68,12 +84,15 @@ pub async fn put_object(
         .await;
     }
 
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     if let Some(forward) = write_forward_target(
         &bucket,
@@ -83,6 +102,7 @@ pub async fn put_object(
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         let body_bytes = axum::body::to_bytes(body, usize::MAX)
@@ -90,6 +110,7 @@ pub async fn put_object(
             .map_err(S3Error::internal)?
             .to_vec();
         return forward_write_to_target(
+            &state,
             Method::PUT,
             &forward.target,
             &path_and_query,
@@ -141,7 +162,12 @@ pub async fn put_object(
     }
 
     let checksum = extract_checksum(&headers);
-    let replica_version_id = internal_replica_version_id(&headers);
+    let replica_version_id = internal_replica_version_id(
+        &headers,
+        state.config.cluster_auth_token(),
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let result = state
         .storage
         .put_object_with_version_id(
@@ -155,6 +181,15 @@ pub async fn put_object(
         .await
         .map_err(|e| map_object_put_err(&bucket, e))?;
 
+    persist_current_object_metadata_state(
+        &state,
+        &placement,
+        &bucket,
+        &key,
+        result.version_id.as_deref(),
+        false,
+    )?;
+
     let quorum_outcome =
         if routing_hint.distributed && routing_hint.is_local_primary_owner && !internal_replica_put
         {
@@ -163,6 +198,7 @@ pub async fn put_object(
                     state: &state,
                     bucket: &bucket,
                     key: &key,
+                    replication_operation: ReplicationMutationOperation::PutObject,
                     params: &params,
                     headers: &headers,
                     raw_body_bytes: &raw_body_bytes,
@@ -177,6 +213,7 @@ pub async fn put_object(
 
     let mut response = put_object_response(&result, &routing_hint)?;
     if let Some(outcome) = quorum_outcome {
+        enforce_write_quorum_contract(&state, &outcome, "PutObject")?;
         add_write_quorum_headers(response.headers_mut(), &outcome);
     }
     Ok(response)
@@ -185,11 +222,233 @@ pub async fn put_object(
 const WRITE_ACK_COUNT_HEADER: &str = "x-maxio-write-ack-count";
 const WRITE_QUORUM_SIZE_HEADER: &str = "x-maxio-write-quorum-size";
 const WRITE_QUORUM_REACHED_HEADER: &str = "x-maxio-write-quorum-reached";
+const PERSISTED_METADATA_STATE_FILE: &str = "cluster-metadata-state.json";
+
+fn persisted_metadata_state_path(data_dir: &str) -> PathBuf {
+    PathBuf::from(data_dir)
+        .join(".maxio-runtime")
+        .join(PERSISTED_METADATA_STATE_FILE)
+}
+
+fn should_persist_consensus_object_metadata(
+    state: &AppState,
+    placement: &PlacementViewState,
+) -> bool {
+    !placement.members.is_empty()
+        && state.metadata_listing_strategy == ClusterMetadataListingStrategy::ConsensusIndex
+}
+
+fn persist_object_metadata_operation(
+    state: &AppState,
+    placement: &PlacementViewState,
+    operation_name: &str,
+    operation: &ObjectMetadataOperation,
+) -> Result<(), S3Error> {
+    if !should_persist_consensus_object_metadata(state, placement) {
+        return Ok(());
+    }
+
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let apply_result = apply_object_metadata_operation_to_persisted_state(
+        state_path.as_path(),
+        placement.view_id.as_str(),
+        operation,
+    );
+
+    if matches!(
+        (&apply_result, operation),
+        (
+            Err(PersistedObjectMetadataOperationError::Operation(
+                ObjectMetadataOperationError::ObjectNotFound
+            )),
+            ObjectMetadataOperation::DeleteCurrent { .. }
+        )
+    ) {
+        return Ok(());
+    }
+
+    apply_result.map(|_| ()).map_err(|error| {
+        S3Error::service_unavailable(&format!(
+            "Object metadata operation '{operation_name}' cannot update persisted metadata state: {}",
+            match error {
+                PersistedObjectMetadataOperationError::InvalidExpectedViewId => {
+                    "invalid expected metadata view id".to_string()
+                }
+                PersistedObjectMetadataOperationError::StateLoad(io_error) => {
+                    format!("failed to load persisted metadata state: {io_error}")
+                }
+                PersistedObjectMetadataOperationError::StatePersist(io_error) => {
+                    format!("failed to persist metadata state: {io_error}")
+                }
+                PersistedObjectMetadataOperationError::ViewIdMismatch {
+                    expected_view_id,
+                    persisted_view_id,
+                } => format!(
+                    "persisted metadata view mismatch (expected='{expected_view_id}', persisted='{persisted_view_id}')"
+                ),
+                PersistedObjectMetadataOperationError::InvalidPersistedState(reason) => {
+                    format!("invalid persisted metadata state ({reason:?})")
+                }
+                PersistedObjectMetadataOperationError::Operation(reason) => reason.as_str().to_string(),
+            }
+        ))
+    })
+}
+
+fn persist_object_version_metadata_operation(
+    state: &AppState,
+    placement: &PlacementViewState,
+    operation_name: &str,
+    operation: &ObjectVersionMetadataOperation,
+) -> Result<(), S3Error> {
+    if !should_persist_consensus_object_metadata(state, placement) {
+        return Ok(());
+    }
+
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let apply_result = apply_object_version_metadata_operation_to_persisted_state(
+        state_path.as_path(),
+        placement.view_id.as_str(),
+        operation,
+    );
+
+    if matches!(
+        (&apply_result, operation),
+        (
+            Err(PersistedObjectVersionMetadataOperationError::Operation(
+                ObjectVersionMetadataOperationError::VersionNotFound
+            )),
+            ObjectVersionMetadataOperation::DeleteVersion { .. }
+        )
+    ) {
+        return Ok(());
+    }
+
+    apply_result.map(|_| ()).map_err(|error| {
+        S3Error::service_unavailable(&format!(
+            "Object-version metadata operation '{operation_name}' cannot update persisted metadata state: {}",
+            match error {
+                PersistedObjectVersionMetadataOperationError::InvalidExpectedViewId => {
+                    "invalid expected metadata view id".to_string()
+                }
+                PersistedObjectVersionMetadataOperationError::StateLoad(io_error) => {
+                    format!("failed to load persisted metadata state: {io_error}")
+                }
+                PersistedObjectVersionMetadataOperationError::StatePersist(io_error) => {
+                    format!("failed to persist metadata state: {io_error}")
+                }
+                PersistedObjectVersionMetadataOperationError::ViewIdMismatch {
+                    expected_view_id,
+                    persisted_view_id,
+                } => format!(
+                    "persisted metadata view mismatch (expected='{expected_view_id}', persisted='{persisted_view_id}')"
+                ),
+                PersistedObjectVersionMetadataOperationError::InvalidPersistedState(reason) => {
+                    format!("invalid persisted metadata state ({reason:?})")
+                }
+                PersistedObjectVersionMetadataOperationError::Operation(reason) => {
+                    reason.as_str().to_string()
+                }
+            }
+        ))
+    })
+}
+
+pub(crate) fn persist_current_object_metadata_state(
+    state: &AppState,
+    placement: &PlacementViewState,
+    bucket: &str,
+    key: &str,
+    latest_version_id: Option<&str>,
+    is_delete_marker: bool,
+) -> Result<(), S3Error> {
+    persist_object_metadata_operation(
+        state,
+        placement,
+        "UpsertObjectCurrent",
+        &ObjectMetadataOperation::UpsertCurrent {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            latest_version_id: latest_version_id.map(ToOwned::to_owned),
+            is_delete_marker,
+        },
+    )?;
+
+    if let Some(version_id) = latest_version_id {
+        persist_object_version_metadata_operation(
+            state,
+            placement,
+            "UpsertObjectVersion",
+            &ObjectVersionMetadataOperation::UpsertVersion {
+                bucket: bucket.to_string(),
+                key: key.to_string(),
+                version_id: version_id.to_string(),
+                is_delete_marker,
+                is_latest: true,
+            },
+        )?;
+    }
+    Ok(())
+}
+
+fn persist_deleted_current_object_metadata_state(
+    state: &AppState,
+    placement: &PlacementViewState,
+    bucket: &str,
+    key: &str,
+) -> Result<(), S3Error> {
+    persist_object_metadata_operation(
+        state,
+        placement,
+        "DeleteObjectCurrent",
+        &ObjectMetadataOperation::DeleteCurrent {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+        },
+    )
+}
+
+async fn persist_object_metadata_after_version_delete(
+    state: &AppState,
+    placement: &PlacementViewState,
+    bucket: &str,
+    key: &str,
+    deleted_version_id: &str,
+) -> Result<(), S3Error> {
+    persist_object_version_metadata_operation(
+        state,
+        placement,
+        "DeleteObjectVersion",
+        &ObjectVersionMetadataOperation::DeleteVersion {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            version_id: deleted_version_id.to_string(),
+        },
+    )?;
+
+    match state.storage.head_object(bucket, key).await {
+        Ok(meta) => persist_current_object_metadata_state(
+            state,
+            placement,
+            bucket,
+            key,
+            meta.version_id.as_deref(),
+            meta.is_delete_marker,
+        ),
+        Err(StorageError::NotFound(_)) => {
+            persist_deleted_current_object_metadata_state(state, placement, bucket, key)
+        }
+        Err(err) => Err(S3Error::service_unavailable(&format!(
+            "DeleteObjectVersion cannot refresh persisted object metadata state from storage: {err}"
+        ))),
+    }
+}
 
 struct ReplicaPutRequest<'a> {
     state: &'a AppState,
     bucket: &'a str,
     key: &'a str,
+    replication_operation: ReplicationMutationOperation,
     params: &'a HashMap<String, String>,
     headers: &'a HeaderMap,
     raw_body_bytes: &'a [u8],
@@ -204,7 +463,7 @@ async fn replicate_put_to_replica_owners(
     let write_plan = object_write_plan_with_self(
         request.key,
         request.state.node_id.as_ref(),
-        request.state.cluster_peers.as_slice(),
+        request.state.active_cluster_peers().as_slice(),
         replica_count,
     );
     let mut observations = vec![WriteAckObservation {
@@ -223,6 +482,7 @@ async fn replicate_put_to_replica_owners(
     );
     envelope.visited_nodes = vec![request.state.node_id.to_string()];
     envelope.hop_count = 1;
+    let pending_idempotency_key = envelope.idempotency_key.clone();
 
     for target in write_plan
         .owners
@@ -230,6 +490,7 @@ async fn replicate_put_to_replica_owners(
         .filter(|owner| owner.as_str() != request.state.node_id.as_ref())
     {
         let acked = match forward_replica_put_to_target(
+            request.state,
             target,
             &path_and_query,
             request.headers,
@@ -271,7 +532,18 @@ async fn replicate_put_to_replica_owners(
         });
     }
 
-    object_write_quorum_outcome(&write_plan, &observations)
+    let outcome = object_write_quorum_outcome(&write_plan, &observations);
+    persist_pending_replication_from_quorum_outcome(
+        request.state,
+        request.replication_operation,
+        pending_idempotency_key.as_str(),
+        request.bucket,
+        request.key,
+        request.version_id,
+        request.placement,
+        &outcome,
+    );
+    outcome
 }
 
 pub(crate) fn add_write_quorum_headers(
@@ -284,6 +556,21 @@ pub(crate) fn add_write_quorum_headers(
         outcome.quorum_size,
         outcome.quorum_reached,
     );
+}
+
+pub(crate) fn enforce_write_quorum_contract(
+    state: &AppState,
+    outcome: &ObjectWriteQuorumOutcome,
+    operation: &str,
+) -> Result<(), S3Error> {
+    if !state.write_durability_mode.is_strict_quorum() || outcome.quorum_reached {
+        return Ok(());
+    }
+
+    Err(S3Error::service_unavailable(&format!(
+        "{operation} write quorum not reached (acked {} of required quorum {})",
+        outcome.ack_count, outcome.quorum_size
+    )))
 }
 
 fn add_write_quorum_header_values(
@@ -412,9 +699,10 @@ fn presigned_replica_path_and_query(
     key: &str,
     extra_query_params: &[(&str, &str)],
 ) -> Option<String> {
+    let scheme = internal_peer_transport_scheme(state).ok()?;
     let url = generate_presigned_url(PresignRequest {
         method,
-        scheme: "http",
+        scheme,
         host: signed_host,
         path: &format!("/{bucket}/{key}"),
         extra_query_params,
@@ -523,51 +811,51 @@ fn replica_put_headers_for_read_repair(
 }
 
 async fn replicate_delete_to_replica_owners(
-    state: &AppState,
-    bucket: &str,
-    key: &str,
-    params: &HashMap<String, String>,
-    headers: &HeaderMap,
-    placement: &PlacementViewState,
+    request: ReplicaDeleteRequest<'_>,
 ) -> ObjectWriteQuorumOutcome {
-    let replica_count = write_replica_count_for_membership_count(placement.members.len());
+    let replica_count = write_replica_count_for_membership_count(request.placement.members.len());
     let write_plan = object_write_plan_with_self(
-        key,
-        state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        request.key,
+        request.state.node_id.as_ref(),
+        request.state.active_cluster_peers().as_slice(),
         replica_count,
     );
     let mut observations = vec![WriteAckObservation {
-        node: state.node_id.to_string(),
+        node: request.state.node_id.to_string(),
         acked: true,
     }];
-    let replica_headers = replica_delete_headers(headers);
+    let replica_headers = replica_delete_headers(request.headers);
     let mut envelope = ForwardedWriteEnvelope::new(
         ForwardedWriteOperation::ReplicateDeleteObject,
-        bucket,
-        key,
-        state.node_id.as_ref(),
-        state.node_id.as_ref(),
+        request.bucket,
+        request.key,
+        request.state.node_id.as_ref(),
+        request.state.node_id.as_ref(),
         &uuid::Uuid::new_v4().to_string(),
-        placement,
+        request.placement,
     );
-    envelope.visited_nodes = vec![state.node_id.to_string()];
+    envelope.visited_nodes = vec![request.state.node_id.to_string()];
     envelope.hop_count = 1;
+    let pending_idempotency_key = envelope.idempotency_key.clone();
 
     for target in write_plan
         .owners
         .iter()
-        .filter(|owner| owner.as_str() != state.node_id.as_ref())
+        .filter(|owner| owner.as_str() != request.state.node_id.as_ref())
     {
-        let path_and_query = if params.is_empty() {
+        let path_and_query = if request.params.is_empty() {
             let signed_host = replica_headers
                 .get(header::HOST)
                 .and_then(|value| value.to_str().ok())
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or(target.as_str());
-            let Some(path_and_query) =
-                presigned_replica_delete_path_and_query(state, signed_host, bucket, key, None)
-            else {
+            let Some(path_and_query) = presigned_replica_delete_path_and_query(
+                request.state,
+                signed_host,
+                request.bucket,
+                request.key,
+                request.version_id,
+            ) else {
                 observations.push(WriteAckObservation {
                     node: target.clone(),
                     acked: false,
@@ -576,14 +864,15 @@ async fn replicate_delete_to_replica_owners(
             };
             path_and_query
         } else {
-            object_path_and_query(bucket, key, params)
+            object_path_and_query(request.bucket, request.key, request.params)
         };
-        let request_headers = if params.is_empty() {
+        let request_headers = if request.params.is_empty() {
             &replica_headers
         } else {
-            headers
+            request.headers
         };
         let acked = match forward_replica_delete_to_target(
+            request.state,
             target,
             &path_and_query,
             request_headers,
@@ -597,8 +886,8 @@ async fn replicate_delete_to_replica_owners(
                     tracing::warn!(
                         operation = "replicate-delete-object",
                         target_node = %target,
-                        bucket = %bucket,
-                        key = %key,
+                        bucket = %request.bucket,
+                        key = %request.key,
                         status = %response.status(),
                         "Replica fanout response was not successful"
                     );
@@ -609,8 +898,8 @@ async fn replicate_delete_to_replica_owners(
                 tracing::warn!(
                     operation = "replicate-delete-object",
                     target_node = %target,
-                    bucket = %bucket,
-                    key = %key,
+                    bucket = %request.bucket,
+                    key = %request.key,
                     error = ?err,
                     "Replica fanout request failed"
                 );
@@ -623,7 +912,29 @@ async fn replicate_delete_to_replica_owners(
         });
     }
 
-    object_write_quorum_outcome(&write_plan, &observations)
+    let outcome = object_write_quorum_outcome(&write_plan, &observations);
+    persist_pending_replication_from_quorum_outcome(
+        request.state,
+        request.replication_operation,
+        pending_idempotency_key.as_str(),
+        request.bucket,
+        request.key,
+        request.version_id,
+        request.placement,
+        &outcome,
+    );
+    outcome
+}
+
+struct ReplicaDeleteRequest<'a> {
+    state: &'a AppState,
+    bucket: &'a str,
+    key: &'a str,
+    version_id: Option<&'a str>,
+    replication_operation: ReplicationMutationOperation,
+    params: &'a HashMap<String, String>,
+    headers: &'a HeaderMap,
+    placement: &'a PlacementViewState,
 }
 
 async fn execute_primary_read_repair(
@@ -639,7 +950,7 @@ async fn execute_primary_read_repair(
     let write_plan = object_write_plan_with_self(
         key,
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
         replica_count,
     );
     if !write_plan.is_local_primary_owner || write_plan.owners.len() <= 1 {
@@ -689,6 +1000,7 @@ async fn execute_primary_read_repair(
         };
 
         match forward_replica_head_to_target(
+            state,
             target,
             &path_and_query,
             &probe_headers,
@@ -838,6 +1150,7 @@ async fn execute_primary_read_repair(
                 };
                 let payload = repair_payload.clone().unwrap_or_default();
                 match forward_replica_put_to_target(
+                    state,
                     &node,
                     &path_and_query,
                     &put_headers,
@@ -892,6 +1205,7 @@ async fn execute_primary_read_repair(
                     continue;
                 };
                 match forward_replica_delete_to_target(
+                    state,
                     &node,
                     &path_and_query,
                     &delete_headers,
@@ -933,12 +1247,15 @@ async fn copy_object(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, S3Error> {
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     if let Some(forward) = write_forward_target(
         &bucket,
@@ -948,9 +1265,11 @@ async fn copy_object(
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         return forward_write_to_target(
+            &state,
             Method::PUT,
             &forward.target,
             &path_and_query,
@@ -960,7 +1279,12 @@ async fn copy_object(
         )
         .await;
     }
-    let internal_replica_put = is_internal_replica_put_request(&headers);
+    let internal_replica_put = is_internal_replica_put_request(
+        &headers,
+        state.config.cluster_auth_token(),
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     ensure_local_write_owner(&routing_hint)?;
 
     let copy_source = headers
@@ -1026,6 +1350,15 @@ async fn copy_object(
         .await
         .map_err(|e| map_object_put_err(&bucket, e))?;
 
+    persist_current_object_metadata_state(
+        &state,
+        &placement,
+        &bucket,
+        &key,
+        result.version_id.as_deref(),
+        false,
+    )?;
+
     let quorum_outcome =
         if routing_hint.distributed && routing_hint.is_local_primary_owner && !internal_replica_put
         {
@@ -1036,6 +1369,7 @@ async fn copy_object(
                     state: &state,
                     bucket: &bucket,
                     key: &key,
+                    replication_operation: ReplicationMutationOperation::CopyObject,
                     params: &params,
                     headers: &replica_headers,
                     raw_body_bytes: &source_body,
@@ -1068,6 +1402,7 @@ async fn copy_object(
         &routing_hint,
     )?;
     if let Some(outcome) = quorum_outcome {
+        enforce_write_quorum_contract(&state, &outcome, "CopyObject")?;
         add_write_quorum_headers(response.headers_mut(), &outcome);
     }
     Ok(response)
@@ -1084,24 +1419,29 @@ pub async fn get_object(
             .await;
     }
 
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     if let Some(forward) = write_forward_target(
         &bucket,
         &key,
-        ForwardedWriteOperation::PutObject,
+        ForwardedWriteOperation::GetObject,
         &routing_hint,
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         return forward_write_to_target(
+            &state,
             Method::GET,
             &forward.target,
             &path_and_query,
@@ -1221,24 +1561,29 @@ pub async fn head_object(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, S3Error> {
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     if let Some(forward) = write_forward_target(
         &bucket,
         &key,
-        ForwardedWriteOperation::PutObject,
+        ForwardedWriteOperation::HeadObject,
         &routing_hint,
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         return forward_write_to_target(
+            &state,
             Method::HEAD,
             &forward.target,
             &path_and_query,
@@ -1299,12 +1644,15 @@ pub async fn delete_object(
     }
 
     // Permanent version deletion
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     if let Some(forward) = write_forward_target(
         &bucket,
@@ -1314,9 +1662,11 @@ pub async fn delete_object(
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         return forward_write_to_target(
+            &state,
             Method::DELETE,
             &forward.target,
             &path_and_query,
@@ -1326,7 +1676,12 @@ pub async fn delete_object(
         )
         .await;
     }
-    let internal_replica_delete = is_internal_replica_delete_request(&headers);
+    let internal_replica_delete = is_internal_replica_delete_request(
+        &headers,
+        state.config.cluster_auth_token(),
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     if !internal_replica_delete {
         ensure_local_write_owner(&routing_hint)?;
     }
@@ -1340,6 +1695,9 @@ pub async fn delete_object(
             .await
             .map_err(|e| map_object_version_delete_err(&bucket, version_id, e))?;
 
+        persist_object_metadata_after_version_delete(&state, &placement, &bucket, &key, version_id)
+            .await?;
+
         let mut response = no_content_delete_response(
             Some(version_id),
             deleted_meta.is_delete_marker,
@@ -1349,10 +1707,18 @@ pub async fn delete_object(
             && routing_hint.is_local_primary_owner
             && !internal_replica_delete
         {
-            let outcome = replicate_delete_to_replica_owners(
-                &state, &bucket, &key, &params, &headers, &placement,
-            )
+            let outcome = replicate_delete_to_replica_owners(ReplicaDeleteRequest {
+                state: &state,
+                bucket: &bucket,
+                key: &key,
+                version_id: Some(version_id.as_str()),
+                replication_operation: ReplicationMutationOperation::DeleteObjectVersion,
+                params: &params,
+                headers: &headers,
+                placement: &placement,
+            })
             .await;
+            enforce_write_quorum_contract(&state, &outcome, "DeleteObjectVersion")?;
             add_write_quorum_headers(response.headers_mut(), &outcome);
         }
         return Ok(response);
@@ -1366,16 +1732,37 @@ pub async fn delete_object(
         .await
         .map_err(|e| map_delete_storage_err(&bucket, e))?;
 
+    if let Some(version_id) = result.version_id.as_deref() {
+        persist_current_object_metadata_state(
+            &state,
+            &placement,
+            &bucket,
+            &key,
+            Some(version_id),
+            result.is_delete_marker,
+        )?;
+    } else {
+        persist_deleted_current_object_metadata_state(&state, &placement, &bucket, &key)?;
+    }
+
     let mut response = no_content_delete_response(
         result.version_id.as_deref(),
         result.is_delete_marker,
         &routing_hint,
     )?;
     if routing_hint.distributed && routing_hint.is_local_primary_owner && !internal_replica_delete {
-        let outcome = replicate_delete_to_replica_owners(
-            &state, &bucket, &key, &params, &headers, &placement,
-        )
+        let outcome = replicate_delete_to_replica_owners(ReplicaDeleteRequest {
+            state: &state,
+            bucket: &bucket,
+            key: &key,
+            version_id: None,
+            replication_operation: ReplicationMutationOperation::DeleteObject,
+            params: &params,
+            headers: &headers,
+            placement: &placement,
+        })
         .await;
+        enforce_write_quorum_contract(&state, &outcome, "DeleteObject")?;
         add_write_quorum_headers(response.headers_mut(), &outcome);
     }
     Ok(response)
@@ -1440,7 +1827,8 @@ fn forwarded_delete_objects_outcome(
         let code = match response.status() {
             StatusCode::BAD_REQUEST => "InvalidArgument",
             StatusCode::NOT_FOUND => "NoSuchBucket",
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "AccessDenied",
+            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "ServiceUnavailable",
+            StatusCode::SERVICE_UNAVAILABLE => "ServiceUnavailable",
             _ => "InternalError",
         };
         let message = response
@@ -1464,7 +1852,7 @@ fn delete_objects_quorum_outcome_error(
 ) -> DeleteObjectsOutcome {
     DeleteObjectsOutcome::Error {
         key,
-        code: "InternalError",
+        code: "ServiceUnavailable",
         message: format!(
             "Delete quorum not reached (acked {ack_count} of required quorum {quorum_size})"
         ),
@@ -1489,14 +1877,17 @@ pub async fn delete_objects(
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     let mut planned_entries = Vec::with_capacity(request.keys.len());
     let mut batch_forward_target: Option<service::ForwardWriteTarget> = None;
     let mut can_forward_batch = !request.keys.is_empty();
     for key in &request.keys {
-        let routing_hint =
-            object_write_routing_hint(key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+        let routing_hint = object_write_routing_hint(
+            key,
+            state.node_id.as_ref(),
+            state.active_cluster_peers().as_slice(),
+        );
         let forward_target = write_forward_target(
             &bucket,
             key,
@@ -1505,6 +1896,7 @@ pub async fn delete_objects(
             &headers,
             state.node_id.as_ref(),
             &placement,
+            state.config.cluster_auth_token(),
         )?;
         if let Some(forward) = &forward_target {
             if let Some(existing_target) = batch_forward_target.as_ref().map(|v| &v.target) {
@@ -1528,6 +1920,7 @@ pub async fn delete_objects(
         if let Some(forward) = batch_forward_target {
             let path_and_query = bucket_path_and_query(&bucket, &params);
             return forward_write_to_target(
+                &state,
                 Method::POST,
                 &forward.target,
                 &path_and_query,
@@ -1566,12 +1959,13 @@ pub async fn delete_objects(
             ) else {
                 outcomes.push(DeleteObjectsOutcome::Error {
                     key: entry.key,
-                    code: "AccessDenied",
+                    code: "ServiceUnavailable",
                     message: "Write forwarding to primary owner failed: unable to presign internal delete request".to_string(),
                 });
                 continue;
             };
             match forward_write_to_target(
+                &state,
                 Method::DELETE,
                 &forward.target,
                 path_and_query.as_str(),
@@ -1587,7 +1981,7 @@ pub async fn delete_objects(
                 }
                 Err(err) => outcomes.push(DeleteObjectsOutcome::Error {
                     key: entry.key,
-                    code: "AccessDenied",
+                    code: "ServiceUnavailable",
                     message: err.message,
                 }),
             }
@@ -1597,7 +1991,7 @@ pub async fn delete_objects(
         if let Err(err) = ensure_local_write_owner(&entry.routing_hint) {
             outcomes.push(DeleteObjectsOutcome::Error {
                 key: entry.key,
-                code: "AccessDenied",
+                code: err.code.as_str(),
                 message: err.message,
             });
             continue;
@@ -1607,15 +2001,38 @@ pub async fn delete_objects(
         let delete_result = state.storage.delete_object(&bucket, &key).await;
         match delete_result {
             Ok(dr) => {
-                if entry.routing_hint.distributed && entry.routing_hint.is_local_primary_owner {
-                    let outcome = replicate_delete_to_replica_owners(
+                let persist_result = if let Some(version_id) = dr.version_id.as_deref() {
+                    persist_current_object_metadata_state(
                         &state,
+                        &placement,
                         &bucket,
                         &key,
-                        &empty_params,
-                        &headers,
-                        &placement,
+                        Some(version_id),
+                        dr.is_delete_marker,
                     )
+                } else {
+                    persist_deleted_current_object_metadata_state(&state, &placement, &bucket, &key)
+                };
+                if let Err(err) = persist_result {
+                    outcomes.push(DeleteObjectsOutcome::Error {
+                        key,
+                        code: "ServiceUnavailable",
+                        message: err.message,
+                    });
+                    continue;
+                }
+
+                if entry.routing_hint.distributed && entry.routing_hint.is_local_primary_owner {
+                    let outcome = replicate_delete_to_replica_owners(ReplicaDeleteRequest {
+                        state: &state,
+                        bucket: &bucket,
+                        key: &key,
+                        version_id: None,
+                        replication_operation: ReplicationMutationOperation::DeleteObject,
+                        params: &empty_params,
+                        headers: &headers,
+                        placement: &placement,
+                    })
                     .await;
                     quorum_aggregate.record_outcome(&outcome);
                     if !outcome.quorum_reached {
@@ -1648,4 +2065,44 @@ pub async fn delete_objects(
         );
     }
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn forwarded_delete_objects_outcome_maps_auth_rejects_to_service_unavailable() {
+        let forbidden = Response::builder()
+            .status(StatusCode::FORBIDDEN)
+            .body(Body::empty())
+            .expect("response");
+        let unauthorized = Response::builder()
+            .status(StatusCode::UNAUTHORIZED)
+            .body(Body::empty())
+            .expect("response");
+
+        let forbidden_outcome =
+            forwarded_delete_objects_outcome("forbidden.txt".to_string(), &forbidden);
+        let unauthorized_outcome =
+            forwarded_delete_objects_outcome("unauthorized.txt".to_string(), &unauthorized);
+
+        match forbidden_outcome {
+            DeleteObjectsOutcome::Error { code, .. } => {
+                assert_eq!(code, "ServiceUnavailable");
+            }
+            DeleteObjectsOutcome::Deleted { .. } => {
+                panic!("forbidden forwarded delete should map to error");
+            }
+        }
+
+        match unauthorized_outcome {
+            DeleteObjectsOutcome::Error { code, .. } => {
+                assert_eq!(code, "ServiceUnavailable");
+            }
+            DeleteObjectsOutcome::Deleted { .. } => {
+                panic!("unauthorized forwarded delete should map to error");
+            }
+        }
+    }
 }

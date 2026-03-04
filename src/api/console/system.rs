@@ -15,11 +15,10 @@ use crate::server::{
 };
 use crate::storage::StorageError;
 use crate::storage::placement::{
-    chunk_forward_target_with_self, chunk_rebalance_plan, membership_fingerprint,
-    membership_with_self, local_rebalance_actions, object_forward_target_with_self,
+    chunk_forward_target_with_self, chunk_rebalance_plan, local_rebalance_actions,
+    membership_fingerprint, membership_with_self, object_forward_target_with_self,
     object_rebalance_plan, primary_chunk_owner_with_self, primary_object_owner_with_self,
-    quorum_size,
-    select_chunk_owners_with_self, select_object_owners_with_self,
+    quorum_size, select_chunk_owners_with_self, select_object_owners_with_self,
 };
 use crate::storage::validation::validate_key;
 
@@ -45,6 +44,7 @@ struct TopologyPayload {
     cluster_peer_count: usize,
     cluster_peers: Vec<String>,
     membership_protocol: String,
+    membership_engine: String,
     placement_epoch: u64,
 }
 
@@ -73,6 +73,9 @@ struct MetricsPayload {
     requests_total: u64,
     uptime_seconds: f64,
     version: String,
+    membership_protocol_ready: bool,
+    membership_converged: bool,
+    membership_convergence_reason: String,
     #[serde(flatten)]
     topology: TopologyPayload,
 }
@@ -163,6 +166,9 @@ struct SummaryMetricsPayload {
     requests_total: u64,
     uptime_seconds: f64,
     version: String,
+    membership_protocol_ready: bool,
+    membership_converged: bool,
+    membership_convergence_reason: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,6 +187,7 @@ fn topology_payload(topology: &RuntimeTopologySnapshot) -> TopologyPayload {
         cluster_peer_count: topology.cluster_peer_count(),
         cluster_peers: topology.cluster_peers.clone(),
         membership_protocol: topology.membership_protocol.as_str().to_string(),
+        membership_engine: topology.membership_status.engine.clone(),
         placement_epoch: topology.placement_epoch,
     }
 }
@@ -229,11 +236,17 @@ fn metrics_payload(
     topology: &RuntimeTopologySnapshot,
     requests_total: u64,
     uptime_seconds: f64,
+    membership_protocol_ready: bool,
+    membership_converged: bool,
+    membership_convergence_reason: &str,
 ) -> MetricsPayload {
     MetricsPayload {
         requests_total,
         uptime_seconds,
         version: env!("CARGO_PKG_VERSION").to_string(),
+        membership_protocol_ready,
+        membership_converged,
+        membership_convergence_reason: membership_convergence_reason.to_string(),
         topology: topology_payload(topology),
     }
 }
@@ -261,10 +274,18 @@ pub(super) async fn get_metrics(State(state): State<AppState>) -> impl IntoRespo
     let requests_total = state.request_count.load(Ordering::Relaxed);
     let uptime_seconds = state.started_at.elapsed().as_secs_f64();
     let topology = runtime_topology_snapshot(&state);
+    let health = runtime_health_payload(&state).await;
 
     response::json(
         StatusCode::OK,
-        metrics_payload(&topology, requests_total, uptime_seconds),
+        metrics_payload(
+            &topology,
+            requests_total,
+            uptime_seconds,
+            health.membership_protocol_ready(),
+            health.membership_converged(),
+            health.membership_convergence_reason(),
+        ),
     )
 }
 
@@ -472,6 +493,9 @@ pub(super) async fn get_summary(State(state): State<AppState>) -> impl IntoRespo
     let uptime_seconds = state.started_at.elapsed().as_secs_f64();
     let topology = runtime_topology_snapshot(&state);
     let health = runtime_health_payload(&state).await;
+    let membership_protocol_ready = health.membership_protocol_ready();
+    let membership_converged = health.membership_converged();
+    let membership_convergence_reason = health.membership_convergence_reason().to_string();
 
     let payload = SummaryPayload {
         health,
@@ -479,6 +503,9 @@ pub(super) async fn get_summary(State(state): State<AppState>) -> impl IntoRespo
             requests_total,
             uptime_seconds,
             version: env!("CARGO_PKG_VERSION").to_string(),
+            membership_protocol_ready,
+            membership_converged,
+            membership_convergence_reason,
         },
         topology: topology_payload(&topology),
         membership: membership_payload(&topology),
@@ -638,6 +665,7 @@ mod tests {
         parse_rebalance_query, topology_payload,
     };
     use crate::config::MembershipProtocol;
+    use crate::membership::MembershipEngineStatus;
     use crate::server::{RuntimeMode, RuntimeTopologySnapshot};
     use std::collections::HashMap;
 
@@ -649,9 +677,18 @@ mod tests {
                 RuntimeMode::Distributed
             },
             node_id: node_id.to_string(),
+            cluster_id: "cluster-1".to_string(),
             cluster_peers: peers.iter().map(|value| value.to_string()).collect(),
             membership_view_id: "view-1".to_string(),
             membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: MembershipProtocol::StaticBootstrap.as_str().to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
             placement_epoch: 0,
             membership_nodes: std::iter::once(node_id.to_string())
                 .chain(peers.iter().map(|value| value.to_string()))

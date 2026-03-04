@@ -25,7 +25,7 @@ MaxIO is a lightweight, single-binary S3-compatible object storage server writte
 - **Range Requests** — HTTP 206 Partial Content support via `Range` header on GetObject
 - **Versioning** — Object version creation, list/get/delete by `versionId`, marker-aware `?versions` pagination, suspend-with-history-preservation semantics
 - **Lifecycle Rules** — Bucket lifecycle rule set/get/delete plus background lifecycle sweep execution
-- **Distributed Routing Foundation** — Placement-aware forwarding for non-owner reads/writes, replica fanout for primary writes (`PUT`/`CopyObject`/multipart complete/`DELETE`), quorum diagnostics headers (including per-entry degraded-quorum surfacing in `DeleteObjects`), placement epoch/view wiring
+- **Distributed Routing Foundation** — Placement-aware forwarding for non-owner reads/writes, typed forwarding envelopes with explicit operation semantics (`GET`/`HEAD`/write paths), replica fanout for primary writes (`PUT`/`CopyObject`/multipart complete/`DELETE`), quorum diagnostics headers (including per-entry degraded-quorum surfacing in `DeleteObjects`), placement epoch/view wiring, and internal forwarding trust-gating via optional cluster auth token
 - **Read-Repair Foundation** — Primary-owner `GET`/`HEAD` read-repair (current-version and `versionId`-targeted) with trusted replica probes and replica repair fanout
 - **Runtime Observability** — Prometheus metrics at `/metrics` and probe-backed health/readiness status at `/healthz` (data-dir/storage probes, disk headroom, static-peer connectivity, and self-peer misconfiguration detection)
 - **Checksum Verification** — CRC32, CRC32C, SHA-1, and SHA-256 checksums on upload with automatic validation and persistent storage
@@ -109,7 +109,8 @@ Open `http://localhost:9000/ui/` in your browser. Default credentials: `minioadm
 | `MAXIO_REGION` | `--region` | `us-east-1` | S3 region (aliases: `MINIO_REGION_NAME`, `MINIO_REGION`) |
 | `MAXIO_NODE_ID` | `--node-id` | `HOSTNAME` or `maxio-node` | Stable node identifier for distributed-mode bootstrap wiring |
 | `MAXIO_CLUSTER_PEERS` | `--cluster-peers` | _empty_ | Comma-separated `host:port` peer list for distributed bootstrap wiring |
-| `MAXIO_MEMBERSHIP_PROTOCOL` | `--membership-protocol` | `static-bootstrap` | Membership protocol mode (`static-bootstrap`, `gossip`, `raft`; gossip/raft are currently config placeholders) |
+| `MAXIO_MEMBERSHIP_PROTOCOL` | `--membership-protocol` | `static-bootstrap` | Membership protocol mode (`static-bootstrap`, `gossip`, `raft`; gossip/raft currently map to explicit unimplemented placeholder engine status) |
+| `MAXIO_CLUSTER_AUTH_TOKEN` | `--cluster-auth-token` | _empty_ | Optional shared token for trusted node-to-node forwarding/replication headers |
 | `MAXIO_ERASURE_CODING` | `--erasure-coding` | `false` | Enable erasure coding with per-chunk integrity checksums |
 | `MAXIO_CHUNK_SIZE` | `--chunk-size` | `10485760` (10MB) | Chunk size in bytes for erasure coding |
 | `MAXIO_PARITY_SHARDS` | `--parity-shards` | `0` | Number of parity shards per object (requires `--erasure-coding`, 0 = no parity) |
@@ -147,8 +148,8 @@ aws --endpoint-url http://localhost:9000 s3 rb s3://my-bucket
 
 - Done: multipart upload, presigned URLs, CopyObject, CORS, range headers, lifecycle rules, metrics baseline, erasure coding
 - Done: versioning foundation (version lifecycle APIs/flows, versions pagination, version-aware range reads)
-- In progress: distributed mode foundations (placement/epoch state, non-owner read/write forwarding, primary replica fanout + quorum diagnostics, primary read-repair for current-version and `versionId`-targeted GET/HEAD, static-bootstrap readiness guardrails)
-- In progress: replication hardening, read-repair expansion, rebalance executor, dynamic membership engines (gossip/raft), multi-user policy/authorization layers
+- In progress: distributed mode foundations (placement/epoch state, non-owner read/write forwarding, primary replica fanout + quorum diagnostics, primary read-repair for current-version and `versionId`-targeted GET/HEAD, static-bootstrap readiness guardrails, runtime membership-engine status surface, internal forwarding token trust gate)
+- In progress: replication hardening, read-repair expansion, rebalance executor, cryptographic peer transport auth (mTLS-targeted), dynamic membership engines (gossip/raft), multi-user policy/authorization layers
 
 ## Contributing
 

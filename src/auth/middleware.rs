@@ -6,6 +6,10 @@ use axum::{
 };
 use chrono::{NaiveDateTime, Utc};
 
+use crate::cluster::authenticator::{
+    contains_internal_forwarding_protocol_headers, record_peer_auth_rejection,
+    strip_untrusted_internal_forwarding_headers,
+};
 use crate::error::S3Error;
 use crate::server::AppState;
 
@@ -15,7 +19,7 @@ const MAX_SIGV4_FUTURE_SKEW_SECS: i64 = 15 * 60;
 
 pub async fn auth_middleware(
     State(state): State<AppState>,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, S3Error> {
     let method = request.method().as_str().to_string();
@@ -123,6 +127,24 @@ pub async fn auth_middleware(
         return Err(S3Error::signature_mismatch());
     }
 
+    let active_cluster_peers = state.active_cluster_peers();
+    if contains_internal_forwarding_protocol_headers(request.headers()) {
+        let peer_auth_result = strip_untrusted_internal_forwarding_headers(
+            request.headers_mut(),
+            state.config.cluster_auth_token(),
+            state.node_id.as_ref(),
+            active_cluster_peers.as_slice(),
+        );
+        if !peer_auth_result.trusted {
+            record_peer_auth_rejection(&peer_auth_result);
+            tracing::warn!(
+                mode = peer_auth_result.mode.as_str(),
+                reason = peer_auth_result.reject_reason(),
+                "Rejected untrusted forwarded-request protocol headers after SigV4 verification"
+            );
+        }
+    }
+
     tracing::debug!("Signature verification OK");
     let response = next.run(request).await;
     tracing::debug!("{} {} -> {}", method, uri, response.status());
@@ -133,7 +155,7 @@ async fn handle_presigned(
     state: &AppState,
     method: &str,
     query: &str,
-    request: Request,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, S3Error> {
     tracing::debug!("Presigned URL detected");
@@ -199,6 +221,24 @@ async fn handle_presigned(
     if !valid {
         tracing::debug!("Presigned signature verification FAILED");
         return Err(S3Error::signature_mismatch());
+    }
+
+    let active_cluster_peers = state.active_cluster_peers();
+    if contains_internal_forwarding_protocol_headers(request.headers()) {
+        let peer_auth_result = strip_untrusted_internal_forwarding_headers(
+            request.headers_mut(),
+            state.config.cluster_auth_token(),
+            state.node_id.as_ref(),
+            active_cluster_peers.as_slice(),
+        );
+        if !peer_auth_result.trusted {
+            record_peer_auth_rejection(&peer_auth_result);
+            tracing::warn!(
+                mode = peer_auth_result.mode.as_str(),
+                reason = peer_auth_result.reject_reason(),
+                "Rejected untrusted forwarded-request protocol headers after presigned verification"
+            );
+        }
     }
 
     tracing::debug!("Presigned signature verification OK");

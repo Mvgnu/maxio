@@ -111,10 +111,19 @@ export interface ObjectRecord {
   etag: string
 }
 
+export interface MetadataCoverage {
+  complete: boolean
+  expectedNodes: string[]
+  respondedNodes: string[]
+  missingNodes: string[]
+  source: string | null
+}
+
 export interface ObjectListResponse {
   files: ObjectRecord[]
   prefixes: string[]
   emptyPrefixes: string[]
+  metadataCoverage: MetadataCoverage | null
 }
 
 export interface VersionRecord {
@@ -123,6 +132,11 @@ export interface VersionRecord {
   size: number
   etag: string
   isDeleteMarker: boolean
+}
+
+export interface VersionListResponse {
+  versions: VersionRecord[]
+  metadataCoverage: MetadataCoverage | null
 }
 
 export interface RuntimeMetrics {
@@ -134,6 +148,7 @@ export interface RuntimeMetrics {
   clusterPeerCount: number | null
   clusterPeers: string[]
   membershipProtocol: string | null
+  membershipProtocolReady: boolean | null
   placementEpoch: number | null
   raw: string
 }
@@ -350,11 +365,133 @@ export function setBucketLifecycleApi(bucket: string, rules: LifecycleRuleRecord
   })
 }
 
-export function listObjectsApi(bucket: string, prefix: string, delimiter = '/') {
+function normalizeStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.filter((entry): entry is string => typeof entry === 'string')
+}
+
+function parseMetadataCoverage(value: unknown): MetadataCoverage | null {
+  if (typeof value !== 'object' || value === null) {
+    return null
+  }
+
+  const data = value as {
+    complete?: unknown
+    expectedNodes?: unknown
+    respondedNodes?: unknown
+    missingNodes?: unknown
+    source?: unknown
+  }
+
+  if (typeof data.complete !== 'boolean') {
+    return null
+  }
+
+  return {
+    complete: data.complete,
+    expectedNodes: normalizeStringArray(data.expectedNodes),
+    respondedNodes: normalizeStringArray(data.respondedNodes),
+    missingNodes: normalizeStringArray(data.missingNodes),
+    source: typeof data.source === 'string' ? data.source : null,
+  }
+}
+
+function parseObjectRecord(value: unknown): ObjectRecord | null {
+  if (typeof value !== 'object' || value === null) {
+    return null
+  }
+
+  const record = value as {
+    key?: unknown
+    size?: unknown
+    lastModified?: unknown
+    etag?: unknown
+  }
+  if (
+    typeof record.key !== 'string' ||
+    typeof record.size !== 'number' ||
+    !Number.isFinite(record.size) ||
+    typeof record.lastModified !== 'string' ||
+    typeof record.etag !== 'string'
+  ) {
+    return null
+  }
+
+  return {
+    key: record.key,
+    size: record.size,
+    lastModified: record.lastModified,
+    etag: record.etag,
+  }
+}
+
+function parseVersionRecord(value: unknown): VersionRecord | null {
+  if (typeof value !== 'object' || value === null) {
+    return null
+  }
+
+  const record = value as {
+    versionId?: unknown
+    lastModified?: unknown
+    size?: unknown
+    etag?: unknown
+    isDeleteMarker?: unknown
+  }
+  const versionId =
+    typeof record.versionId === 'string' || record.versionId === null ? record.versionId : null
+  if (
+    typeof record.lastModified !== 'string' ||
+    typeof record.size !== 'number' ||
+    !Number.isFinite(record.size) ||
+    typeof record.etag !== 'string' ||
+    typeof record.isDeleteMarker !== 'boolean'
+  ) {
+    return null
+  }
+
+  return {
+    versionId,
+    lastModified: record.lastModified,
+    size: record.size,
+    etag: record.etag,
+    isDeleteMarker: record.isDeleteMarker,
+  }
+}
+
+export async function listObjectsApi(
+  bucket: string,
+  prefix: string,
+  delimiter = '/'
+): Promise<ApiResult<ObjectListResponse>> {
   const params = new URLSearchParams({ prefix, delimiter })
-  return requestJson<ObjectListResponse>(
+  const result = await requestJson<{
+    files?: unknown
+    prefixes?: unknown
+    emptyPrefixes?: unknown
+    metadataCoverage?: unknown
+  }>(
     `/api/buckets/${encodeURIComponent(bucket)}/objects?${params}`
   )
+  if (!result.ok) {
+    return result
+  }
+
+  return {
+    ok: true,
+    status: result.status,
+    data: {
+      files: Array.isArray(result.data.files)
+        ? result.data.files
+            .map((entry) => parseObjectRecord(entry))
+            .filter((entry): entry is ObjectRecord => entry !== null)
+        : [],
+      prefixes: normalizeStringArray(result.data.prefixes),
+      emptyPrefixes: normalizeStringArray(result.data.emptyPrefixes),
+      metadataCoverage: parseMetadataCoverage(result.data.metadataCoverage),
+    },
+  }
 }
 
 export function uploadObjectApi(
@@ -397,10 +534,29 @@ export function buildObjectDownloadUrl(bucket: string, key: string): string {
   return objectPath(bucket, 'download', key)
 }
 
-export function listVersionsApi(bucket: string, key: string) {
-  return requestJson<{ versions: VersionRecord[] }>(
+export async function listVersionsApi(
+  bucket: string,
+  key: string
+): Promise<ApiResult<VersionListResponse>> {
+  const result = await requestJson<{ versions?: unknown; metadataCoverage?: unknown }>(
     `/api/buckets/${encodeURIComponent(bucket)}/versions?key=${encodeURIComponent(key)}`
   )
+  if (!result.ok) {
+    return result
+  }
+
+  return {
+    ok: true,
+    status: result.status,
+    data: {
+      versions: Array.isArray(result.data.versions)
+        ? result.data.versions
+            .map((entry) => parseVersionRecord(entry))
+            .filter((entry): entry is VersionRecord => entry !== null)
+        : [],
+      metadataCoverage: parseMetadataCoverage(result.data.metadataCoverage),
+    },
+  }
 }
 
 export function deleteVersionApi(bucket: string, versionId: string, key: string) {
@@ -531,6 +687,7 @@ export async function getRuntimeSummaryApi(): Promise<ApiResult<RuntimeSummary>>
       clusterPeerCount?: number
       clusterPeers?: string[]
       membershipProtocol?: string
+      membershipProtocolReady?: boolean
       placementEpoch?: number
     }
     topology?: {
@@ -635,6 +792,10 @@ export async function getRuntimeSummaryApi(): Promise<ApiResult<RuntimeSummary>>
         clusterPeerCount: topology.clusterPeerCount,
         clusterPeers: topology.clusterPeers,
         membershipProtocol: topology.membershipProtocol,
+        membershipProtocolReady:
+          typeof rawMetrics.membershipProtocolReady === 'boolean'
+            ? rawMetrics.membershipProtocolReady
+            : null,
         placementEpoch: topology.placementEpoch,
         raw: JSON.stringify(rawMetrics, null, 2),
       },
@@ -665,6 +826,7 @@ export async function getRuntimeMetricsApi(): Promise<ApiResult<RuntimeMetrics>>
     clusterPeerCount?: number
     clusterPeers?: string[]
     membershipProtocol?: string
+    membershipProtocolReady?: boolean
     placementEpoch?: number
   }>('/api/system/metrics')
   if (consoleResult.ok) {
@@ -691,6 +853,10 @@ export async function getRuntimeMetricsApi(): Promise<ApiResult<RuntimeMetrics>>
         clusterPeerCount: topology.clusterPeerCount,
         clusterPeers: topology.clusterPeers,
         membershipProtocol: topology.membershipProtocol,
+        membershipProtocolReady:
+          typeof consoleResult.data.membershipProtocolReady === 'boolean'
+            ? consoleResult.data.membershipProtocolReady
+            : null,
         placementEpoch: topology.placementEpoch,
         raw: JSON.stringify(consoleResult.data, null, 2),
       },
@@ -714,12 +880,24 @@ export async function getRuntimeMetricsApi(): Promise<ApiResult<RuntimeMetrics>>
   const membershipProtocolMatch = raw.match(
     /^maxio_membership_protocol_info\{protocol="([^"]+)"\}\s+1(?:\.0+)?$/m
   )
+  const membershipProtocolReadyMatch = raw.match(
+    /^maxio_membership_protocol_ready\s+([0-9]+(?:\.[0-9]+)?)$/m
+  )
   const placementEpochMatch = raw.match(/^maxio_placement_epoch\s+([0-9]+(?:\.[0-9]+)?)$/m)
 
   const requestsTotal = requestsMatch ? Number(requestsMatch[1]) : null
   const uptimeSeconds = uptimeMatch ? Number(uptimeMatch[1]) : null
   const version = versionMatch ? versionMatch[1] : null
   const membershipProtocol = membershipProtocolMatch ? membershipProtocolMatch[1] : null
+  const membershipProtocolReadyValue = membershipProtocolReadyMatch
+    ? Number(membershipProtocolReadyMatch[1])
+    : null
+  const membershipProtocolReady =
+    membershipProtocolReadyValue === 1
+      ? true
+      : membershipProtocolReadyValue === 0
+        ? false
+        : null
   const placementEpoch = placementEpochMatch ? Number(placementEpochMatch[1]) : null
 
   return {
@@ -734,6 +912,7 @@ export async function getRuntimeMetricsApi(): Promise<ApiResult<RuntimeMetrics>>
       clusterPeerCount: null,
       clusterPeers: [],
       membershipProtocol,
+      membershipProtocolReady,
       placementEpoch:
         typeof placementEpoch === 'number' && Number.isFinite(placementEpoch)
           ? Math.trunc(placementEpoch)

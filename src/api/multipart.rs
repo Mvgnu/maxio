@@ -14,15 +14,19 @@ use crate::server::AppState;
 use crate::storage::ChecksumAlgorithm;
 use crate::storage::placement::{
     ForwardedWriteEnvelope, ForwardedWriteOperation, ObjectWriteQuorumOutcome, PlacementViewState,
-    WriteAckObservation, object_write_plan_with_self, object_write_quorum_outcome,
+    ReplicationMutationOperation, WriteAckObservation, object_write_plan_with_self,
+    object_write_quorum_outcome,
 };
 use crate::xml::{response::to_xml, types::*};
 
 use super::object::{
-    add_write_quorum_headers, body_to_reader, ensure_local_write_owner, extract_checksum,
-    forward_replica_put_to_target, forward_write_to_target, object_path_and_query,
-    object_write_routing_hint, write_forward_target, write_replica_count_for_membership_count,
+    add_write_quorum_headers, body_to_reader, enforce_write_quorum_contract,
+    ensure_local_write_owner, extract_checksum, forward_replica_put_to_target,
+    forward_write_to_target, object_path_and_query, object_write_routing_hint,
+    persist_current_object_metadata_state, persist_pending_replication_from_quorum_outcome,
+    write_forward_target, write_replica_count_for_membership_count,
 };
+use crate::api::object::peer_transport::internal_peer_transport_scheme;
 use parsing::{parse_complete_parts, parse_part_number};
 use service::{empty_response, ensure_bucket_exists, map_storage_err, set_header, xml_response};
 
@@ -36,12 +40,15 @@ pub async fn create_multipart_upload(
     Path((bucket, key)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, S3Error> {
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     if let Some(forward) = write_forward_target(
         &bucket,
@@ -51,11 +58,13 @@ pub async fn create_multipart_upload(
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let mut params = HashMap::new();
         params.insert("uploads".to_string(), String::new());
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         return forward_write_to_target(
+            &state,
             Method::POST,
             &forward.target,
             &path_and_query,
@@ -100,12 +109,15 @@ pub async fn upload_part(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     if let Some(forward) = write_forward_target(
         &bucket,
@@ -115,6 +127,7 @@ pub async fn upload_part(
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         let body_bytes = axum::body::to_bytes(body, usize::MAX)
@@ -122,6 +135,7 @@ pub async fn upload_part(
             .map_err(S3Error::internal)?
             .to_vec();
         return forward_write_to_target(
+            &state,
             Method::PUT,
             &forward.target,
             &path_and_query,
@@ -167,12 +181,15 @@ pub async fn complete_multipart_upload(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     let body_bytes = axum::body::to_bytes(body, COMPLETE_BODY_MAX)
         .await
@@ -186,9 +203,11 @@ pub async fn complete_multipart_upload(
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         return forward_write_to_target(
+            &state,
             Method::POST,
             &forward.target,
             &path_and_query,
@@ -216,6 +235,14 @@ pub async fn complete_multipart_upload(
     let checksum_algorithm = result.checksum_algorithm;
     let checksum_value = result.checksum_value.clone();
     let version_id = result.version_id.clone();
+    persist_current_object_metadata_state(
+        &state,
+        &placement,
+        &bucket,
+        &key,
+        version_id.as_deref(),
+        false,
+    )?;
     let quorum_outcome = if routing_hint.distributed && routing_hint.is_local_primary_owner {
         Some(
             replicate_completed_object_to_replica_owners(ReplicaCompleteRequest {
@@ -247,6 +274,7 @@ pub async fn complete_multipart_upload(
         set_header(&mut response, algo.header_name(), val);
     }
     if let Some(outcome) = quorum_outcome {
+        enforce_write_quorum_contract(&state, &outcome, "CompleteMultipartUpload")?;
         add_write_quorum_headers(response.headers_mut(), &outcome);
     }
     Ok(response)
@@ -295,9 +323,10 @@ fn presigned_replica_put_path_and_query(
     bucket: &str,
     key: &str,
 ) -> Option<String> {
+    let scheme = internal_peer_transport_scheme(state).ok()?;
     let url = generate_presigned_url(PresignRequest {
         method: "PUT",
-        scheme: "http",
+        scheme,
         host: signed_host,
         path: &format!("/{bucket}/{key}"),
         extra_query_params: &[],
@@ -324,7 +353,7 @@ async fn replicate_completed_object_to_replica_owners(
     let write_plan = object_write_plan_with_self(
         request.key,
         request.state.node_id.as_ref(),
-        request.state.cluster_peers.as_slice(),
+        request.state.active_cluster_peers().as_slice(),
         replica_count,
     );
     let mut observations = vec![WriteAckObservation {
@@ -362,6 +391,7 @@ async fn replicate_completed_object_to_replica_owners(
     );
     envelope.visited_nodes = vec![request.state.node_id.to_string()];
     envelope.hop_count = 1;
+    let pending_idempotency_key = envelope.idempotency_key.clone();
 
     for target in write_plan
         .owners
@@ -386,6 +416,7 @@ async fn replicate_completed_object_to_replica_owners(
             continue;
         };
         let acked = match forward_replica_put_to_target(
+            request.state,
             target,
             path_and_query.as_str(),
             &replica_headers,
@@ -427,7 +458,18 @@ async fn replicate_completed_object_to_replica_owners(
         });
     }
 
-    object_write_quorum_outcome(&write_plan, &observations)
+    let outcome = object_write_quorum_outcome(&write_plan, &observations);
+    persist_pending_replication_from_quorum_outcome(
+        request.state,
+        ReplicationMutationOperation::CompleteMultipartUpload,
+        pending_idempotency_key.as_str(),
+        request.bucket,
+        request.key,
+        request.version_id,
+        request.placement,
+        &outcome,
+    );
+    outcome
 }
 
 struct ReplicaCompleteRequest<'a> {
@@ -447,12 +489,15 @@ pub async fn abort_multipart_upload(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, S3Error> {
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     if let Some(forward) = write_forward_target(
         &bucket,
@@ -462,9 +507,11 @@ pub async fn abort_multipart_upload(
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         return forward_write_to_target(
+            &state,
             Method::DELETE,
             &forward.target,
             &path_and_query,
@@ -496,12 +543,15 @@ pub async fn list_parts(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, S3Error> {
-    let routing_hint =
-        object_write_routing_hint(&key, state.node_id.as_ref(), state.cluster_peers.as_slice());
+    let routing_hint = object_write_routing_hint(
+        &key,
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     let placement = PlacementViewState::from_membership(
         state.placement_epoch(),
         state.node_id.as_ref(),
-        state.cluster_peers.as_slice(),
+        state.active_cluster_peers().as_slice(),
     );
     if let Some(forward) = write_forward_target(
         &bucket,
@@ -511,9 +561,11 @@ pub async fn list_parts(
         &headers,
         state.node_id.as_ref(),
         &placement,
+        state.config.cluster_auth_token(),
     )? {
         let path_and_query = object_path_and_query(&bucket, &key, &params);
         return forward_write_to_target(
+            &state,
             Method::GET,
             &forward.target,
             &path_and_query,
