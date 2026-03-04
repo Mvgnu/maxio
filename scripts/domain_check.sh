@@ -100,6 +100,7 @@ run_domain() {
         runtime_tests::test_healthz_reports_degraded_when_static_peer_membership_view_mismatches \
         runtime_tests::test_static_bootstrap_convergence_worker_applies_discovered_peers_from_peer_healthz \
         runtime_tests::test_static_bootstrap_convergence_worker_propagates_discovered_peers_to_control_plane \
+        runtime_tests::test_gossip_convergence_worker_persists_retryable_stale_peer_reconciliation_failure \
         runtime_tests::test_static_bootstrap_convergence_worker_rejects_discovered_peers_on_cluster_id_mismatch \
         runtime_tests::test_static_bootstrap_convergence_worker_rejects_discovered_peers_when_cluster_id_missing \
         runtime_tests::test_static_bootstrap_convergence_worker_rejects_discovered_peers_when_membership_view_id_missing \
