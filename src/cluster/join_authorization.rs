@@ -1,5 +1,9 @@
 use axum::http::HeaderMap;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::fs;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use crate::cluster::authenticator::FORWARDED_BY_HEADER;
@@ -117,6 +121,11 @@ pub trait JoinNonceReplayGuard {
     ) -> bool;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct DurableJoinNonceReplaySnapshot {
+    entries: HashMap<String, u64>,
+}
+
 #[derive(Debug)]
 pub struct InMemoryJoinNonceReplayGuard {
     ttl_ms: u64,
@@ -173,6 +182,105 @@ impl JoinNonceReplayGuard for InMemoryJoinNonceReplayGuard {
         entries.insert(key, now_unix_ms);
         while entries.len() > self.max_entries {
             Self::evict_oldest(&mut entries);
+        }
+        true
+    }
+}
+
+#[derive(Debug)]
+pub struct DurableJoinNonceReplayGuard {
+    ttl_ms: u64,
+    max_entries: usize,
+    state_path: PathBuf,
+    entries: Mutex<Option<HashMap<String, u64>>>,
+}
+
+impl DurableJoinNonceReplayGuard {
+    pub fn new(state_path: impl Into<PathBuf>, ttl_ms: u64, max_entries: usize) -> Self {
+        let state_path = state_path.into();
+        let entries = Self::load_entries(state_path.as_path()).ok();
+        Self {
+            ttl_ms: ttl_ms.max(1),
+            max_entries: max_entries.max(1),
+            state_path,
+            entries: Mutex::new(entries),
+        }
+    }
+
+    fn load_entries(path: &Path) -> io::Result<HashMap<String, u64>> {
+        let bytes = match fs::read(path) {
+            Ok(bytes) => bytes,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                return Ok(HashMap::new());
+            }
+            Err(err) => return Err(err),
+        };
+
+        let snapshot =
+            serde_json::from_slice::<DurableJoinNonceReplaySnapshot>(bytes.as_slice())
+                .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+        Ok(snapshot.entries)
+    }
+
+    fn persist_entries(&self, entries: &HashMap<String, u64>) -> io::Result<()> {
+        let Some(parent) = self.state_path.parent() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "join nonce replay state path must include parent directory",
+            ));
+        };
+        fs::create_dir_all(parent)?;
+
+        let snapshot = DurableJoinNonceReplaySnapshot {
+            entries: entries.clone(),
+        };
+        let payload = serde_json::to_vec_pretty(&snapshot)
+            .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+        let tmp_file_name = self
+            .state_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .map(|value| format!(".{value}.tmp"))
+            .unwrap_or_else(|| ".pending-join-nonce-replay.tmp".to_string());
+        let tmp_path = self.state_path.with_file_name(tmp_file_name);
+        fs::write(tmp_path.as_path(), payload)?;
+        fs::rename(tmp_path.as_path(), self.state_path.as_path())?;
+        Ok(())
+    }
+}
+
+impl JoinNonceReplayGuard for DurableJoinNonceReplayGuard {
+    fn register_nonce(
+        &self,
+        peer_node_id: &str,
+        nonce: &str,
+        _issued_at_unix_ms: u64,
+        now_unix_ms: u64,
+    ) -> bool {
+        let Some(mut entries_guard) = self.entries.lock().ok() else {
+            return false;
+        };
+        let Some(entries) = entries_guard.as_mut() else {
+            return false;
+        };
+
+        let ttl_ms = self.ttl_ms;
+        entries.retain(|_, seen_at| now_unix_ms.saturating_sub(*seen_at) <= ttl_ms);
+
+        let key = InMemoryJoinNonceReplayGuard::nonce_key(peer_node_id, nonce);
+        if let Some(previous_seen_at) = entries.get(key.as_str()) {
+            if now_unix_ms.saturating_sub(*previous_seen_at) <= ttl_ms {
+                return false;
+            }
+        }
+
+        entries.insert(key, now_unix_ms);
+        while entries.len() > self.max_entries {
+            InMemoryJoinNonceReplayGuard::evict_oldest(entries);
+        }
+        if self.persist_entries(entries).is_err() {
+            *entries_guard = None;
+            return false;
         }
         true
     }
@@ -385,11 +493,13 @@ pub fn authorize_join_request(
 #[cfg(test)]
 mod tests {
     use axum::http::{HeaderMap, HeaderValue};
+    use std::fs;
+    use tempfile::tempdir;
 
     use super::{
-        DEFAULT_JOIN_MAX_CLOCK_SKEW_MS, InMemoryJoinNonceReplayGuard, JOIN_CLUSTER_ID_HEADER,
-        JOIN_NODE_ID_HEADER, JOIN_NONCE_HEADER, JOIN_TIMESTAMP_HEADER, JoinAuthMode,
-        JoinAuthorizationError, authorize_join_request,
+        DEFAULT_JOIN_MAX_CLOCK_SKEW_MS, DurableJoinNonceReplayGuard, InMemoryJoinNonceReplayGuard,
+        JOIN_CLUSTER_ID_HEADER, JOIN_NODE_ID_HEADER, JOIN_NONCE_HEADER, JOIN_TIMESTAMP_HEADER,
+        JoinAuthMode, JoinAuthorizationError, JoinNonceReplayGuard, authorize_join_request,
     };
     use crate::cluster::authenticator::FORWARDED_BY_HEADER;
     use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
@@ -1011,5 +1121,44 @@ mod tests {
             second.error,
             Some(JoinAuthorizationError::JoinNonceReplayDetected)
         );
+    }
+
+    #[test]
+    fn durable_join_nonce_replay_guard_persists_replay_protection_across_restarts() {
+        let dir = tempdir().expect("tempdir should be available");
+        let state_path = dir.path().join("join-nonce-replay.json");
+
+        {
+            let guard = DurableJoinNonceReplayGuard::new(state_path.clone(), 60_000, 64);
+            assert!(guard.register_nonce("node-b:9000", "nonce-123", 100000, 100000));
+        }
+
+        let guard = DurableJoinNonceReplayGuard::new(state_path, 60_000, 64);
+        assert!(!guard.register_nonce("node-b:9000", "nonce-123", 100001, 100001));
+    }
+
+    #[test]
+    fn durable_join_nonce_replay_guard_allows_reuse_after_ttl_across_restarts() {
+        let dir = tempdir().expect("tempdir should be available");
+        let state_path = dir.path().join("join-nonce-replay.json");
+
+        {
+            let guard = DurableJoinNonceReplayGuard::new(state_path.clone(), 10, 64);
+            assert!(guard.register_nonce("node-b:9000", "nonce-123", 100000, 100000));
+        }
+
+        let guard = DurableJoinNonceReplayGuard::new(state_path, 10, 64);
+        assert!(guard.register_nonce("node-b:9000", "nonce-123", 100020, 100020));
+    }
+
+    #[test]
+    fn durable_join_nonce_replay_guard_rejects_when_state_payload_is_corrupt() {
+        let dir = tempdir().expect("tempdir should be available");
+        let state_path = dir.path().join("join-nonce-replay.json");
+        fs::write(state_path.as_path(), b"{\"entries\":")
+            .expect("corrupt replay payload should write");
+
+        let guard = DurableJoinNonceReplayGuard::new(state_path, 60_000, 64);
+        assert!(!guard.register_nonce("node-b:9000", "nonce-123", 100000, 100000));
     }
 }
