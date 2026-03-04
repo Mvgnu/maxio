@@ -32,9 +32,11 @@ use crate::metadata::{
     PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError,
     apply_bucket_metadata_operation_to_persisted_state,
     assess_cluster_bucket_metadata_convergence_for_responder_states,
+    assess_cluster_metadata_fan_in_preflight_for_topology_responders,
     assess_cluster_bucket_presence_convergence,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
+    cluster_metadata_fan_in_preflight_reject_reason,
     assess_cluster_responder_membership_views, cluster_metadata_readiness_reject_reason,
     list_buckets_from_persisted_state_with_view_id, load_persisted_metadata_state,
     merge_cluster_list_buckets_page_with_topology_snapshot,
@@ -606,7 +608,12 @@ async fn fetch_cluster_bucket_listing_fan_in(
             }
         }
     }
-    ensure_peer_responder_membership_views_consistent("ListBuckets", responder_views.as_slice())?;
+    ensure_bucket_metadata_fan_in_preflight_ready(
+        state.metadata_listing_strategy,
+        topology,
+        "ListBuckets",
+        responder_views.as_slice(),
+    )?;
 
     Ok(ClusterBucketListingFanIn {
         bucket_pages,
@@ -2099,6 +2106,36 @@ fn extract_internal_peer_membership_view_id(
                 "Peer metadata fan-in response for '{operation}' from '{peer}' is missing internal membership view id header",
             ))
         })
+}
+
+fn ensure_bucket_metadata_fan_in_preflight_ready(
+    strategy: ClusterMetadataListingStrategy,
+    topology: &crate::server::RuntimeTopologySnapshot,
+    operation: &str,
+    responders: &[ClusterResponderMembershipView],
+) -> Result<(), S3Error> {
+    let preflight = assess_cluster_metadata_fan_in_preflight_for_topology_responders(
+        strategy,
+        None,
+        topology.node_id.as_str(),
+        topology.membership_nodes.as_slice(),
+        responders,
+    )
+    .map_err(|_| {
+        S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata fan-in preflight failed for '{operation}'",
+        ))
+    })?;
+    if preflight.ready {
+        return Ok(());
+    }
+
+    let reason = cluster_metadata_fan_in_preflight_reject_reason(&preflight)
+        .map(|gap| gap.as_str())
+        .unwrap_or("unknown-fan-in-preflight-gap");
+    Err(S3Error::service_unavailable(&format!(
+        "Distributed bucket metadata fan-in for '{operation}' is not ready ({reason})",
+    )))
 }
 
 fn ensure_peer_responder_membership_views_consistent(

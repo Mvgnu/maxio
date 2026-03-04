@@ -25,7 +25,8 @@ use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::error::S3Error;
 use crate::metadata::{
     ClusterMetadataListingStrategy, ClusterResponderMembershipView,
-    assess_cluster_responder_membership_views,
+    assess_cluster_metadata_fan_in_preflight_for_topology_responders,
+    cluster_metadata_fan_in_preflight_reject_reason,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::ObjectMeta;
@@ -566,7 +567,12 @@ async fn fetch_cluster_object_listing_fan_in(
             }
         }
     }
-    ensure_peer_responder_membership_views_consistent("ListObjectsV2", responder_views.as_slice())?;
+    ensure_metadata_fan_in_preflight_ready(
+        state.metadata_listing_strategy,
+        topology,
+        "ListObjectsV2",
+        responder_views.as_slice(),
+    )?;
 
     Ok(ClusterObjectListingFanIn {
         responded_nodes,
@@ -708,7 +714,9 @@ async fn fetch_cluster_version_listing_fan_in(
             }
         }
     }
-    ensure_peer_responder_membership_views_consistent(
+    ensure_metadata_fan_in_preflight_ready(
+        state.metadata_listing_strategy,
+        topology,
         "ListObjectVersions",
         responder_views.as_slice(),
     )?;
@@ -921,24 +929,33 @@ fn ensure_stable_internal_peer_membership_view_id(
     }
 }
 
-fn ensure_peer_responder_membership_views_consistent(
+fn ensure_metadata_fan_in_preflight_ready(
+    strategy: ClusterMetadataListingStrategy,
+    topology: &crate::server::RuntimeTopologySnapshot,
     operation: &str,
     responders: &[ClusterResponderMembershipView],
 ) -> Result<(), S3Error> {
-    if responders.is_empty() {
-        return Ok(());
-    }
-    let assessment = assess_cluster_responder_membership_views(None, responders);
-    if assessment.consistent {
+    let preflight = assess_cluster_metadata_fan_in_preflight_for_topology_responders(
+        strategy,
+        None,
+        topology.node_id.as_str(),
+        topology.membership_nodes.as_slice(),
+        responders,
+    )
+    .map_err(|_| {
+        S3Error::service_unavailable(&format!(
+            "Distributed metadata fan-in preflight failed for '{operation}'",
+        ))
+    })?;
+    if preflight.ready {
         return Ok(());
     }
 
-    let reason = assessment
-        .gap
+    let reason = cluster_metadata_fan_in_preflight_reject_reason(&preflight)
         .map(|gap| gap.as_str())
-        .unwrap_or("unknown-membership-view-gap");
+        .unwrap_or("unknown-fan-in-preflight-gap");
     Err(S3Error::service_unavailable(&format!(
-        "Distributed metadata fan-in for '{operation}' observed inconsistent peer membership view ids ({reason})",
+        "Distributed metadata fan-in for '{operation}' is not ready ({reason})",
     )))
 }
 
@@ -1051,8 +1068,34 @@ mod tests {
     }
 
     #[test]
-    fn ensure_peer_responder_membership_views_consistent_rejects_inconsistent_views() {
+    fn ensure_metadata_fan_in_preflight_ready_rejects_inconsistent_views() {
+        let topology = crate::server::RuntimeTopologySnapshot {
+            mode: crate::server::RuntimeMode::Distributed,
+            node_id: "node-a:9000".to_string(),
+            cluster_id: "cluster".to_string(),
+            cluster_peers: vec!["node-b:9000".to_string(), "node-c:9000".to_string()],
+            membership_nodes: vec![
+                "node-a:9000".to_string(),
+                "node-b:9000".to_string(),
+                "node-c:9000".to_string(),
+            ],
+            membership_protocol: crate::config::MembershipProtocol::StaticBootstrap,
+            membership_status: crate::membership::MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 1,
+                warning: None,
+            },
+            membership_view_id: "view-a".to_string(),
+            placement_epoch: 1,
+        };
         let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-a:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
             ClusterResponderMembershipView {
                 node_id: "node-b:9000".to_string(),
                 membership_view_id: Some("view-a".to_string()),
@@ -1062,15 +1105,15 @@ mod tests {
                 membership_view_id: Some("view-b".to_string()),
             },
         ];
-        let err = ensure_peer_responder_membership_views_consistent(
+        let err = ensure_metadata_fan_in_preflight_ready(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            &topology,
             "ListObjectsV2",
             responders.as_slice(),
         )
         .expect_err("inconsistent responder views must fail");
         assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
-        assert!(
-            err.message
-                .contains("inconsistent peer membership view ids")
-        );
+        assert!(err.message.contains("not ready"));
+        assert!(err.message.contains("inconsistent-responder-membership-view-id"));
     }
 }
