@@ -2206,15 +2206,17 @@ mod tests {
         };
 
         let pending = pending_replication_operation_from_quorum_outcome(
-            ReplicationMutationOperation::CompleteMultipartUpload,
-            "idem-quorum",
-            "bucket-a",
-            "key-a",
-            Some("v2"),
-            "node-a:9000",
-            &placement,
-            &outcome,
-            100,
+            PendingReplicationFromQuorumInput {
+                operation: ReplicationMutationOperation::CompleteMultipartUpload,
+                idempotency_key: "idem-quorum",
+                bucket: "bucket-a",
+                key: "key-a",
+                version_id: Some("v2"),
+                coordinator_node: "node-a:9000",
+                placement: &placement,
+                outcome: &outcome,
+                created_at_unix_ms: 100,
+            },
         )
         .expect("pending operation should build");
 

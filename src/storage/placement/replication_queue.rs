@@ -1,33 +1,38 @@
 use super::*;
 
+#[derive(Debug, Clone)]
+pub struct PendingReplicationFromQuorumInput<'a> {
+    pub operation: ReplicationMutationOperation,
+    pub idempotency_key: &'a str,
+    pub bucket: &'a str,
+    pub key: &'a str,
+    pub version_id: Option<&'a str>,
+    pub coordinator_node: &'a str,
+    pub placement: &'a PlacementViewState,
+    pub outcome: &'a ObjectWriteQuorumOutcome,
+    pub created_at_unix_ms: u64,
+}
+
 pub fn pending_replication_operation_from_quorum_outcome(
-    operation: ReplicationMutationOperation,
-    idempotency_key: &str,
-    bucket: &str,
-    key: &str,
-    version_id: Option<&str>,
-    coordinator_node: &str,
-    placement: &PlacementViewState,
-    outcome: &ObjectWriteQuorumOutcome,
-    created_at_unix_ms: u64,
+    input: PendingReplicationFromQuorumInput<'_>,
 ) -> Option<PendingReplicationOperation> {
-    let mut target_nodes = outcome.pending_nodes.clone();
-    for node in &outcome.rejected_nodes {
+    let mut target_nodes = input.outcome.pending_nodes.clone();
+    for node in &input.outcome.rejected_nodes {
         if !target_nodes.iter().any(|pending| pending == node) {
             target_nodes.push(node.clone());
         }
     }
 
     PendingReplicationOperation::new(
-        idempotency_key,
-        operation,
-        bucket,
-        key,
-        version_id,
-        coordinator_node,
-        placement,
+        input.idempotency_key,
+        input.operation,
+        input.bucket,
+        input.key,
+        input.version_id,
+        input.coordinator_node,
+        input.placement,
         target_nodes.as_slice(),
-        created_at_unix_ms,
+        input.created_at_unix_ms,
     )
 }
 

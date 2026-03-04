@@ -26,8 +26,9 @@ use crate::storage::placement::{
     ForwardedWriteEnvelope, ForwardedWriteOperation, ForwardedWriteRejectReason,
     ForwardedWriteResolution, ObjectWriteQuorumOutcome, PendingReplicationAcknowledgeOutcome,
     PendingReplicationEnqueueOutcome, PendingReplicationFailureWithBackoffOutcome,
-    PendingReplicationReplayCandidate, PendingReplicationReplayLeaseOutcome,
-    PendingReplicationRetryPolicy, PlacementViewState, ReplicationMutationOperation,
+    PendingReplicationFromQuorumInput, PendingReplicationReplayCandidate,
+    PendingReplicationReplayLeaseOutcome, PendingReplicationRetryPolicy, PlacementViewState,
+    ReplicationMutationOperation,
     acknowledge_pending_replication_target_persisted,
     enqueue_pending_replication_operation_persisted,
     lease_pending_replication_target_for_replay_persisted, object_forward_target_with_self,
@@ -304,15 +305,17 @@ pub(crate) fn persist_pending_replication_from_quorum_outcome(
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
     let Some(pending_operation) = pending_replication_operation_from_quorum_outcome(
-        operation,
-        idempotency_key,
-        bucket,
-        key,
-        version_id,
-        state.node_id.as_ref(),
-        placement,
-        outcome,
-        created_at_unix_ms,
+        PendingReplicationFromQuorumInput {
+            operation,
+            idempotency_key,
+            bucket,
+            key,
+            version_id,
+            coordinator_node: state.node_id.as_ref(),
+            placement,
+            outcome,
+            created_at_unix_ms,
+        },
     ) else {
         return;
     };
