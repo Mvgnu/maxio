@@ -8,7 +8,7 @@ use std::time::Duration;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, Method, StatusCode},
+    http::{HeaderMap, HeaderValue, Method, StatusCode},
     response::Response,
 };
 use chrono::Utc;
@@ -53,6 +53,7 @@ use validation::{
 
 const INTERNAL_METADATA_SCOPE_QUERY_PARAM: &str = "x-maxio-internal-metadata-scope";
 const INTERNAL_METADATA_SCOPE_LOCAL_ONLY: &str = "local-node-only";
+const INTERNAL_MEMBERSHIP_VIEW_ID_HEADER: &str = "x-maxio-internal-membership-view-id";
 const PERSISTED_METADATA_STATE_FILE: &str = "cluster-metadata-state.json";
 const CONSENSUS_INDEX_CREATION_DATE_FALLBACK: &str = "1970-01-01T00:00:00.000Z";
 const PERSISTED_BUCKET_TOMBSTONE_RETENTION_MS: u64 = 5 * 60 * 1000;
@@ -150,7 +151,9 @@ pub async fn list_buckets(
         buckets: Buckets { bucket: buckets },
     };
 
-    xml_response(StatusCode::OK, &result)
+    let mut response = xml_response(StatusCode::OK, &result)?;
+    apply_internal_membership_view_header(response.headers_mut(), &topology, internal_local_only);
+    Ok(response)
 }
 
 fn ensure_distributed_bucket_listing_strategy_ready(state: &AppState) -> Result<(), S3Error> {
@@ -596,6 +599,7 @@ async fn fetch_peer_bucket_entries(
             "Peer bucket listing request failed",
         ));
     }
+    extract_internal_peer_membership_view_id(response.headers(), peer, "ListBuckets")?;
     let body = response.text().await.map_err(S3Error::internal)?;
     let parsed =
         from_str::<ListAllMyBucketsResult>(&body).map_err(|_| S3Error::internal("Invalid XML"))?;
@@ -772,9 +776,11 @@ async fn fetch_peer_bucket_versioning_state(
     ];
     let response = send_internal_peer_get(state, peer, path.as_str(), &query).await?;
     let status = response.status();
+    let response_headers = response.headers().clone();
     let body = response.text().await.map_err(S3Error::internal)?;
 
     if status.is_success() {
+        extract_internal_peer_membership_view_id(&response_headers, peer, "GetBucketVersioning")?;
         let parsed = from_str::<PeerVersioningConfiguration>(&body)
             .map_err(|_| S3Error::internal("Invalid XML"))?;
         return Ok(ClusterBucketMetadataResponderState::Present(
@@ -944,9 +950,11 @@ async fn fetch_peer_bucket_lifecycle_state(
     ];
     let response = send_internal_peer_get(state, peer, path.as_str(), &query).await?;
     let status = response.status();
+    let response_headers = response.headers().clone();
     let body = response.text().await.map_err(S3Error::internal)?;
 
     if status.is_success() {
+        extract_internal_peer_membership_view_id(&response_headers, peer, "GetBucketLifecycle")?;
         let rules = parse_lifecycle_rules(body.as_str())?;
         if rules.is_empty() {
             return Ok(ClusterBucketMetadataResponderState::Present(
@@ -1263,11 +1271,13 @@ pub async fn head_bucket(
         }
     }
 
-    Response::builder()
+    let mut response = Response::builder()
         .status(StatusCode::OK)
         .header("x-amz-bucket-region", &*state.config.region)
         .body(Body::empty())
-        .map_err(S3Error::internal)
+        .map_err(S3Error::internal)?;
+    apply_internal_membership_view_header(response.headers_mut(), &topology, internal_local_only);
+    Ok(response)
 }
 
 pub async fn delete_bucket(
@@ -1530,6 +1540,7 @@ async fn fetch_peer_bucket_presence_state(
         send_internal_peer_request(state, peer, Method::HEAD, path.as_str(), &query, None).await?;
     let status = response.status();
     if status.is_success() {
+        extract_internal_peer_membership_view_id(response.headers(), peer, "HeadBucket")?;
         return Ok(ClusterBucketMetadataResponderState::Present(true));
     }
     if status == StatusCode::NOT_FOUND {
@@ -1874,7 +1885,9 @@ pub async fn get_bucket_versioning(
         },
     };
 
-    xml_response(StatusCode::OK, &result)
+    let mut response = xml_response(StatusCode::OK, &result)?;
+    apply_internal_membership_view_header(response.headers_mut(), &topology, internal_local_only);
+    Ok(response)
 }
 
 pub async fn get_bucket_lifecycle(
@@ -1958,5 +1971,56 @@ pub async fn get_bucket_lifecycle(
     };
 
     let result = serialize_lifecycle_rules(rules);
-    xml_response(StatusCode::OK, &result)
+    let mut response = xml_response(StatusCode::OK, &result)?;
+    apply_internal_membership_view_header(response.headers_mut(), &topology, internal_local_only);
+    Ok(response)
+}
+
+fn apply_internal_membership_view_header(
+    headers: &mut HeaderMap,
+    topology: &crate::server::RuntimeTopologySnapshot,
+    internal_local_only: bool,
+) {
+    if !internal_local_only {
+        return;
+    }
+    if let Ok(value) = HeaderValue::from_str(topology.membership_view_id.as_str()) {
+        headers.insert(INTERNAL_MEMBERSHIP_VIEW_ID_HEADER, value);
+    }
+}
+
+fn extract_internal_peer_membership_view_id(
+    headers: &reqwest::header::HeaderMap,
+    peer: &str,
+    operation: &str,
+) -> Result<String, S3Error> {
+    headers
+        .get(INTERNAL_MEMBERSHIP_VIEW_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            S3Error::service_unavailable(&format!(
+                "Peer metadata fan-in response for '{operation}' from '{peer}' is missing internal membership view id header",
+            ))
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::error::S3ErrorCode;
+
+    #[test]
+    fn extract_internal_peer_membership_view_id_rejects_missing_header() {
+        let headers = reqwest::header::HeaderMap::new();
+        let err = extract_internal_peer_membership_view_id(&headers, "node-b:9000", "ListBuckets")
+            .expect_err("missing membership view header must fail closed");
+        assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
+        assert!(
+            err.message
+                .contains("missing internal membership view id header")
+        );
+    }
 }
