@@ -28,7 +28,7 @@ use crate::metadata::{
     ClusterBucketMetadataConvergenceInputError, ClusterBucketMetadataReadResolution,
     ClusterBucketMetadataResponderState, ClusterBucketPresenceConvergenceExpectation,
     ClusterBucketPresenceReadResolution, ClusterMetadataListingStrategy, MetadataNodeBucketsPage,
-    PersistedBucketMetadataOperationError, PersistedBucketPresenceReadResolution,
+    PersistedBucketMetadataOperationError, PersistedBucketMutationPreconditionResolution,
     PersistedMetadataQueryError, apply_bucket_metadata_operation_to_persisted_state,
     assess_cluster_bucket_metadata_convergence_for_responder_states,
     assess_cluster_bucket_presence_convergence,
@@ -36,7 +36,8 @@ use crate::metadata::{
     assess_cluster_metadata_snapshot_for_topology_single_responder,
     cluster_metadata_readiness_reject_reason, list_buckets_from_persisted_state_with_view_id,
     load_persisted_metadata_state, merge_cluster_list_buckets_page_with_topology_snapshot,
-    resolve_bucket_metadata_from_persisted_state, resolve_bucket_presence_from_persisted_state,
+    resolve_bucket_metadata_from_persisted_state,
+    resolve_bucket_mutation_preconditions_from_persisted_state,
     resolve_cluster_bucket_metadata_for_read, resolve_cluster_bucket_presence_for_read,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
@@ -438,25 +439,29 @@ fn ensure_consensus_index_create_bucket_preconditions(
         ))
     })?;
 
-    match resolve_bucket_presence_from_persisted_state(
+    match resolve_bucket_mutation_preconditions_from_persisted_state(
         &persisted_state,
         bucket,
         Some(topology.membership_view_id.as_str()),
+        current_unix_ms_u64(),
     ) {
-        Ok(PersistedBucketPresenceReadResolution::Present(_)) => {
+        Ok(PersistedBucketMutationPreconditionResolution::Present(_)) => {
             Err(S3Error::bucket_already_owned(bucket))
         }
-        Ok(PersistedBucketPresenceReadResolution::Tombstoned(tombstone)) => {
-            if tombstone.is_expired(current_unix_ms_u64()) {
-                Ok(())
-            } else {
+        Ok(PersistedBucketMutationPreconditionResolution::Tombstoned {
+            retention_active: true,
+            ..
+        }) => {
                 Err(S3Error::service_unavailable(&format!(
                     "Distributed bucket metadata operation '{}' rejected create for '{}' because tombstone retention is still active",
                     operation, bucket
                 )))
-            }
         }
-        Ok(PersistedBucketPresenceReadResolution::Missing) => Ok(()),
+        Ok(PersistedBucketMutationPreconditionResolution::Tombstoned {
+            retention_active: false,
+            ..
+        })
+        | Ok(PersistedBucketMutationPreconditionResolution::Missing) => Ok(()),
         Err(PersistedMetadataQueryError::ViewIdMismatch {
             expected_view_id,
             persisted_view_id,
@@ -485,14 +490,17 @@ fn ensure_consensus_index_delete_bucket_preconditions(
         ))
     })?;
 
-    match resolve_bucket_presence_from_persisted_state(
+    match resolve_bucket_mutation_preconditions_from_persisted_state(
         &persisted_state,
         bucket,
         Some(topology.membership_view_id.as_str()),
+        current_unix_ms_u64(),
     ) {
-        Ok(PersistedBucketPresenceReadResolution::Present(_)) => Ok(()),
-        Ok(PersistedBucketPresenceReadResolution::Tombstoned(_))
-        | Ok(PersistedBucketPresenceReadResolution::Missing) => Err(S3Error::no_such_bucket(bucket)),
+        Ok(PersistedBucketMutationPreconditionResolution::Present(_)) => Ok(()),
+        Ok(PersistedBucketMutationPreconditionResolution::Tombstoned { .. })
+        | Ok(PersistedBucketMutationPreconditionResolution::Missing) => {
+            Err(S3Error::no_such_bucket(bucket))
+        }
         Err(PersistedMetadataQueryError::ViewIdMismatch {
             expected_view_id,
             persisted_view_id,

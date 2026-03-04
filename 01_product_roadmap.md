@@ -261,6 +261,8 @@ Scorecard sync update (March 4, 2026):
 - Locked by regression: `core_tests::test_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect` (also wired into `scripts/domain_check.sh s3_api_surface`).
 - `consensus-index` `CreateBucket` now also rejects persisted-present bucket state with deterministic `409 BucketAlreadyOwnedByYou` before local filesystem mutation, preventing local side effects when authoritative metadata already marks the bucket as existing.
 - Locked by regression: `core_tests::test_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect` (also wired into `scripts/domain_check.sh s3_api_surface`).
+- Bucket create/delete consensus-index precondition logic is now single-sourced across S3 + console through metadata-plane `resolve_bucket_mutation_preconditions_from_persisted_state(...)` (`PersistedBucketMutationPreconditionResolution`), eliminating endpoint-local tombstone-retention branching drift.
+- Locked by existing S3 + console regressions for persisted-present, persisted-missing, and retained-tombstone fail-closed paths (`core_tests::*consensus_index_rejects_*`, `console_tests::*consensus_index_rejects_*`).
 
 ## Distributed Implementation Exit Targets (Execution-Aligned)
 

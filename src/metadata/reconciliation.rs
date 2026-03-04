@@ -299,6 +299,16 @@ pub enum PersistedBucketPresenceReadResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistedBucketMutationPreconditionResolution {
+    Present(BucketMetadataState),
+    Tombstoned {
+        tombstone: BucketMetadataTombstoneState,
+        retention_active: bool,
+    },
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersistedObjectMetadataReadResolution {
     Present(ObjectMetadataState),
     Missing,
@@ -1095,8 +1105,9 @@ mod tests {
         PendingMetadataRepairFailureWithBackoffOutcome, PendingMetadataRepairLeaseOutcome,
         PendingMetadataRepairPlan, PendingMetadataRepairQueue, PendingMetadataRepairQueueSummary,
         PendingMetadataRepairReplayCycleOutcome, PersistedBucketMetadataOperationError,
-        PersistedBucketMetadataReadResolution, PersistedBucketPresenceReadResolution,
-        PersistedMetadataQueryError, PersistedMetadataQueryableStateError, PersistedMetadataState,
+        PersistedBucketMetadataReadResolution, PersistedBucketMutationPreconditionResolution,
+        PersistedBucketPresenceReadResolution, PersistedMetadataQueryError,
+        PersistedMetadataQueryableStateError, PersistedMetadataState,
         PersistedObjectMetadataOperationError, PersistedObjectMetadataReadResolution,
         PersistedObjectVersionMetadataOperationError, PersistedObjectVersionMetadataReadResolution,
         acknowledge_pending_metadata_repair_plan,
@@ -1115,6 +1126,7 @@ mod tests {
         replay_pending_metadata_repairs_once_with_apply_fn,
         replay_pending_metadata_repairs_once_with_classified_apply_fn,
         resolve_bucket_metadata_from_persisted_state, resolve_bucket_presence_from_persisted_state,
+        resolve_bucket_mutation_preconditions_from_persisted_state,
         resolve_object_metadata_from_persisted_state,
         resolve_object_version_metadata_from_persisted_state, summarize_metadata_repair_plan,
         summarize_pending_metadata_repair_queue, validate_metadata_repair_plan,
@@ -3526,6 +3538,124 @@ mod tests {
 
         let result =
             resolve_bucket_presence_from_persisted_state(&state, "archive", Some("view-b"));
+        assert_eq!(
+            result,
+            Err(PersistedMetadataQueryError::ViewIdMismatch {
+                expected_view_id: "view-b".to_string(),
+                persisted_view_id: "view-a".to_string(),
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_mutation_preconditions_from_persisted_state_resolves_tombstone_retention_state(
+    ) {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: vec![BucketMetadataState {
+                bucket: "present".to_string(),
+                versioning_enabled: false,
+                lifecycle_enabled: false,
+            }],
+            bucket_tombstones: vec![
+                BucketMetadataTombstoneState {
+                    bucket: "active".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 1_000,
+                },
+                BucketMetadataTombstoneState {
+                    bucket: "expired".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 200,
+                },
+            ],
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+        };
+
+        let present = resolve_bucket_mutation_preconditions_from_persisted_state(
+            &state,
+            "present",
+            Some("view-a"),
+            500,
+        )
+        .expect("present bucket should resolve");
+        assert!(matches!(
+            present,
+            PersistedBucketMutationPreconditionResolution::Present(BucketMetadataState { ref bucket, .. }) if bucket == "present"
+        ));
+
+        let active = resolve_bucket_mutation_preconditions_from_persisted_state(
+            &state,
+            "active",
+            Some("view-a"),
+            500,
+        )
+        .expect("active tombstone should resolve");
+        assert_eq!(
+            active,
+            PersistedBucketMutationPreconditionResolution::Tombstoned {
+                tombstone: BucketMetadataTombstoneState {
+                    bucket: "active".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 1_000,
+                },
+                retention_active: true,
+            }
+        );
+
+        let expired = resolve_bucket_mutation_preconditions_from_persisted_state(
+            &state,
+            "expired",
+            Some("view-a"),
+            500,
+        )
+        .expect("expired tombstone should resolve");
+        assert_eq!(
+            expired,
+            PersistedBucketMutationPreconditionResolution::Tombstoned {
+                tombstone: BucketMetadataTombstoneState {
+                    bucket: "expired".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 200,
+                },
+                retention_active: false,
+            }
+        );
+
+        let missing = resolve_bucket_mutation_preconditions_from_persisted_state(
+            &state,
+            "missing",
+            Some("view-a"),
+            500,
+        )
+        .expect("missing bucket should resolve");
+        assert_eq!(
+            missing,
+            PersistedBucketMutationPreconditionResolution::Missing
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_mutation_preconditions_from_persisted_state_rejects_view_id_mismatch() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: Vec::new(),
+            bucket_tombstones: vec![BucketMetadataTombstoneState {
+                bucket: "archive".to_string(),
+                deleted_at_unix_ms: 111,
+                retain_until_unix_ms: 222,
+            }],
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+        };
+
+        let result = resolve_bucket_mutation_preconditions_from_persisted_state(
+            &state,
+            "archive",
+            Some("view-b"),
+            150,
+        );
         assert_eq!(
             result,
             Err(PersistedMetadataQueryError::ViewIdMismatch {

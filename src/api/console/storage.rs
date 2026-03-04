@@ -20,7 +20,7 @@ use crate::metadata::{
     MetadataVersionsQuery, ObjectMetadataOperation, ObjectMetadataOperationError,
     ObjectMetadataState, ObjectVersionMetadataOperation, ObjectVersionMetadataOperationError,
     ObjectVersionMetadataState, PersistedBucketMetadataOperationError,
-    PersistedBucketMetadataReadResolution, PersistedBucketPresenceReadResolution,
+    PersistedBucketMetadataReadResolution, PersistedBucketMutationPreconditionResolution,
     PersistedMetadataQueryError, PersistedObjectMetadataOperationError,
     PersistedObjectVersionMetadataOperationError,
     apply_bucket_metadata_operation_to_persisted_state,
@@ -32,7 +32,8 @@ use crate::metadata::{
     cluster_metadata_fan_in_execution_strategy, cluster_metadata_readiness_reject_reason,
     list_buckets_from_persisted_state_with_view_id, list_object_versions_page_from_persisted_state,
     list_objects_page_from_persisted_state, load_persisted_metadata_state,
-    resolve_bucket_metadata_from_persisted_state, resolve_bucket_presence_from_persisted_state,
+    resolve_bucket_metadata_from_persisted_state,
+    resolve_bucket_mutation_preconditions_from_persisted_state,
 };
 use crate::server::{AppState, RuntimeTopologySnapshot, runtime_topology_snapshot};
 use crate::storage::StorageError;
@@ -379,29 +380,32 @@ pub(super) fn ensure_consensus_index_create_bucket_preconditions(
         ))
     })?;
 
-    match resolve_bucket_presence_from_persisted_state(
+    match resolve_bucket_mutation_preconditions_from_persisted_state(
         &persisted_state,
         bucket,
         Some(topology.membership_view_id.as_str()),
+        current_unix_ms_u64(),
     ) {
-        Ok(PersistedBucketPresenceReadResolution::Present(_)) => Err(Box::new(response::error(
+        Ok(PersistedBucketMutationPreconditionResolution::Present(_)) => Err(Box::new(
+            response::error(
             StatusCode::CONFLICT,
             "Bucket already exists",
         ))),
-        Ok(PersistedBucketPresenceReadResolution::Tombstoned(tombstone)) => {
-            if tombstone.is_expired(current_unix_ms_u64()) {
-                Ok(())
-            } else {
-                Err(Box::new(response::error(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    format!(
-                        "Distributed bucket metadata operation '{}' rejected create for '{}' because tombstone retention is still active",
-                        operation, bucket
-                    ),
-                )))
-            }
-        }
-        Ok(PersistedBucketPresenceReadResolution::Missing) => Ok(()),
+        Ok(PersistedBucketMutationPreconditionResolution::Tombstoned {
+            retention_active: true,
+            ..
+        }) => Err(Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' rejected create for '{}' because tombstone retention is still active",
+                operation, bucket
+            ),
+        ))),
+        Ok(PersistedBucketMutationPreconditionResolution::Tombstoned {
+            retention_active: false,
+            ..
+        })
+        | Ok(PersistedBucketMutationPreconditionResolution::Missing) => Ok(()),
         Err(PersistedMetadataQueryError::ViewIdMismatch {
             expected_view_id,
             persisted_view_id,
@@ -439,14 +443,15 @@ pub(super) fn ensure_consensus_index_delete_bucket_preconditions(
         ))
     })?;
 
-    match resolve_bucket_presence_from_persisted_state(
+    match resolve_bucket_mutation_preconditions_from_persisted_state(
         &persisted_state,
         bucket,
         Some(topology.membership_view_id.as_str()),
+        current_unix_ms_u64(),
     ) {
-        Ok(PersistedBucketPresenceReadResolution::Present(_)) => Ok(()),
-        Ok(PersistedBucketPresenceReadResolution::Tombstoned(_))
-        | Ok(PersistedBucketPresenceReadResolution::Missing) => {
+        Ok(PersistedBucketMutationPreconditionResolution::Present(_)) => Ok(()),
+        Ok(PersistedBucketMutationPreconditionResolution::Tombstoned { .. })
+        | Ok(PersistedBucketMutationPreconditionResolution::Missing) => {
             Err(Box::new(response::error(StatusCode::NOT_FOUND, "Bucket not found")))
         }
         Err(PersistedMetadataQueryError::ViewIdMismatch {

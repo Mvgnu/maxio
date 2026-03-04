@@ -642,6 +642,30 @@ pub fn resolve_bucket_presence_from_persisted_state(
     Ok(PersistedBucketPresenceReadResolution::Missing)
 }
 
+pub fn resolve_bucket_mutation_preconditions_from_persisted_state(
+    state: &PersistedMetadataState,
+    bucket: &str,
+    expected_view_id: Option<&str>,
+    now_unix_ms: u64,
+) -> Result<PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError> {
+    let resolution =
+        resolve_bucket_presence_from_persisted_state(state, bucket, expected_view_id)?;
+    Ok(match resolution {
+        PersistedBucketPresenceReadResolution::Present(bucket_state) => {
+            PersistedBucketMutationPreconditionResolution::Present(bucket_state)
+        }
+        PersistedBucketPresenceReadResolution::Tombstoned(tombstone) => {
+            PersistedBucketMutationPreconditionResolution::Tombstoned {
+                retention_active: !tombstone.is_expired(now_unix_ms),
+                tombstone,
+            }
+        }
+        PersistedBucketPresenceReadResolution::Missing => {
+            PersistedBucketMutationPreconditionResolution::Missing
+        }
+    })
+}
+
 pub fn resolve_object_metadata_from_persisted_state(
     state: &PersistedMetadataState,
     bucket: &str,
