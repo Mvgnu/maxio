@@ -88,6 +88,11 @@ pub(super) async fn get_lifecycle(
     let topology = runtime_topology_snapshot(&state);
     let internal_local_only =
         storage::is_trusted_internal_local_metadata_scope_request(&state, &headers, &params);
+    let use_consensus_bucket_metadata = storage::should_use_consensus_index_bucket_metadata_state(
+        &state,
+        &topology,
+        internal_local_only,
+    );
 
     let rules = if storage::should_attempt_cluster_bucket_metadata_fan_in(
         &state,
@@ -117,18 +122,14 @@ pub(super) async fn get_lifecycle(
             Err(err) => return response::error(StatusCode::SERVICE_UNAVAILABLE, err),
         }
     } else {
-        if !internal_local_only {
+        if !internal_local_only && !use_consensus_bucket_metadata {
             if let Some(err) =
                 storage::reject_unready_bucket_metadata_operation(&state, "GetBucketLifecycle")
             {
                 return err;
             }
         }
-        if storage::should_use_consensus_index_bucket_metadata_state(
-            &state,
-            &topology,
-            internal_local_only,
-        ) {
+        if use_consensus_bucket_metadata {
             let bucket_state = match storage::consensus_bucket_metadata_state_for_bucket(
                 &state,
                 &topology,
@@ -207,7 +208,12 @@ pub(super) async fn set_lifecycle(
         &topology,
         internal_local_only,
     );
-    if !internal_local_only && !should_fan_in {
+    let use_consensus_bucket_metadata = storage::should_use_consensus_index_bucket_metadata_state(
+        &state,
+        &topology,
+        internal_local_only,
+    );
+    if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
         if let Some(err) =
             storage::reject_unready_bucket_metadata_operation(&state, "SetBucketLifecycle")
         {

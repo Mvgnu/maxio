@@ -101,6 +101,11 @@ pub(super) async fn list_buckets(
     let topology = runtime_topology_snapshot(&state);
     let internal_local_only =
         storage::is_trusted_internal_local_metadata_scope_request(&state, &headers, &params);
+    let use_consensus_bucket_metadata = storage::should_use_consensus_index_bucket_metadata_state(
+        &state,
+        &topology,
+        internal_local_only,
+    );
 
     if storage::should_attempt_cluster_bucket_metadata_fan_in(
         &state,
@@ -142,7 +147,7 @@ pub(super) async fn list_buckets(
     }
 
     let metadata_coverage = storage::list_metadata_coverage(&state);
-    if !internal_local_only {
+    if !internal_local_only && !use_consensus_bucket_metadata {
         if let Some(error_response) =
             storage::reject_unready_metadata_listing(metadata_coverage.as_ref())
         {
@@ -150,11 +155,7 @@ pub(super) async fn list_buckets(
         }
     }
 
-    if storage::should_use_consensus_index_bucket_metadata_state(
-        &state,
-        &topology,
-        internal_local_only,
-    ) {
+    if use_consensus_bucket_metadata {
         return match storage::load_consensus_bucket_metadata_rows(&state, &topology, "ListBuckets")
         {
             Ok(rows) => response::json(
@@ -423,7 +424,12 @@ pub(super) async fn create_bucket(
         &topology,
         internal_local_only,
     );
-    if !internal_local_only && !should_fan_in {
+    let use_consensus_bucket_metadata = storage::should_use_consensus_index_bucket_metadata_state(
+        &state,
+        &topology,
+        internal_local_only,
+    );
+    if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
         if let Some(err) = storage::reject_unready_bucket_metadata_operation(&state, "CreateBucket")
         {
             return err;
@@ -513,7 +519,12 @@ pub(super) async fn delete_bucket_api(
         &topology,
         internal_local_only,
     );
-    if !internal_local_only && !should_fan_in {
+    let use_consensus_bucket_metadata = storage::should_use_consensus_index_bucket_metadata_state(
+        &state,
+        &topology,
+        internal_local_only,
+    );
+    if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
         if let Some(err) = storage::reject_unready_bucket_metadata_operation(&state, "DeleteBucket")
         {
             return err;

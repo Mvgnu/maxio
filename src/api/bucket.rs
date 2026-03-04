@@ -109,14 +109,16 @@ pub async fn list_buckets(
             let fan_in = fetch_cluster_bucket_listing_fan_in(&state, &topology).await?;
             merge_cluster_bucket_entries_with_topology_snapshot(&state, &topology, fan_in)?
         } else {
-            if !internal_local_only {
+            let use_consensus_persisted_metadata =
+                should_use_consensus_index_persisted_metadata_state(
+                    &state,
+                    &topology,
+                    internal_local_only,
+                );
+            if !internal_local_only && !use_consensus_persisted_metadata {
                 ensure_distributed_bucket_listing_strategy_ready(&state)?;
             }
-            if should_use_consensus_index_persisted_metadata_state(
-                &state,
-                &topology,
-                internal_local_only,
-            ) {
+            if use_consensus_persisted_metadata {
                 load_persisted_bucket_metadata_state(&state, "ListBuckets")?
                     .into_iter()
                     .map(|bucket| BucketEntry {
@@ -1087,10 +1089,12 @@ async fn create_bucket_with_context(
         is_trusted_internal_local_metadata_scope_request(&state, &headers, &params);
     let should_fan_in =
         should_attempt_cluster_bucket_metadata_fan_in(&state, &topology, internal_local_only);
-    if !internal_local_only && !should_fan_in {
+    let use_consensus_persisted_metadata =
+        should_use_consensus_index_persisted_metadata_state(&state, &topology, internal_local_only);
+    if !internal_local_only && !should_fan_in && !use_consensus_persisted_metadata {
         ensure_distributed_bucket_metadata_operation_strategy_ready(&state, "CreateBucket")?;
     }
-    if should_use_consensus_index_persisted_metadata_state(&state, &topology, internal_local_only) {
+    if use_consensus_persisted_metadata {
         ensure_consensus_index_create_bucket_preconditions(
             &state,
             &topology,
@@ -1196,14 +1200,15 @@ pub async fn head_bucket(
             }
         }
     } else {
-        if !internal_local_only {
-            ensure_distributed_bucket_metadata_operation_strategy_ready(&state, "HeadBucket")?;
-        }
-        if should_use_consensus_index_persisted_metadata_state(
+        let use_consensus_persisted_metadata = should_use_consensus_index_persisted_metadata_state(
             &state,
             &topology,
             internal_local_only,
-        ) {
+        );
+        if !internal_local_only && !use_consensus_persisted_metadata {
+            ensure_distributed_bucket_metadata_operation_strategy_ready(&state, "HeadBucket")?;
+        }
+        if use_consensus_persisted_metadata {
             bucket_metadata_state_from_consensus_index(&state, &bucket, "HeadBucket")?;
         } else {
             match state.storage.head_bucket(&bucket).await {
@@ -1239,7 +1244,9 @@ async fn delete_bucket_with_context(
         is_trusted_internal_local_metadata_scope_request(&state, &headers, &params);
     let should_fan_in =
         should_attempt_cluster_bucket_metadata_fan_in(&state, &topology, internal_local_only);
-    if !internal_local_only && !should_fan_in {
+    let use_consensus_persisted_metadata =
+        should_use_consensus_index_persisted_metadata_state(&state, &topology, internal_local_only);
+    if !internal_local_only && !should_fan_in && !use_consensus_persisted_metadata {
         ensure_distributed_bucket_metadata_operation_strategy_ready(&state, "DeleteBucket")?;
     }
 
@@ -1515,7 +1522,9 @@ async fn put_bucket_versioning(
         is_trusted_internal_local_metadata_scope_request(&state, &headers, &params);
     let should_fan_in =
         should_attempt_cluster_bucket_metadata_fan_in(&state, &topology, internal_local_only);
-    if !internal_local_only && !should_fan_in {
+    let use_consensus_persisted_metadata =
+        should_use_consensus_index_persisted_metadata_state(&state, &topology, internal_local_only);
+    if !internal_local_only && !should_fan_in && !use_consensus_persisted_metadata {
         ensure_distributed_bucket_metadata_operation_strategy_ready(&state, "PutBucketVersioning")?;
     }
     ensure_bucket_exists(&state.storage, &bucket).await?;
@@ -1597,7 +1606,9 @@ async fn put_bucket_lifecycle(
         is_trusted_internal_local_metadata_scope_request(&state, &headers, &params);
     let should_fan_in =
         should_attempt_cluster_bucket_metadata_fan_in(&state, &topology, internal_local_only);
-    if !internal_local_only && !should_fan_in {
+    let use_consensus_persisted_metadata =
+        should_use_consensus_index_persisted_metadata_state(&state, &topology, internal_local_only);
+    if !internal_local_only && !should_fan_in && !use_consensus_persisted_metadata {
         ensure_distributed_bucket_metadata_operation_strategy_ready(&state, "PutBucketLifecycle")?;
     }
     ensure_bucket_exists(&state.storage, &bucket).await?;
@@ -1779,17 +1790,19 @@ pub async fn get_bucket_versioning(
                 fan_in.versioning_states.as_slice(),
             )?
         } else {
-            if !internal_local_only {
+            let use_consensus_persisted_metadata =
+                should_use_consensus_index_persisted_metadata_state(
+                    &state,
+                    &topology,
+                    internal_local_only,
+                );
+            if !internal_local_only && !use_consensus_persisted_metadata {
                 ensure_distributed_bucket_metadata_operation_strategy_ready(
                     &state,
                     "GetBucketVersioning",
                 )?;
             }
-            if should_use_consensus_index_persisted_metadata_state(
-                &state,
-                &topology,
-                internal_local_only,
-            ) {
+            if use_consensus_persisted_metadata {
                 bucket_metadata_state_from_consensus_index(&state, &bucket, "GetBucketVersioning")?
                     .versioning_enabled
             } else {
@@ -1839,20 +1852,22 @@ pub async fn get_bucket_lifecycle(
             "GetBucketLifecycle",
             &bucket,
             fan_in.responded_nodes.as_slice(),
-            fan_in.lifecycle_states.as_slice(),
-        )?
+                fan_in.lifecycle_states.as_slice(),
+            )?
     } else {
-        if !internal_local_only {
+        let use_consensus_persisted_metadata =
+            should_use_consensus_index_persisted_metadata_state(
+                &state,
+                &topology,
+                internal_local_only,
+            );
+        if !internal_local_only && !use_consensus_persisted_metadata {
             ensure_distributed_bucket_metadata_operation_strategy_ready(
                 &state,
                 "GetBucketLifecycle",
             )?;
         }
-        if should_use_consensus_index_persisted_metadata_state(
-            &state,
-            &topology,
-            internal_local_only,
-        ) {
+        if use_consensus_persisted_metadata {
             let bucket_state =
                 bucket_metadata_state_from_consensus_index(&state, &bucket, "GetBucketLifecycle")?;
             if !bucket_state.lifecycle_enabled {

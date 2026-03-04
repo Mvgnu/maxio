@@ -115,6 +115,11 @@ pub(super) async fn get_versioning(
     let topology = runtime_topology_snapshot(&state);
     let internal_local_only =
         storage::is_trusted_internal_local_metadata_scope_request(&state, &headers, &params);
+    let use_consensus_bucket_metadata = storage::should_use_consensus_index_bucket_metadata_state(
+        &state,
+        &topology,
+        internal_local_only,
+    );
 
     let enabled = if storage::should_attempt_cluster_bucket_metadata_fan_in(
         &state,
@@ -145,18 +150,14 @@ pub(super) async fn get_versioning(
             Err(err) => return response::error(StatusCode::SERVICE_UNAVAILABLE, err),
         }
     } else {
-        if !internal_local_only {
+        if !internal_local_only && !use_consensus_bucket_metadata {
             if let Some(err) =
                 storage::reject_unready_bucket_metadata_operation(&state, "GetBucketVersioning")
             {
                 return err;
             }
         }
-        if storage::should_use_consensus_index_bucket_metadata_state(
-            &state,
-            &topology,
-            internal_local_only,
-        ) {
+        if use_consensus_bucket_metadata {
             match storage::consensus_bucket_metadata_state_for_bucket(
                 &state,
                 &topology,
@@ -395,7 +396,12 @@ pub(super) async fn set_versioning(
         &topology,
         internal_local_only,
     );
-    if !internal_local_only && !should_fan_in {
+    let use_consensus_bucket_metadata = storage::should_use_consensus_index_bucket_metadata_state(
+        &state,
+        &topology,
+        internal_local_only,
+    );
+    if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
         if let Some(err) =
             storage::reject_unready_bucket_metadata_operation(&state, "SetBucketVersioning")
         {

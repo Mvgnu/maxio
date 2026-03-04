@@ -1133,16 +1133,19 @@ mod tests {
             .expect("state should initialize");
         let coverage =
             list_metadata_coverage(&state).expect("distributed state should expose coverage");
-        assert_eq!(coverage.expected_nodes, 1);
+        assert_eq!(coverage.expected_nodes, 2);
         assert_eq!(coverage.responded_nodes, 1);
-        assert_eq!(coverage.missing_nodes, 0);
-        assert!(coverage.complete);
+        assert_eq!(coverage.missing_nodes, 1);
+        assert!(!coverage.complete);
         assert_eq!(coverage.snapshot_id.len(), 64);
         assert_eq!(coverage.source, "consensus-index");
         assert!(coverage.strategy_cluster_authoritative);
-        assert!(coverage.strategy_ready);
-        assert_eq!(coverage.strategy_gap, None);
-        assert_eq!(coverage.strategy_reject_reason, None);
+        assert!(!coverage.strategy_ready);
+        assert_eq!(coverage.strategy_gap, Some("missing-expected-nodes"));
+        assert_eq!(
+            coverage.strategy_reject_reason,
+            Some("missing-expected-nodes")
+        );
     }
 
     #[tokio::test]
