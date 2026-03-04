@@ -246,6 +246,42 @@ pub struct ClusterMetadataSnapshotAssessment {
     pub snapshot_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterResponderMembershipView {
+    pub node_id: String,
+    pub membership_view_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterResponderMembershipViewGap {
+    MissingResponderMembershipViewId,
+    InconsistentResponderMembershipViewId,
+    MembershipViewIdMismatch,
+}
+
+impl ClusterResponderMembershipViewGap {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingResponderMembershipViewId => "missing-responder-membership-view-id",
+            Self::InconsistentResponderMembershipViewId => {
+                "inconsistent-responder-membership-view-id"
+            }
+            Self::MembershipViewIdMismatch => "membership-view-id-mismatch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterResponderMembershipViewAssessment {
+    pub consistent: bool,
+    pub gap: Option<ClusterResponderMembershipViewGap>,
+    pub expected_view_id: Option<String>,
+    pub observed_view_id: Option<String>,
+    pub responders: usize,
+    pub missing_nodes: Vec<String>,
+    pub mismatched_nodes: Vec<String>,
+}
+
 pub fn cluster_metadata_readiness_reject_reason(
     readiness: &ClusterMetadataReadinessAssessment,
 ) -> Option<ClusterMetadataReadinessGap> {
@@ -253,6 +289,66 @@ pub fn cluster_metadata_readiness_reject_reason(
         readiness.gap
     } else {
         None
+    }
+}
+
+pub fn assess_cluster_responder_membership_views(
+    expected_view_id: Option<&str>,
+    responders: &[ClusterResponderMembershipView],
+) -> ClusterResponderMembershipViewAssessment {
+    let expected_view_id = expected_view_id
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+
+    let mut missing_nodes = Vec::new();
+    let mut mismatched_nodes = Vec::new();
+    let mut observed_views = BTreeSet::new();
+    for responder in responders {
+        let normalized = responder
+            .membership_view_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        match normalized {
+            Some(view_id) => {
+                if let Some(expected) = expected_view_id.as_deref() {
+                    if view_id != expected {
+                        mismatched_nodes.push(responder.node_id.clone());
+                    }
+                }
+                observed_views.insert(view_id);
+            }
+            None => {
+                missing_nodes.push(responder.node_id.clone());
+            }
+        }
+    }
+
+    let observed_view_id = if observed_views.len() == 1 {
+        observed_views.iter().next().cloned()
+    } else {
+        None
+    };
+    let gap = if responders.is_empty() || !missing_nodes.is_empty() {
+        Some(ClusterResponderMembershipViewGap::MissingResponderMembershipViewId)
+    } else if observed_views.len() > 1 {
+        Some(ClusterResponderMembershipViewGap::InconsistentResponderMembershipViewId)
+    } else if !mismatched_nodes.is_empty() {
+        Some(ClusterResponderMembershipViewGap::MembershipViewIdMismatch)
+    } else {
+        None
+    };
+
+    ClusterResponderMembershipViewAssessment {
+        consistent: gap.is_none(),
+        gap,
+        expected_view_id,
+        observed_view_id,
+        responders: responders.len(),
+        missing_nodes,
+        mismatched_nodes,
     }
 }
 
@@ -1753,7 +1849,8 @@ mod tests {
         ClusterBucketMetadataResponderSnapshot, ClusterBucketMetadataResponderState,
         ClusterBucketPresenceConvergenceExpectation, ClusterBucketPresenceConvergenceGap,
         ClusterBucketPresenceReadResolution, ClusterMetadataCoverageGap,
-        ClusterMetadataListingStrategy, ClusterMetadataReadinessGap, InMemoryMetadataIndex,
+        ClusterMetadataListingStrategy, ClusterMetadataReadinessGap,
+        ClusterResponderMembershipView, ClusterResponderMembershipViewGap, InMemoryMetadataIndex,
         MetadataIndex, MetadataNodeBucketsPage, MetadataNodeObjectsPage, MetadataNodeVersionsPage,
         MetadataQuery, MetadataQueryError, MetadataVersionsQuery,
         assess_cluster_bucket_metadata_consistency, assess_cluster_bucket_metadata_convergence,
@@ -1765,6 +1862,7 @@ mod tests {
         assess_cluster_metadata_snapshot_for_single_responder,
         assess_cluster_metadata_snapshot_for_topology_responders,
         assess_cluster_metadata_snapshot_for_topology_single_responder,
+        assess_cluster_responder_membership_views,
         build_cluster_metadata_coverage_for_single_responder,
         build_cluster_metadata_coverage_from_responses, build_cluster_metadata_expected_nodes,
         build_cluster_metadata_snapshot_id, cluster_metadata_fan_in_execution_strategy,
@@ -4049,6 +4147,99 @@ mod tests {
             ClusterBucketMetadataConvergenceInputError::InvalidResponderTopology(
                 MetadataQueryError::DuplicateCoverageNodeResponse
             )
+        );
+    }
+
+    #[test]
+    fn assess_cluster_responder_membership_views_reports_consistent_expected_view() {
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-a:9000".to_string(),
+                membership_view_id: Some("view-1".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: Some("view-1".to_string()),
+            },
+        ];
+        let assessment =
+            assess_cluster_responder_membership_views(Some("view-1"), responders.as_slice());
+
+        assert!(assessment.consistent);
+        assert_eq!(assessment.gap, None);
+        assert_eq!(assessment.observed_view_id.as_deref(), Some("view-1"));
+        assert!(assessment.missing_nodes.is_empty());
+        assert!(assessment.mismatched_nodes.is_empty());
+    }
+
+    #[test]
+    fn assess_cluster_responder_membership_views_reports_missing_view_gap() {
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-a:9000".to_string(),
+                membership_view_id: Some("view-1".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: None,
+            },
+        ];
+        let assessment =
+            assess_cluster_responder_membership_views(Some("view-1"), responders.as_slice());
+
+        assert!(!assessment.consistent);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterResponderMembershipViewGap::MissingResponderMembershipViewId)
+        );
+        assert_eq!(assessment.missing_nodes, vec!["node-b:9000".to_string()]);
+    }
+
+    #[test]
+    fn assess_cluster_responder_membership_views_reports_inconsistent_responder_views() {
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-a:9000".to_string(),
+                membership_view_id: Some("view-1".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: Some("view-2".to_string()),
+            },
+        ];
+        let assessment = assess_cluster_responder_membership_views(None, responders.as_slice());
+
+        assert!(!assessment.consistent);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterResponderMembershipViewGap::InconsistentResponderMembershipViewId)
+        );
+        assert_eq!(assessment.observed_view_id, None);
+    }
+
+    #[test]
+    fn assess_cluster_responder_membership_views_reports_expected_view_mismatch() {
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-a:9000".to_string(),
+                membership_view_id: Some("view-2".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: Some("view-2".to_string()),
+            },
+        ];
+        let assessment =
+            assess_cluster_responder_membership_views(Some("view-1"), responders.as_slice());
+
+        assert!(!assessment.consistent);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterResponderMembershipViewGap::MembershipViewIdMismatch)
+        );
+        assert_eq!(
+            assessment.mismatched_nodes,
+            vec!["node-a:9000".to_string(), "node-b:9000".to_string()]
         );
     }
 }
