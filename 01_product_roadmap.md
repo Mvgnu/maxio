@@ -263,6 +263,8 @@ Scorecard sync update (March 4, 2026):
 - Locked by regression: `core_tests::test_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect` (also wired into `scripts/domain_check.sh s3_api_surface`).
 - Bucket create/delete consensus-index precondition logic is now single-sourced across S3 + console through metadata-plane `resolve_bucket_mutation_preconditions_from_persisted_state(...)` (`PersistedBucketMutationPreconditionResolution`), eliminating endpoint-local tombstone-retention branching drift.
 - Locked by existing S3 + console regressions for persisted-present, persisted-missing, and retained-tombstone fail-closed paths (`core_tests::*consensus_index_rejects_*`, `console_tests::*consensus_index_rejects_*`).
+- Distributed `DeleteObjects` batch now enforces strict quorum mode (`write_durability_mode=strict-quorum`) with deterministic `503 ServiceUnavailable` on quorum shortfall (`DeleteObjects write quorum not reached`) while degraded-success mode keeps per-entry degraded-quorum diagnostics.
+- Locked by regression: `core_tests::test_delete_objects_batch_distributed_primary_write_strict_quorum_returns_service_unavailable_when_replica_unreachable` (wired into `scripts/domain_check.sh s3_api_surface`).
 
 ## Distributed Implementation Exit Targets (Execution-Aligned)
 

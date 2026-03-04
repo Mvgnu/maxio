@@ -1941,6 +1941,7 @@ pub async fn delete_objects(
 
     let mut outcomes = Vec::with_capacity(planned_entries.len());
     let mut quorum_aggregate = BatchWriteQuorumAggregate::new();
+    let mut strict_quorum_not_reached = false;
     let empty_params = HashMap::new();
     let forwarded_delete_headers = replica_delete_headers(&headers);
     for entry in planned_entries {
@@ -1977,6 +1978,15 @@ pub async fn delete_objects(
             {
                 Ok(response) => {
                     quorum_aggregate.record_headers(response.headers());
+                    if state.write_durability_mode.is_strict_quorum() {
+                        if let Some((_, _, quorum_reached)) =
+                            parse_write_quorum_headers(response.headers())
+                        {
+                            if !quorum_reached {
+                                strict_quorum_not_reached = true;
+                            }
+                        }
+                    }
                     outcomes.push(forwarded_delete_objects_outcome(entry.key, &response));
                 }
                 Err(err) => outcomes.push(DeleteObjectsOutcome::Error {
@@ -2036,6 +2046,9 @@ pub async fn delete_objects(
                     .await;
                     quorum_aggregate.record_outcome(&outcome);
                     if !outcome.quorum_reached {
+                        if state.write_durability_mode.is_strict_quorum() {
+                            strict_quorum_not_reached = true;
+                        }
                         outcomes.push(delete_objects_quorum_outcome_error(
                             key,
                             outcome.ack_count,
@@ -2052,6 +2065,12 @@ pub async fn delete_objects(
             }
             Err(e) => outcomes.push(map_delete_objects_err(&bucket, key, e)),
         }
+    }
+
+    if state.write_durability_mode.is_strict_quorum() && strict_quorum_not_reached {
+        return Err(S3Error::service_unavailable(
+            "DeleteObjects write quorum not reached",
+        ));
     }
 
     let response_xml = build_delete_objects_response_xml(&outcomes, request.quiet);

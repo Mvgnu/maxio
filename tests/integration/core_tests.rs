@@ -7958,6 +7958,48 @@ async fn test_delete_objects_batch_distributed_primary_write_surfaces_per_entry_
 }
 
 #[tokio::test]
+async fn test_delete_objects_batch_distributed_primary_write_strict_quorum_returns_service_unavailable_when_replica_unreachable(
+) {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.write_durability_mode = WriteDurabilityMode::StrictQuorum;
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+    let key = distributed_local_owner_key("delete-batch-quorum-strict");
+    s3_request(
+        "PUT",
+        &format!("{}/mybucket/{}", base_url, key),
+        b"needs-delete-strict".to_vec(),
+    )
+    .await;
+
+    let delete_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Delete>
+  <Object><Key>{}</Key></Object>
+</Delete>"#,
+        key
+    );
+    let response = s3_request(
+        "POST",
+        &format!("{}/mybucket?delete", base_url),
+        delete_xml.as_bytes().to_vec(),
+    )
+    .await;
+    assert_eq!(response.status(), 503);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("<Code>ServiceUnavailable</Code>"));
+    assert!(body.contains("DeleteObjects write quorum not reached"));
+
+    let get_response = s3_request("GET", &format!("{}/mybucket/{}", base_url, key), vec![]).await;
+    assert_eq!(get_response.status(), 404);
+}
+
+#[tokio::test]
 async fn test_delete_objects_batch_missing_bucket_returns_no_such_bucket() {
     let (base_url, _tmp) = start_server().await;
 

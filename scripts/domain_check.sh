@@ -350,6 +350,7 @@ run_domain() {
         core_tests::test_delete_objects_batch_distributed_forwards_non_owner_batch_to_primary_owner \
         core_tests::test_delete_objects_batch_distributed_forwards_mixed_owner_entries \
         core_tests::test_delete_objects_batch_distributed_primary_write_surfaces_per_entry_quorum_error \
+        core_tests::test_delete_objects_batch_distributed_primary_write_strict_quorum_returns_service_unavailable_when_replica_unreachable \
         core_tests::test_delete_objects_batch_missing_bucket_returns_no_such_bucket \
         core_tests::test_delete_objects_batch_quiet_mode_suppresses_deleted_entries \
         core_tests::test_delete_objects_batch_rejects_invalid_escaped_xml_content \
