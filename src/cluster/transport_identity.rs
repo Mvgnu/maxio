@@ -44,6 +44,8 @@ pub enum PeerTransportIdentityReadinessReason {
     CertificateValidityWindowInvalid,
     CertificateFingerprintPinInvalid,
     CertificateFingerprintPinMismatch,
+    CertificateFingerprintRevocationInvalid,
+    CertificateFingerprintRevoked,
     CertificateKeyPairInvalid,
     NodeIdentityInvalid,
     NodeIdentityBindingPinRequired,
@@ -67,6 +69,10 @@ impl PeerTransportIdentityReadinessReason {
             Self::CertificateValidityWindowInvalid => "certificate_validity_window_invalid",
             Self::CertificateFingerprintPinInvalid => "certificate_fingerprint_pin_invalid",
             Self::CertificateFingerprintPinMismatch => "certificate_fingerprint_pin_mismatch",
+            Self::CertificateFingerprintRevocationInvalid => {
+                "certificate_fingerprint_revocation_invalid"
+            }
+            Self::CertificateFingerprintRevoked => "certificate_fingerprint_revoked",
             Self::CertificateKeyPairInvalid => "certificate_key_pair_invalid",
             Self::NodeIdentityInvalid => "node_identity_invalid",
             Self::NodeIdentityBindingPinRequired => "node_identity_binding_pin_required",
@@ -83,6 +89,12 @@ pub struct PeerTransportIdentityStatus {
     pub identity_bound: bool,
     pub reason: PeerTransportIdentityReadinessReason,
     pub warning: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct PeerCertificatePolicy<'a> {
+    pub sha256_pin: Option<&'a str>,
+    pub sha256_revocations: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -102,6 +114,8 @@ pub enum PeerTransportPeerAttestationError {
     PeerCertificateValidityWindowInvalid,
     PeerCertificateFingerprintPinInvalid,
     PeerCertificateFingerprintPinMismatch,
+    PeerCertificateFingerprintRevocationInvalid,
+    PeerCertificateFingerprintRevoked,
     PeerCertificateNodeIdentityMismatch,
 }
 
@@ -129,6 +143,10 @@ impl PeerTransportPeerAttestationError {
             Self::PeerCertificateFingerprintPinMismatch => {
                 "peer_certificate_fingerprint_pin_mismatch"
             }
+            Self::PeerCertificateFingerprintRevocationInvalid => {
+                "peer_certificate_fingerprint_revocation_invalid"
+            }
+            Self::PeerCertificateFingerprintRevoked => "peer_certificate_fingerprint_revoked",
             Self::PeerCertificateNodeIdentityMismatch => "peer_certificate_node_identity_mismatch",
         }
     }
@@ -147,6 +165,22 @@ pub fn probe_peer_transport_identity_with_cert_sha256_pin(
     key_path: Option<&str>,
     trust_store_path: Option<&str>,
     cert_sha256_pin: Option<&str>,
+) -> PeerTransportIdentityStatus {
+    probe_peer_transport_identity_with_cert_sha256_pin_and_revocations(
+        cert_path,
+        key_path,
+        trust_store_path,
+        cert_sha256_pin,
+        None,
+    )
+}
+
+pub fn probe_peer_transport_identity_with_cert_sha256_pin_and_revocations(
+    cert_path: Option<&str>,
+    key_path: Option<&str>,
+    trust_store_path: Option<&str>,
+    cert_sha256_pin: Option<&str>,
+    cert_sha256_revocations: Option<&str>,
 ) -> PeerTransportIdentityStatus {
     let cert_path = normalize_path(cert_path);
     let key_path = normalize_path(key_path);
@@ -337,6 +371,36 @@ pub fn probe_peer_transport_identity_with_cert_sha256_pin(
             )),
         };
     };
+
+    if let Some(cert_sha256_revocations) = normalize_path(cert_sha256_revocations) {
+        let Some(normalized_revocations) = normalize_sha256_fingerprint_set(cert_sha256_revocations)
+        else {
+            return PeerTransportIdentityStatus {
+                mode: PeerTransportIdentityMode::MtlsPath,
+                transport_ready: false,
+                identity_bound: false,
+                reason: PeerTransportIdentityReadinessReason::CertificateFingerprintRevocationInvalid,
+                warning: Some(
+                    "mTLS certificate fingerprint revocation set is invalid; expected one or more comma-separated SHA-256 fingerprints (64 hex chars each), optionally prefixed with sha256: and separated by ':' or '-'.".to_string(),
+                ),
+            };
+        };
+        if normalized_revocations
+            .iter()
+            .any(|pin| pin == &observed_cert_fingerprint)
+        {
+            return PeerTransportIdentityStatus {
+                mode: PeerTransportIdentityMode::MtlsPath,
+                transport_ready: false,
+                identity_bound: false,
+                reason: PeerTransportIdentityReadinessReason::CertificateFingerprintRevoked,
+                warning: Some(format!(
+                    "mTLS certificate fingerprint for '{}' is explicitly revoked.",
+                    cert_path
+                )),
+            };
+        }
+    }
 
     if let Some(cert_sha256_pin) = normalize_path(cert_sha256_pin) {
         let Some(normalized_pins) = normalize_sha256_fingerprint_set(cert_sha256_pin) else {
@@ -534,6 +598,29 @@ pub fn attest_peer_transport_identity_with_mtls_and_cert_sha256_pin(
     peer_cert_sha256_pin: Option<&str>,
     timeout: Duration,
 ) -> Result<(), PeerTransportPeerAttestationError> {
+    attest_peer_transport_identity_with_mtls_with_policy(
+        peer_endpoint,
+        expected_node_id,
+        cert_path,
+        key_path,
+        trust_store_path,
+        PeerCertificatePolicy {
+            sha256_pin: peer_cert_sha256_pin,
+            sha256_revocations: None,
+        },
+        timeout,
+    )
+}
+
+pub fn attest_peer_transport_identity_with_mtls_with_policy(
+    peer_endpoint: &str,
+    expected_node_id: &str,
+    cert_path: &str,
+    key_path: &str,
+    trust_store_path: &str,
+    peer_certificate_policy: PeerCertificatePolicy<'_>,
+    timeout: Duration,
+) -> Result<(), PeerTransportPeerAttestationError> {
     let Some((peer_host, peer_port)) =
         crate::cluster::peer_identity::parse_peer_identity(peer_endpoint)
     else {
@@ -599,7 +686,29 @@ pub fn attest_peer_transport_identity_with_mtls_and_cert_sha256_pin(
     ensure_certificate_valid_now(&peer_certificate)
         .map_err(|_| PeerTransportPeerAttestationError::PeerCertificateValidityWindowInvalid)?;
 
-    if let Some(peer_cert_sha256_pin) = normalize_path(peer_cert_sha256_pin) {
+    if let Some(peer_cert_sha256_revocations) =
+        normalize_path(peer_certificate_policy.sha256_revocations)
+    {
+        let Some(normalized_revocations) =
+            normalize_sha256_fingerprint_set(peer_cert_sha256_revocations)
+        else {
+            return Err(
+                PeerTransportPeerAttestationError::PeerCertificateFingerprintRevocationInvalid,
+            );
+        };
+        let observed_peer_cert_fingerprint = peer_certificate_sha256_hex(&peer_certificate)
+            .map_err(|_| {
+                PeerTransportPeerAttestationError::PeerCertificateFingerprintPinMismatch
+            })?;
+        if normalized_revocations
+            .iter()
+            .any(|pin| pin == &observed_peer_cert_fingerprint)
+        {
+            return Err(PeerTransportPeerAttestationError::PeerCertificateFingerprintRevoked);
+        }
+    }
+
+    if let Some(peer_cert_sha256_pin) = normalize_path(peer_certificate_policy.sha256_pin) {
         let Some(normalized_pins) = normalize_sha256_fingerprint_set(peer_cert_sha256_pin) else {
             return Err(PeerTransportPeerAttestationError::PeerCertificateFingerprintPinInvalid);
         };
@@ -937,11 +1046,14 @@ fn ensure_certificate_valid_at_reference(
 #[cfg(test)]
 mod tests {
     use super::{
+        PeerCertificatePolicy,
         PeerTransportIdentityMode, PeerTransportIdentityReadinessReason,
         PeerTransportPeerAttestationError, attest_peer_transport_identity_with_mtls,
         attest_peer_transport_identity_with_mtls_and_cert_sha256_pin,
+        attest_peer_transport_identity_with_mtls_with_policy,
         ensure_certificate_valid_at_reference, probe_peer_transport_identity,
         probe_peer_transport_identity_with_cert_sha256_pin,
+        probe_peer_transport_identity_with_cert_sha256_pin_and_revocations,
         probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding,
     };
     use openssl::asn1::Asn1Time;
@@ -1248,6 +1360,51 @@ mod tests {
         assert_eq!(
             status.reason,
             PeerTransportIdentityReadinessReason::CertificateFingerprintPinInvalid
+        );
+        assert!(status.warning.is_some());
+    }
+
+    #[test]
+    fn transport_identity_reports_invalid_revocation_set_shape_when_any_pin_is_invalid() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, key_path, trust_store_path, cert_sha256_pin) =
+            write_valid_identity_fixture(&dir);
+        let revocation_set = format!("{cert_sha256_pin},invalid-pin");
+
+        let status = probe_peer_transport_identity_with_cert_sha256_pin_and_revocations(
+            Some(cert_path.as_str()),
+            Some(key_path.as_str()),
+            Some(trust_store_path.as_str()),
+            Some(cert_sha256_pin.as_str()),
+            Some(revocation_set.as_str()),
+        );
+        assert!(!status.transport_ready);
+        assert!(!status.identity_bound);
+        assert_eq!(
+            status.reason,
+            PeerTransportIdentityReadinessReason::CertificateFingerprintRevocationInvalid
+        );
+        assert!(status.warning.is_some());
+    }
+
+    #[test]
+    fn transport_identity_reports_revoked_certificate_when_revocation_set_matches() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, key_path, trust_store_path, cert_sha256_pin) =
+            write_valid_identity_fixture(&dir);
+
+        let status = probe_peer_transport_identity_with_cert_sha256_pin_and_revocations(
+            Some(cert_path.as_str()),
+            Some(key_path.as_str()),
+            Some(trust_store_path.as_str()),
+            Some(cert_sha256_pin.as_str()),
+            Some(cert_sha256_pin.as_str()),
+        );
+        assert!(!status.transport_ready);
+        assert!(!status.identity_bound);
+        assert_eq!(
+            status.reason,
+            PeerTransportIdentityReadinessReason::CertificateFingerprintRevoked
         );
         assert!(status.warning.is_some());
     }
@@ -1641,6 +1798,71 @@ mod tests {
         assert_eq!(
             result,
             Err(PeerTransportPeerAttestationError::PeerCertificateFingerprintPinMismatch)
+        );
+    }
+
+    #[test]
+    fn peer_attestation_with_revocations_rejects_invalid_revocation_set_shape() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, key_path, trust_store_path, cert_sha256_pin) =
+            write_valid_identity_fixture(&dir);
+        let (peer_endpoint, handle) = spawn_tls_server(cert_path.as_str(), key_path.as_str());
+        let port = peer_endpoint
+            .rsplit(':')
+            .next()
+            .expect("peer endpoint should include port");
+        let expected_node_id = format!("maxio-peer:{port}");
+        let revocation_set = format!("{cert_sha256_pin},invalid-pin");
+
+        let result = attest_peer_transport_identity_with_mtls_with_policy(
+            peer_endpoint.as_str(),
+            expected_node_id.as_str(),
+            cert_path.as_str(),
+            key_path.as_str(),
+            trust_store_path.as_str(),
+            PeerCertificatePolicy {
+                sha256_pin: Some(cert_sha256_pin.as_str()),
+                sha256_revocations: Some(revocation_set.as_str()),
+            },
+            Duration::from_secs(2),
+        );
+        handle.join().expect("tls server thread");
+
+        assert_eq!(
+            result,
+            Err(PeerTransportPeerAttestationError::PeerCertificateFingerprintRevocationInvalid)
+        );
+    }
+
+    #[test]
+    fn peer_attestation_with_revocations_rejects_revoked_peer_certificate() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, key_path, trust_store_path, cert_sha256_pin) =
+            write_valid_identity_fixture(&dir);
+        let (peer_endpoint, handle) = spawn_tls_server(cert_path.as_str(), key_path.as_str());
+        let port = peer_endpoint
+            .rsplit(':')
+            .next()
+            .expect("peer endpoint should include port");
+        let expected_node_id = format!("maxio-peer:{port}");
+
+        let result = attest_peer_transport_identity_with_mtls_with_policy(
+            peer_endpoint.as_str(),
+            expected_node_id.as_str(),
+            cert_path.as_str(),
+            key_path.as_str(),
+            trust_store_path.as_str(),
+            PeerCertificatePolicy {
+                sha256_pin: Some(cert_sha256_pin.as_str()),
+                sha256_revocations: Some(cert_sha256_pin.as_str()),
+            },
+            Duration::from_secs(2),
+        );
+        handle.join().expect("tls server thread");
+
+        assert_eq!(
+            result,
+            Err(PeerTransportPeerAttestationError::PeerCertificateFingerprintRevoked)
         );
     }
 
