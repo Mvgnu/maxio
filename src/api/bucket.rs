@@ -471,6 +471,42 @@ fn ensure_consensus_index_create_bucket_preconditions(
     }
 }
 
+fn ensure_consensus_index_delete_bucket_preconditions(
+    state: &AppState,
+    topology: &crate::server::RuntimeTopologySnapshot,
+    bucket: &str,
+    operation: &str,
+) -> Result<(), S3Error> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+            operation, err
+        ))
+    })?;
+
+    match resolve_bucket_presence_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+    ) {
+        Ok(PersistedBucketPresenceReadResolution::Present(_)) => Ok(()),
+        Ok(PersistedBucketPresenceReadResolution::Tombstoned(_))
+        | Ok(PersistedBucketPresenceReadResolution::Missing) => Err(S3Error::no_such_bucket(bucket)),
+        Err(PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        }) => Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
+            operation, expected_view_id, persisted_view_id
+        ))),
+        Err(err) => Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
+            operation, err
+        ))),
+    }
+}
+
 fn is_trusted_internal_local_metadata_scope_request(
     state: &AppState,
     headers: &HeaderMap,
@@ -1250,6 +1286,14 @@ async fn delete_bucket_with_context(
         should_use_consensus_index_persisted_metadata_state(&state, &topology, internal_local_only);
     if !internal_local_only && !should_fan_in && !use_consensus_persisted_metadata {
         ensure_distributed_bucket_metadata_operation_strategy_ready(&state, "DeleteBucket")?;
+    }
+    if use_consensus_persisted_metadata {
+        ensure_consensus_index_delete_bucket_preconditions(
+            &state,
+            &topology,
+            bucket.as_str(),
+            "DeleteBucket",
+        )?;
     }
 
     match state.storage.delete_bucket(&bucket).await {

@@ -251,6 +251,8 @@ run_domain() {
         core_tests::test_head_bucket_consensus_index_persists_local_create_into_consensus_state \
         core_tests::test_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect \
         core_tests::test_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect \
+        core_tests::test_delete_bucket_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        core_tests::test_delete_bucket_consensus_index_rejects_tombstoned_persisted_bucket_without_local_side_effect \
         core_tests::test_list_buckets_distributed_request_aggregation_returns_service_unavailable_when_unready \
         core_tests::test_list_buckets_consensus_index_uses_persisted_metadata_state \
         core_tests::test_list_buckets_consensus_index_persists_local_create_into_consensus_state \
@@ -458,6 +460,8 @@ run_domain() {
         console_tests::test_console_list_buckets_consensus_index_persists_local_create_into_consensus_state \
         console_tests::test_console_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect \
         console_tests::test_console_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect \
+        console_tests::test_console_delete_bucket_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        console_tests::test_console_delete_bucket_consensus_index_rejects_tombstoned_persisted_bucket_without_local_side_effect \
         console_tests::test_console_list_objects_request_time_aggregation_merges_peer_object_state_when_ready \
         console_tests::test_console_list_versions_consensus_index_merges_peer_state_when_ready \
         console_tests::test_console_list_versions_consensus_index_does_not_fallback_to_local_storage \

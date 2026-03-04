@@ -2865,6 +2865,104 @@ async fn test_console_create_bucket_consensus_index_rejects_active_tombstone_wit
 }
 
 #[tokio::test]
+async fn test_console_delete_bucket_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "console-consensus-delete-missing";
+    seed_consensus_metadata_buckets(&data_dir, membership_view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let delete = client()
+        .delete(format!("{}/api/buckets/{}", base_url, bucket))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), 404);
+    let body: serde_json::Value = delete.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let exists = storage
+        .head_bucket(bucket)
+        .await
+        .expect("head bucket should succeed");
+    assert!(
+        exists,
+        "expected local bucket to remain when persisted consensus metadata marks it missing"
+    );
+}
+
+#[tokio::test]
+async fn test_console_delete_bucket_consensus_index_rejects_tombstoned_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "console-consensus-delete-tombstoned";
+    let now_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).unwrap_or(0);
+    seed_consensus_metadata_bucket_state(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[],
+        &[BucketMetadataTombstoneState {
+            bucket: bucket.to_string(),
+            deleted_at_unix_ms: now_ms.saturating_sub(1_000),
+            retain_until_unix_ms: now_ms.saturating_add(120_000),
+        }],
+    );
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let delete = client()
+        .delete(format!("{}/api/buckets/{}", base_url, bucket))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), 404);
+    let body: serde_json::Value = delete.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let exists = storage
+        .head_bucket(bucket)
+        .await
+        .expect("head bucket should succeed");
+    assert!(
+        exists,
+        "expected local bucket to remain when persisted consensus metadata marks it tombstoned"
+    );
+}
+
+#[tokio::test]
 async fn test_console_list_buckets_consensus_index_rejects_persisted_view_mismatch() {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();

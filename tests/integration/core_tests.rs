@@ -4557,6 +4557,75 @@ async fn test_create_bucket_consensus_index_rejects_existing_persisted_bucket_wi
 }
 
 #[tokio::test]
+async fn test_delete_bucket_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect(
+) {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "consensus-delete-missing";
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let delete = s3_request("DELETE", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(delete.status(), 404);
+    let body = delete.text().await.unwrap();
+    assert_eq!(extract_xml_tag(&body, "Code").as_deref(), Some("NoSuchBucket"));
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    assert!(
+        storage.head_bucket(bucket).await.unwrap(),
+        "bucket should remain locally present when consensus metadata marks bucket as missing"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_bucket_consensus_index_rejects_tombstoned_persisted_bucket_without_local_side_effect(
+) {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "consensus-delete-tombstoned";
+    let now_unix_ms = u64::try_from(chrono::Utc::now().timestamp_millis()).map_or(0, |value| value);
+    seed_consensus_metadata_bucket_tombstones(
+        &data_dir,
+        view_id.as_str(),
+        &[BucketMetadataTombstoneState {
+            bucket: bucket.to_string(),
+            deleted_at_unix_ms: now_unix_ms,
+            retain_until_unix_ms: now_unix_ms.saturating_add(60_000),
+        }],
+    );
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let delete = s3_request("DELETE", &format!("{}/{}", base_url, bucket), vec![]).await;
+    assert_eq!(delete.status(), 404);
+    let body = delete.text().await.unwrap();
+    assert_eq!(extract_xml_tag(&body, "Code").as_deref(), Some("NoSuchBucket"));
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    assert!(
+        storage.head_bucket(bucket).await.unwrap(),
+        "bucket should remain locally present when consensus metadata marks bucket tombstoned"
+    );
+}
+
+#[tokio::test]
 async fn test_get_bucket_versioning_consensus_index_uses_persisted_metadata_state() {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();

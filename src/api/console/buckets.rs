@@ -540,6 +540,16 @@ pub(super) async fn delete_bucket_api(
             return err;
         }
     }
+    if use_consensus_bucket_metadata {
+        if let Err(err) = storage::ensure_consensus_index_delete_bucket_preconditions(
+            &state,
+            &topology,
+            bucket.as_str(),
+            "DeleteBucket",
+        ) {
+            return *err;
+        }
+    }
 
     match state.storage.delete_bucket(&bucket).await {
         Ok(true) => {}

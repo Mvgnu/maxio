@@ -422,6 +422,53 @@ pub(super) fn ensure_consensus_index_create_bucket_preconditions(
     }
 }
 
+pub(super) fn ensure_consensus_index_delete_bucket_preconditions(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    operation: &str,
+) -> Result<(), Box<Response>> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+                operation, err
+            ),
+        ))
+    })?;
+
+    match resolve_bucket_presence_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+    ) {
+        Ok(PersistedBucketPresenceReadResolution::Present(_)) => Ok(()),
+        Ok(PersistedBucketPresenceReadResolution::Tombstoned(_))
+        | Ok(PersistedBucketPresenceReadResolution::Missing) => {
+            Err(Box::new(response::error(StatusCode::NOT_FOUND, "Bucket not found")))
+        }
+        Err(PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        }) => Err(Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
+                operation, expected_view_id, persisted_view_id
+            ),
+        ))),
+        Err(err) => Err(Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
+                operation, err
+            ),
+        ))),
+    }
+}
+
 pub(super) fn persist_bucket_metadata_operation(
     state: &AppState,
     topology: &RuntimeTopologySnapshot,
