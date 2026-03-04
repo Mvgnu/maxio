@@ -291,7 +291,7 @@ pub fn authorize_join_request(
                     JoinAuthorizationError::MissingOrMalformedForwardedBy,
                 );
             };
-            let Some(direct_sender) = chain.first() else {
+            let Some(direct_sender) = chain.last() else {
                 return JoinAuthorizationResult::rejected(
                     mode,
                     JoinAuthorizationError::MissingOrMalformedForwardedBy,
@@ -778,6 +778,52 @@ mod tests {
     fn authorize_join_request_rejects_forwarded_sender_node_id_mismatch() {
         let mut headers = valid_join_headers();
         headers.insert(FORWARDED_BY_HEADER, "node-c:9000".parse().unwrap());
+
+        let result = authorize_join_request(
+            &headers,
+            "cluster-main",
+            None,
+            "node-a:9000",
+            100000,
+            DEFAULT_JOIN_MAX_CLOCK_SKEW_MS,
+            None,
+        );
+
+        assert!(!result.authorized);
+        assert_eq!(
+            result.error,
+            Some(JoinAuthorizationError::ForwardedByNodeIdMismatch)
+        );
+    }
+
+    #[test]
+    fn authorize_join_request_accepts_forwarded_multi_hop_when_direct_sender_matches_node_id() {
+        let mut headers = valid_join_headers();
+        headers.insert(
+            FORWARDED_BY_HEADER,
+            "node-c:9000,node-b:9000".parse().unwrap(),
+        );
+
+        let result = authorize_join_request(
+            &headers,
+            "cluster-main",
+            None,
+            "node-a:9000",
+            100000,
+            DEFAULT_JOIN_MAX_CLOCK_SKEW_MS,
+            None,
+        );
+
+        assert!(result.authorized);
+    }
+
+    #[test]
+    fn authorize_join_request_rejects_forwarded_multi_hop_when_only_origin_matches_node_id() {
+        let mut headers = valid_join_headers();
+        headers.insert(
+            FORWARDED_BY_HEADER,
+            "node-b:9000,node-c:9000".parse().unwrap(),
+        );
 
         let result = authorize_join_request(
             &headers,

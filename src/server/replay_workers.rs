@@ -452,23 +452,28 @@ pub fn spawn_pending_metadata_repair_replay_worker(state: AppState) {
         loop {
             interval.tick().await;
             let now_unix_ms = unix_ms_now();
-            match replay_pending_metadata_repairs_once_with_apply_fn(
+            match replay_pending_metadata_repairs_once_with_classified_apply_fn(
                 queue_path.as_path(),
                 now_unix_ms,
                 PENDING_METADATA_REPAIR_REPLAY_BATCH_SIZE,
                 PENDING_METADATA_REPAIR_REPLAY_LEASE_MS,
                 PENDING_METADATA_REPAIR_REPLAY_BACKOFF_BASE_MS,
                 PENDING_METADATA_REPAIR_REPLAY_BACKOFF_MAX_MS,
-                |pending_plan| {
-                    apply_pending_metadata_repair_plan_to_persisted_state(
-                        metadata_state_path.as_path(),
-                        pending_plan,
-                    )
-                    .map(|_| ())
-                    .map_err(|error| error.to_string())
+                |pending_plan| match apply_pending_metadata_repair_plan_to_persisted_state(
+                    metadata_state_path.as_path(),
+                    pending_plan,
+                ) {
+                    Ok(_) => Ok(()),
+                    Err(error @ PendingMetadataRepairApplyError::Execution(_)) => Err(
+                        PendingMetadataRepairApplyFailure::permanent(error.to_string()),
+                    ),
+                    Err(error) => Err(PendingMetadataRepairApplyFailure::transient(
+                        error.to_string(),
+                    )),
                 },
             ) {
                 Ok(outcome) => {
+                    let skipped_plans = outcome.skipped_plans.saturating_add(outcome.dropped_plans);
                     state
                         .pending_metadata_repair_replay_counters
                         .record_success(
@@ -476,7 +481,7 @@ pub fn spawn_pending_metadata_repair_replay_worker(state: AppState) {
                             outcome.leased_plans,
                             outcome.acknowledged_plans,
                             outcome.failed_plans,
-                            outcome.skipped_plans,
+                            skipped_plans,
                         );
                     if outcome.scanned_plans > 0 {
                         tracing::info!(
@@ -484,7 +489,8 @@ pub fn spawn_pending_metadata_repair_replay_worker(state: AppState) {
                             leased_plans = outcome.leased_plans,
                             acknowledged_plans = outcome.acknowledged_plans,
                             failed_plans = outcome.failed_plans,
-                            skipped_plans = outcome.skipped_plans,
+                            dropped_plans = outcome.dropped_plans,
+                            skipped_plans = skipped_plans,
                             "Pending metadata repair replay cycle completed"
                         );
                     }

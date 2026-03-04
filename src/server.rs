@@ -63,12 +63,13 @@ use crate::embedded::ui_handler;
 use crate::membership::{MembershipEngine, MembershipEngineStatus, unix_ms_now};
 use crate::metadata::{
     ClusterMetadataListingStrategy, ClusterMetadataSnapshotAssessment,
+    PendingMetadataRepairApplyError, PendingMetadataRepairApplyFailure,
     PendingMetadataRepairQueueSummary, apply_pending_metadata_repair_plan_to_persisted_state,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
     build_queryable_metadata_index_from_persisted_state, load_persisted_metadata_state,
     pending_metadata_repair_candidates_from_disk,
-    replay_pending_metadata_repairs_once_with_apply_fn,
+    replay_pending_metadata_repairs_once_with_classified_apply_fn,
     summarize_pending_metadata_repair_queue_from_disk,
 };
 use crate::storage::StorageError;

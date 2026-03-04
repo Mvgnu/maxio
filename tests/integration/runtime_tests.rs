@@ -5,7 +5,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use maxio::config::{MembershipProtocol, WriteDurabilityMode};
 use maxio::metadata::{
     ClusterMetadataListingStrategy, MetadataReconcileAction, MetadataRepairPlan,
-    PendingMetadataRepairPlan, enqueue_pending_metadata_repair_plan_persisted,
+    PendingMetadataRepairPlan, PersistedMetadataState,
+    enqueue_pending_metadata_repair_plan_persisted, persist_persisted_metadata_state,
 };
 use maxio::server::AppState;
 use maxio::storage::placement::{
@@ -469,6 +470,40 @@ fn seed_pending_metadata_repair_queue(data_dir: &str) {
     assert!(
         enqueue_outcome.is_ok(),
         "pending metadata repair plan should enqueue: {enqueue_outcome:?}"
+    );
+}
+
+fn seed_pending_metadata_repair_queue_with_stale_target_view(data_dir: &str) {
+    let runtime_dir = Path::new(data_dir).join(".maxio-runtime");
+    let queue_path = runtime_dir.join("pending-metadata-repair-queue.json");
+    let metadata_state_path = runtime_dir.join("cluster-metadata-state.json");
+    persist_persisted_metadata_state(
+        metadata_state_path.as_path(),
+        &PersistedMetadataState {
+            view_id: "persisted-view".to_string(),
+            ..PersistedMetadataState::default()
+        },
+    )
+    .expect("persisted metadata state should be writable");
+    let plan = PendingMetadataRepairPlan::new(
+        "repair-runtime-stale-view-test",
+        1,
+        MetadataRepairPlan {
+            source_view_id: "source-view".to_string(),
+            target_view_id: "target-view".to_string(),
+            actions: vec![MetadataReconcileAction::UpsertBucket {
+                bucket: "photos".to_string(),
+                versioning_enabled: false,
+                lifecycle_enabled: false,
+            }],
+        },
+    )
+    .expect("pending metadata repair plan should be valid");
+    let enqueue_outcome =
+        enqueue_pending_metadata_repair_plan_persisted(queue_path.as_path(), plan);
+    assert!(
+        enqueue_outcome.is_ok(),
+        "pending metadata repair stale-view plan should enqueue: {enqueue_outcome:?}"
     );
 }
 
@@ -1092,6 +1127,81 @@ async fn test_metrics_pending_metadata_repair_replay_counters_increment_in_distr
     assert!(last_cycle > 0.0);
     assert!(last_success > 0.0);
     assert_eq!(last_failure, Some(0.0));
+}
+
+#[tokio::test]
+async fn test_pending_metadata_repair_replay_worker_drops_stale_view_plans_without_retry_backoff() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    seed_pending_metadata_repair_queue_with_stale_target_view(data_dir.as_str());
+    let queue_path = Path::new(data_dir.as_str())
+        .join(".maxio-runtime")
+        .join("pending-metadata-repair-queue.json");
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    config.membership_protocol = MembershipProtocol::StaticBootstrap;
+    let (base_url, _tmp) =
+        start_server_with_config_and_metadata_repair_replay_worker(config, tmp).await;
+
+    let mut queue_drained = false;
+    for _ in 0..130 {
+        let queue_is_empty = tokio::fs::read_to_string(queue_path.as_path())
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|value| value["plans"].as_array().map(|plans| plans.is_empty()))
+            .unwrap_or(false);
+        if queue_is_empty {
+            queue_drained = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        queue_drained,
+        "metadata replay worker should drop stale-view terminal plans from queue"
+    );
+
+    let mut observed = None;
+    for _ in 0..130 {
+        let response = client()
+            .get(format!("{}/metrics", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+        let body = response.text().await.unwrap();
+        let skipped_plans = metric_value(
+            &body,
+            "maxio_pending_metadata_repair_replay_skipped_plans_total",
+        );
+        let failed_plans = metric_value(
+            &body,
+            "maxio_pending_metadata_repair_replay_failed_plans_total",
+        );
+        let cycles_failed = metric_value(
+            &body,
+            "maxio_pending_metadata_repair_replay_cycles_failed_total",
+        );
+
+        if let (Some(skipped), Some(failed), Some(cycles_failed_total)) =
+            (skipped_plans, failed_plans, cycles_failed)
+        {
+            if skipped >= 1.0 {
+                observed = Some((skipped, failed, cycles_failed_total));
+                break;
+            }
+        }
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+
+    let (skipped_plans, failed_plans, cycles_failed) =
+        observed.expect("metadata replay metrics should reflect dropped terminal-plan execution");
+    assert!(skipped_plans >= 1.0);
+    assert_eq!(failed_plans, 0.0);
+    assert_eq!(cycles_failed, 0.0);
 }
 
 #[tokio::test]
@@ -2646,8 +2756,8 @@ async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_c
 }
 
 #[tokio::test]
-async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready(
-) {
+async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready()
+ {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
@@ -2976,6 +3086,50 @@ async fn test_cluster_join_endpoint_rejects_forwarded_sender_node_id_mismatch() 
         .header(
             "x-maxio-join-nonce",
             "join-apply-forwarded-node-id-mismatch",
+        )
+        .header("x-maxio-internal-auth-token", "shared-secret")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 403);
+    let rejected_body: serde_json::Value = rejected.json().await.unwrap();
+    assert_eq!(rejected_body["status"], "rejected");
+    assert_eq!(rejected_body["reason"], "unauthorized");
+    assert_eq!(rejected_body["authReason"], "forwarded_by_node_id_mismatch");
+    assert_eq!(rejected_body["updated"], false);
+}
+
+#[tokio::test]
+async fn test_cluster_join_endpoint_rejects_multi_hop_forwarded_origin_spoofing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["127.0.0.1:30581".to_string(), "127.0.0.1:30582".to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let initial_health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(initial_health.status(), 200);
+    let initial_health_body: serde_json::Value = initial_health.json().await.unwrap();
+    let cluster_id = initial_health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present")
+        .to_string();
+
+    let rejected = client()
+        .post(format!("{}/internal/cluster/join", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id.as_str())
+        .header("x-maxio-join-node-id", "127.0.0.1:30581")
+        .header("x-maxio-forwarded-by", "127.0.0.1:30581,127.0.0.1:30582")
+        .header("x-maxio-join-unix-ms", unix_ms_now_string())
+        .header(
+            "x-maxio-join-nonce",
+            "join-apply-forwarded-origin-spoofed-by-multihop",
         )
         .header("x-maxio-internal-auth-token", "shared-secret")
         .json(&json!({}))
@@ -4188,8 +4342,8 @@ async fn test_cluster_membership_update_endpoint_metrics_track_status_and_reason
 }
 
 #[tokio::test]
-async fn test_cluster_join_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready(
-) {
+async fn test_cluster_join_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready()
+ {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
@@ -4299,8 +4453,8 @@ async fn test_cluster_membership_update_endpoint_returns_service_unavailable_whe
 }
 
 #[tokio::test]
-async fn test_cluster_membership_update_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready(
-) {
+async fn test_cluster_membership_update_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready()
+ {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
@@ -4327,7 +4481,10 @@ async fn test_cluster_membership_update_endpoint_returns_service_unavailable_whe
         .header("x-maxio-join-cluster-id", cluster_id)
         .header("x-maxio-join-node-id", "peer-node-membership-update")
         .header("x-maxio-join-unix-ms", unix_ms_now_string())
-        .header("x-maxio-join-nonce", "membership-update-transport-not-ready")
+        .header(
+            "x-maxio-join-nonce",
+            "membership-update-transport-not-ready",
+        )
         .json(&json!({
             "clusterId": cluster_id,
             "clusterPeers": ["127.0.0.1:30442"],
@@ -4512,6 +4669,52 @@ async fn test_cluster_membership_update_endpoint_rejects_forwarded_sender_node_i
         .json(&json!({
             "clusterId": cluster_id,
             "clusterPeers": ["127.0.0.1:30472"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 403);
+    let rejected_body: serde_json::Value = rejected.json().await.unwrap();
+    assert_eq!(rejected_body["status"], "rejected");
+    assert_eq!(rejected_body["reason"], "unauthorized");
+    assert_eq!(rejected_body["authReason"], "forwarded_by_node_id_mismatch");
+    assert_eq!(rejected_body["updated"], false);
+}
+
+#[tokio::test]
+async fn test_cluster_membership_update_endpoint_rejects_multi_hop_forwarded_origin_spoofing() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["127.0.0.1:30481".to_string(), "127.0.0.1:30482".to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    let cluster_id = health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present");
+
+    let rejected = client()
+        .post(format!("{}/internal/cluster/membership/update", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id)
+        .header("x-maxio-join-node-id", "127.0.0.1:30481")
+        .header("x-maxio-forwarded-by", "127.0.0.1:30481,127.0.0.1:30482")
+        .header("x-maxio-join-unix-ms", unix_ms_now_string())
+        .header(
+            "x-maxio-join-nonce",
+            "membership-update-forwarded-origin-spoofed-by-multihop",
+        )
+        .header("x-maxio-internal-auth-token", "shared-secret")
+        .json(&json!({
+            "clusterId": cluster_id,
+            "clusterPeers": ["127.0.0.1:30481"],
         }))
         .send()
         .await

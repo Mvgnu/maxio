@@ -16,10 +16,10 @@ use super::state::{
     apply_object_version_metadata_operation,
 };
 
-mod queue;
 mod persisted_state;
-pub use queue::*;
+mod queue;
 pub use persisted_state::*;
+pub use queue::*;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum MetadataReconcileAction {
@@ -180,7 +180,37 @@ pub struct PendingMetadataRepairReplayCycleOutcome {
     pub leased_plans: usize,
     pub acknowledged_plans: usize,
     pub failed_plans: usize,
+    pub dropped_plans: usize,
     pub skipped_plans: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PendingMetadataRepairApplyFailure {
+    Transient(String),
+    Permanent(String),
+}
+
+impl PendingMetadataRepairApplyFailure {
+    pub fn transient(error: impl Into<String>) -> Self {
+        Self::Transient(error.into())
+    }
+
+    pub fn permanent(error: impl Into<String>) -> Self {
+        Self::Permanent(error.into())
+    }
+
+    pub fn message(&self) -> Option<&str> {
+        match self {
+            Self::Transient(error) | Self::Permanent(error) => {
+                let value = error.trim();
+                if value.is_empty() { None } else { Some(value) }
+            }
+        }
+    }
+
+    pub fn is_permanent(&self) -> bool {
+        matches!(self, Self::Permanent(_))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1061,12 +1091,12 @@ mod tests {
         MetadataReconcileAction, MetadataRepairExecutionError, MetadataRepairInputs,
         MetadataRepairPlan, MetadataRepairPlanSummary, MetadataRepairPlanValidationError,
         PendingMetadataRepairAcknowledgeOutcome, PendingMetadataRepairApplyError,
-        PendingMetadataRepairEnqueueOutcome, PendingMetadataRepairFailureWithBackoffOutcome,
-        PendingMetadataRepairLeaseOutcome, PendingMetadataRepairPlan, PendingMetadataRepairQueue,
-        PendingMetadataRepairQueueSummary, PendingMetadataRepairReplayCycleOutcome,
-        PersistedBucketMetadataOperationError, PersistedBucketMetadataReadResolution,
-        PersistedBucketPresenceReadResolution, PersistedMetadataQueryError,
-        PersistedMetadataQueryableStateError, PersistedMetadataState,
+        PendingMetadataRepairApplyFailure, PendingMetadataRepairEnqueueOutcome,
+        PendingMetadataRepairFailureWithBackoffOutcome, PendingMetadataRepairLeaseOutcome,
+        PendingMetadataRepairPlan, PendingMetadataRepairQueue, PendingMetadataRepairQueueSummary,
+        PendingMetadataRepairReplayCycleOutcome, PersistedBucketMetadataOperationError,
+        PersistedBucketMetadataReadResolution, PersistedBucketPresenceReadResolution,
+        PersistedMetadataQueryError, PersistedMetadataQueryableStateError, PersistedMetadataState,
         PersistedObjectMetadataOperationError, PersistedObjectMetadataReadResolution,
         PersistedObjectVersionMetadataOperationError, PersistedObjectVersionMetadataReadResolution,
         acknowledge_pending_metadata_repair_plan,
@@ -1083,6 +1113,7 @@ mod tests {
         persist_pending_metadata_repair_queue, persist_persisted_metadata_state,
         record_pending_metadata_repair_failure_with_backoff,
         replay_pending_metadata_repairs_once_with_apply_fn,
+        replay_pending_metadata_repairs_once_with_classified_apply_fn,
         resolve_bucket_metadata_from_persisted_state, resolve_bucket_presence_from_persisted_state,
         resolve_object_metadata_from_persisted_state,
         resolve_object_version_metadata_from_persisted_state, summarize_metadata_repair_plan,
@@ -2442,6 +2473,7 @@ mod tests {
                 leased_plans: 1,
                 acknowledged_plans: 1,
                 failed_plans: 0,
+                dropped_plans: 0,
                 skipped_plans: 0,
             }
         );
@@ -2493,6 +2525,7 @@ mod tests {
                 leased_plans: 1,
                 acknowledged_plans: 0,
                 failed_plans: 1,
+                dropped_plans: 0,
                 skipped_plans: 0,
             }
         );
@@ -2504,6 +2537,58 @@ mod tests {
         assert_eq!(plan.attempts, 1);
         assert_eq!(plan.last_error.as_deref(), Some("transient-failure"));
         assert_eq!(plan.next_retry_at_unix_ms, Some(now_unix_ms + 1_500));
+    }
+
+    #[test]
+    fn replay_pending_metadata_repairs_once_drops_permanent_apply_failures() {
+        let temp = TempDir::new().expect("temp dir");
+        let queue_path = temp.path().join("pending-metadata-repair-queue.json");
+        let pending = PendingMetadataRepairPlan::new(
+            "repair-permanent",
+            1_000,
+            MetadataRepairPlan {
+                source_view_id: "source-view".to_string(),
+                target_view_id: "target-view".to_string(),
+                actions: vec![MetadataReconcileAction::UpsertBucket {
+                    bucket: "photos".to_string(),
+                    versioning_enabled: false,
+                    lifecycle_enabled: false,
+                }],
+            },
+        )
+        .expect("valid pending plan");
+        let mut queue = PendingMetadataRepairQueue::default();
+        queue.plans.push(pending);
+        persist_pending_metadata_repair_queue(&queue_path, &queue).expect("persist queue");
+
+        let outcome = replay_pending_metadata_repairs_once_with_classified_apply_fn(
+            &queue_path,
+            5_000,
+            16,
+            250,
+            1_500,
+            30_000,
+            |_plan| {
+                Err(PendingMetadataRepairApplyFailure::permanent(
+                    "source_view_mismatch",
+                ))
+            },
+        )
+        .expect("replay cycle");
+
+        assert_eq!(
+            outcome,
+            PendingMetadataRepairReplayCycleOutcome {
+                scanned_plans: 1,
+                leased_plans: 1,
+                acknowledged_plans: 0,
+                failed_plans: 0,
+                dropped_plans: 1,
+                skipped_plans: 0,
+            }
+        );
+        let reloaded = load_pending_metadata_repair_queue(&queue_path).expect("reload queue");
+        assert!(reloaded.plans.is_empty());
     }
 
     #[test]

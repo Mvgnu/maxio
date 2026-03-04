@@ -226,6 +226,29 @@ pub fn replay_pending_metadata_repairs_once_with_apply_fn<F>(
 where
     F: FnMut(&PendingMetadataRepairPlan) -> Result<(), String>,
 {
+    replay_pending_metadata_repairs_once_with_classified_apply_fn(
+        path,
+        now_unix_ms,
+        max_candidates,
+        lease_ms,
+        backoff_base_ms,
+        backoff_max_ms,
+        |pending_plan| apply_fn(pending_plan).map_err(PendingMetadataRepairApplyFailure::transient),
+    )
+}
+
+pub fn replay_pending_metadata_repairs_once_with_classified_apply_fn<F>(
+    path: &Path,
+    now_unix_ms: u64,
+    max_candidates: usize,
+    lease_ms: u64,
+    backoff_base_ms: u64,
+    backoff_max_ms: u64,
+    mut apply_fn: F,
+) -> std::io::Result<PendingMetadataRepairReplayCycleOutcome>
+where
+    F: FnMut(&PendingMetadataRepairPlan) -> Result<(), PendingMetadataRepairApplyFailure>,
+{
     if max_candidates == 0 {
         return Ok(PendingMetadataRepairReplayCycleOutcome::default());
     }
@@ -272,12 +295,24 @@ where
                     outcome.skipped_plans = outcome.skipped_plans.saturating_add(1);
                 }
             }
+            Err(error) if error.is_permanent() => {
+                let acknowledge_outcome =
+                    acknowledge_pending_metadata_repair_plan_persisted(path, &candidate.repair_id)?;
+                if matches!(
+                    acknowledge_outcome,
+                    PendingMetadataRepairAcknowledgeOutcome::Acknowledged
+                ) {
+                    outcome.dropped_plans = outcome.dropped_plans.saturating_add(1);
+                } else {
+                    outcome.skipped_plans = outcome.skipped_plans.saturating_add(1);
+                }
+            }
             Err(error) => {
                 let failure_outcome =
                     record_pending_metadata_repair_failure_with_backoff_persisted(
                         path,
                         candidate.repair_id.as_str(),
-                        Some(error.as_str()),
+                        error.message(),
                         now_unix_ms,
                         backoff_base_ms,
                         backoff_max_ms,
