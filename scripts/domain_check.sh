@@ -56,6 +56,7 @@ run_domain() {
         runtime_tests::test_healthz_reports_degraded_when_consensus_metadata_state_is_not_queryable \
         runtime_tests::test_healthz_and_metrics_report_request_time_aggregation_metadata_listing_strategy_as_unready_when_distributed \
         runtime_tests::test_cluster_join_authorize_endpoint_accepts_and_rejects_nonce_replay \
+        runtime_tests::test_cluster_join_authorize_endpoint_persists_nonce_replay_guard_across_restart \
         runtime_tests::test_cluster_join_authorize_endpoint_rejects_missing_auth_token_in_shared_mode \
         runtime_tests::test_cluster_join_authorize_endpoint_rejects_invalid_peer_node_identity \
         runtime_tests::test_cluster_join_authorize_endpoint_returns_service_unavailable_for_invalid_local_node_identity_configuration \
