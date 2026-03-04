@@ -128,6 +128,8 @@ const JOIN_AUTHORIZE_REASON_DISTRIBUTED_MODE_DISABLED: &str = "distributed_mode_
 const JOIN_AUTHORIZE_REASON_MEMBERSHIP_ENGINE_NOT_READY: &str = "membership_engine_not_ready";
 const JOIN_AUTHORIZE_REASON_CLUSTER_AUTH_TOKEN_NOT_CONFIGURED: &str =
     "cluster_auth_token_not_configured";
+const JOIN_AUTHORIZE_REASON_CLUSTER_PEER_TRANSPORT_NOT_READY: &str =
+    "cluster_peer_transport_not_ready";
 const MEMBERSHIP_UPDATE_REASON_INVALID_PAYLOAD: &str = "invalid_payload";
 const MEMBERSHIP_UPDATE_REASON_CLUSTER_ID_MISMATCH: &str = "cluster_id_mismatch";
 const MEMBERSHIP_UPDATE_REASON_PRECONDITION_FAILED: &str = "precondition_failed";
@@ -3174,8 +3176,11 @@ mod tests {
         );
         let consensus_readiness = consensus_snapshot.readiness_assessment;
         assert!(consensus_readiness.cluster_authoritative);
-        assert!(consensus_readiness.ready);
-        assert_eq!(consensus_readiness.gap, None);
+        assert!(!consensus_readiness.ready);
+        assert_eq!(
+            consensus_readiness.gap,
+            Some(crate::metadata::ClusterMetadataReadinessGap::MissingExpectedNodes)
+        );
     }
 
     #[test]

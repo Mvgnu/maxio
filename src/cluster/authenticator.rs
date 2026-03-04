@@ -240,7 +240,12 @@ pub fn strip_untrusted_internal_forwarding_headers(
     local_node_id: &str,
     cluster_peers: &[String],
 ) -> PeerAuthenticationResult {
-    if !contains_internal_forwarding_protocol_headers(headers) {
+    let has_trust_scoped_internal_headers = contains_internal_forwarding_protocol_headers(headers);
+    let has_legacy_internal_headers = contains_legacy_internal_forwarding_headers(headers);
+    let enforce_legacy_header_trust_boundary =
+        cluster_auth_token.is_some() && has_legacy_internal_headers;
+
+    if !has_trust_scoped_internal_headers && !enforce_legacy_header_trust_boundary {
         let mode = if cluster_auth_token.is_some() {
             PeerAuthMode::SharedTokenAllowlist
         } else {
@@ -1142,7 +1147,31 @@ mod tests {
     }
 
     #[test]
-    fn strip_untrusted_internal_forwarding_headers_ignores_legacy_headers_without_trust_markers() {
+    fn strip_untrusted_internal_forwarding_headers_ignores_legacy_headers_without_trust_markers_in_compatibility_mode(
+    ) {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-maxio-forwarded-write-epoch", "7".parse().unwrap());
+        headers.insert(
+            "x-maxio-forwarded-write-idempotency-key",
+            "legacy-key".parse().unwrap(),
+        );
+
+        let result = strip_untrusted_internal_forwarding_headers(
+            &mut headers,
+            None,
+            "node-a:9000",
+            &[String::from("node-b:9000")],
+        );
+
+        assert!(result.trusted);
+        assert_eq!(result.sender, None);
+        assert!(!contains_internal_forwarding_protocol_headers(&headers));
+        assert!(contains_legacy_internal_forwarding_headers(&headers));
+    }
+
+    #[test]
+    fn strip_untrusted_internal_forwarding_headers_rejects_legacy_headers_without_trust_markers_in_shared_token_mode(
+    ) {
         let mut headers = HeaderMap::new();
         headers.insert("x-maxio-forwarded-write-epoch", "7".parse().unwrap());
         headers.insert(
@@ -1157,10 +1186,10 @@ mod tests {
             &[String::from("node-b:9000")],
         );
 
-        assert!(result.trusted);
-        assert_eq!(result.sender, None);
+        assert!(!result.trusted);
+        assert_eq!(result.reject_reason(), "missing_or_malformed_forwarded_by");
         assert!(!contains_internal_forwarding_protocol_headers(&headers));
-        assert!(contains_legacy_internal_forwarding_headers(&headers));
+        assert!(!contains_legacy_internal_forwarding_headers(&headers));
     }
 
     #[test]

@@ -645,11 +645,9 @@ pub fn build_cluster_metadata_expected_nodes(
     membership_nodes: &[String],
 ) -> Vec<String> {
     match strategy {
-        ClusterMetadataListingStrategy::LocalNodeOnly
-        | ClusterMetadataListingStrategy::ConsensusIndex => {
-            normalize_node_ids(std::iter::once(local_node_id))
-        }
-        ClusterMetadataListingStrategy::RequestTimeAggregation
+        ClusterMetadataListingStrategy::LocalNodeOnly => normalize_node_ids(std::iter::once(local_node_id)),
+        ClusterMetadataListingStrategy::ConsensusIndex
+        | ClusterMetadataListingStrategy::RequestTimeAggregation
         | ClusterMetadataListingStrategy::FullReplication => normalize_node_ids(
             std::iter::once(local_node_id).chain(membership_nodes.iter().map(String::as_str)),
         ),
@@ -1139,8 +1137,8 @@ fn build_cluster_metadata_readiness_assessment(
         ClusterMetadataListingStrategy::LocalNodeOnly => {
             Some(ClusterMetadataReadinessGap::StrategyNotClusterAuthoritative)
         }
-        ClusterMetadataListingStrategy::ConsensusIndex => None,
-        ClusterMetadataListingStrategy::RequestTimeAggregation
+        ClusterMetadataListingStrategy::ConsensusIndex
+        | ClusterMetadataListingStrategy::RequestTimeAggregation
         | ClusterMetadataListingStrategy::FullReplication => {
             coverage_gap.map(|coverage_gap| match coverage_gap {
                 ClusterMetadataCoverageGap::MissingExpectedNodes => {
@@ -2641,13 +2639,16 @@ mod tests {
     }
 
     #[test]
-    fn build_cluster_metadata_expected_nodes_uses_local_node_only_for_consensus_strategy() {
+    fn build_cluster_metadata_expected_nodes_uses_cluster_members_for_consensus_strategy() {
         let expected = build_cluster_metadata_expected_nodes(
             ClusterMetadataListingStrategy::ConsensusIndex,
             "node-a:9000",
             &["node-b:9000".to_string(), "node-c:9000".to_string()],
         );
-        assert_eq!(expected, vec!["node-a:9000".to_string()]);
+        assert_eq!(expected.len(), 3);
+        assert!(expected.contains(&"node-a:9000".to_string()));
+        assert!(expected.contains(&"node-b:9000".to_string()));
+        assert!(expected.contains(&"node-c:9000".to_string()));
     }
 
     #[test]
@@ -3503,7 +3504,7 @@ mod tests {
     }
 
     #[test]
-    fn assess_cluster_metadata_readiness_marks_consensus_index_ready_with_partial_coverage() {
+    fn assess_cluster_metadata_readiness_requires_complete_coverage_for_consensus_index() {
         let expected = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
         let responded = vec!["node-a:9000".to_string()];
         let coverage = build_cluster_metadata_coverage_from_responses(
@@ -3516,9 +3517,12 @@ mod tests {
             ClusterMetadataListingStrategy::ConsensusIndex,
             &coverage,
         );
-        assert!(assessment.ready);
+        assert!(!assessment.ready);
         assert!(assessment.cluster_authoritative);
-        assert_eq!(assessment.gap, None);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterMetadataReadinessGap::MissingExpectedNodes)
+        );
         assert_eq!(
             assessment.coverage_gap,
             Some(ClusterMetadataCoverageGap::MissingExpectedNodes)

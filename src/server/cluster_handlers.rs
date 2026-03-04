@@ -1,5 +1,15 @@
 use super::*;
 
+fn cluster_peer_transport_mtls_not_ready(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+) -> bool {
+    let auth_status = probe_cluster_peer_auth_status(state.config.as_ref(), topology);
+    auth_status.configured
+        && auth_status.transport_identity == "mtls-path"
+        && !auth_status.transport_ready
+}
+
 pub(super) async fn cluster_join_authorize_handler(
     State(state): State<AppState>,
     headers: HeaderMap,
@@ -35,6 +45,15 @@ pub(super) async fn cluster_join_authorize_handler(
                 "misconfigured",
                 default_mode.to_string(),
                 JOIN_AUTHORIZE_REASON_CLUSTER_AUTH_TOKEN_NOT_CONFIGURED.to_string(),
+                None,
+                false,
+            )
+        } else if cluster_peer_transport_mtls_not_ready(&state, &topology) {
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "misconfigured",
+                default_mode.to_string(),
+                JOIN_AUTHORIZE_REASON_CLUSTER_PEER_TRANSPORT_NOT_READY.to_string(),
                 None,
                 false,
             )
@@ -148,6 +167,22 @@ pub(super) async fn cluster_join_handler(
         let payload = ClusterMembershipUpdatePayload {
             status: "misconfigured".to_string(),
             reason: JOIN_AUTHORIZE_REASON_CLUSTER_AUTH_TOKEN_NOT_CONFIGURED.to_string(),
+            auth_reason: None,
+            mode: default_mode.to_string(),
+            updated: false,
+            cluster_id: topology.cluster_id,
+            local_node_id: topology.node_id,
+            cluster_peers: topology.cluster_peers,
+            membership_view_id: topology.membership_view_id,
+            placement_epoch: topology.placement_epoch,
+            membership_last_update_unix_ms: topology.membership_status.last_update_unix_ms,
+        };
+        return cluster_join_response(&state, StatusCode::SERVICE_UNAVAILABLE, payload);
+    }
+    if cluster_peer_transport_mtls_not_ready(&state, &topology) {
+        let payload = ClusterMembershipUpdatePayload {
+            status: "misconfigured".to_string(),
+            reason: JOIN_AUTHORIZE_REASON_CLUSTER_PEER_TRANSPORT_NOT_READY.to_string(),
             auth_reason: None,
             mode: default_mode.to_string(),
             updated: false,
@@ -442,6 +477,22 @@ pub(super) async fn cluster_membership_update_handler(
         let payload = ClusterMembershipUpdatePayload {
             status: "misconfigured".to_string(),
             reason: JOIN_AUTHORIZE_REASON_CLUSTER_AUTH_TOKEN_NOT_CONFIGURED.to_string(),
+            auth_reason: None,
+            mode: default_mode.to_string(),
+            updated: false,
+            cluster_id: topology.cluster_id,
+            local_node_id: topology.node_id,
+            cluster_peers: topology.cluster_peers,
+            membership_view_id: topology.membership_view_id,
+            placement_epoch: topology.placement_epoch,
+            membership_last_update_unix_ms: topology.membership_status.last_update_unix_ms,
+        };
+        return membership_update_response(&state, StatusCode::SERVICE_UNAVAILABLE, payload);
+    }
+    if cluster_peer_transport_mtls_not_ready(&state, &topology) {
+        let payload = ClusterMembershipUpdatePayload {
+            status: "misconfigured".to_string(),
+            reason: JOIN_AUTHORIZE_REASON_CLUSTER_PEER_TRANSPORT_NOT_READY.to_string(),
             auth_reason: None,
             mode: default_mode.to_string(),
             updated: false,

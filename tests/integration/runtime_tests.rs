@@ -2646,6 +2646,47 @@ async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_c
 }
 
 #[tokio::test]
+async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready(
+) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["127.0.0.1:30431".to_string()];
+    config.cluster_peer_tls_cert_path = Some("/tmp/maxio-missing-cert.pem".to_string());
+    config.cluster_peer_tls_key_path = Some("/tmp/maxio-missing-key.pem".to_string());
+    config.cluster_peer_tls_ca_path = Some("/tmp/maxio-missing-ca.pem".to_string());
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    let cluster_id = health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present");
+
+    let rejected = client()
+        .post(format!("{}/internal/cluster/join/authorize", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id)
+        .header("x-maxio-join-node-id", "peer-node-static-bootstrap")
+        .header("x-maxio-join-unix-ms", unix_ms_now_string())
+        .header("x-maxio-join-nonce", "join-probe-transport-not-ready")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 503);
+    let rejected_body: serde_json::Value = rejected.json().await.unwrap();
+    assert_eq!(rejected_body["authorized"], false);
+    assert_eq!(rejected_body["status"], "misconfigured");
+    assert_eq!(rejected_body["mode"], "shared_token");
+    assert_eq!(rejected_body["reason"], "cluster_peer_transport_not_ready");
+}
+
+#[tokio::test]
 async fn test_cluster_join_endpoint_applies_membership_for_authorized_peer() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
@@ -4147,6 +4188,50 @@ async fn test_cluster_membership_update_endpoint_metrics_track_status_and_reason
 }
 
 #[tokio::test]
+async fn test_cluster_join_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready(
+) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["127.0.0.1:30541".to_string()];
+    config.cluster_peer_tls_cert_path = Some("/tmp/maxio-missing-cert.pem".to_string());
+    config.cluster_peer_tls_key_path = Some("/tmp/maxio-missing-key.pem".to_string());
+    config.cluster_peer_tls_ca_path = Some("/tmp/maxio-missing-ca.pem".to_string());
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    let cluster_id = health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present")
+        .to_string();
+
+    let response = client()
+        .post(format!("{}/internal/cluster/join", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id.as_str())
+        .header("x-maxio-join-node-id", "127.0.0.1:30541")
+        .header("x-maxio-join-unix-ms", unix_ms_now_string())
+        .header("x-maxio-join-nonce", "join-transport-not-ready")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 503);
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["status"], "misconfigured");
+    assert_eq!(body["reason"], "cluster_peer_transport_not_ready");
+    assert_eq!(body["authReason"], serde_json::Value::Null);
+    assert_eq!(body["mode"], "shared_token");
+    assert_eq!(body["updated"], false);
+}
+
+#[tokio::test]
 async fn test_cluster_membership_update_endpoint_returns_service_unavailable_when_membership_engine_not_ready()
  {
     let tmp = tempfile::TempDir::new().unwrap();
@@ -4211,6 +4296,52 @@ async fn test_cluster_membership_update_endpoint_returns_service_unavailable_whe
         ),
         Some(1.0)
     );
+}
+
+#[tokio::test]
+async fn test_cluster_membership_update_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready(
+) {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["127.0.0.1:30441".to_string()];
+    config.cluster_peer_tls_cert_path = Some("/tmp/maxio-missing-cert.pem".to_string());
+    config.cluster_peer_tls_key_path = Some("/tmp/maxio-missing-key.pem".to_string());
+    config.cluster_peer_tls_ca_path = Some("/tmp/maxio-missing-ca.pem".to_string());
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    let cluster_id = health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present");
+
+    let rejected = client()
+        .post(format!("{}/internal/cluster/membership/update", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id)
+        .header("x-maxio-join-node-id", "peer-node-membership-update")
+        .header("x-maxio-join-unix-ms", unix_ms_now_string())
+        .header("x-maxio-join-nonce", "membership-update-transport-not-ready")
+        .json(&json!({
+            "clusterId": cluster_id,
+            "clusterPeers": ["127.0.0.1:30442"],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 503);
+    let rejected_body: serde_json::Value = rejected.json().await.unwrap();
+    assert_eq!(rejected_body["status"], "misconfigured");
+    assert_eq!(rejected_body["reason"], "cluster_peer_transport_not_ready");
+    assert_eq!(rejected_body["authReason"], serde_json::Value::Null);
+    assert_eq!(rejected_body["mode"], "shared_token");
+    assert_eq!(rejected_body["updated"], false);
 }
 
 #[tokio::test]
@@ -4568,7 +4699,8 @@ async fn test_healthz_reports_degraded_when_consensus_metadata_state_is_not_quer
     assert_eq!(health_body["ok"], false);
     assert_eq!(health_body["status"], "degraded");
     assert_eq!(health_body["metadataListingStrategy"], "consensus-index");
-    assert_eq!(health_body["checks"]["metadataListReady"], true);
+    assert_eq!(health_body["checks"]["metadataListReady"], false);
+    assert_eq!(health_body["metadataListingGap"], "missing-expected-nodes");
     assert_eq!(health_body["checks"]["metadataStateQueryable"], false);
     assert_eq!(health_body["metadataStateViewId"], "view-consensus");
     assert_eq!(health_body["metadataStateBucketRows"], 1);
