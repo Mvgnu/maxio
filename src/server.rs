@@ -2117,28 +2117,14 @@ fn spawn_membership_update_propagation(
         .await;
         for result in results {
             if let Some(failure) = result.failure {
-                if failure.retryable {
-                    if let Err(queue_error) = record_pending_membership_propagation_failure(
-                        config.data_dir.as_str(),
-                        result.peer.as_str(),
-                        &request,
-                        Some(failure.message.as_str()),
-                    )
-                    .await
-                    {
-                        tracing::warn!(
-                            peer = result.peer.as_str(),
-                            error = ?queue_error,
-                            "Failed to persist pending membership propagation operation"
-                        );
-                    }
-                } else {
-                    tracing::warn!(
-                        peer = result.peer.as_str(),
-                        error = failure.message.as_str(),
-                        "Skipping persistence of terminal membership propagation failure"
-                    );
-                }
+                persist_membership_propagation_failure_if_retryable(
+                    config.as_ref(),
+                    result.peer.as_str(),
+                    &request,
+                    &failure,
+                    "membership propagation",
+                )
+                .await;
             }
         }
     });
@@ -2202,9 +2188,51 @@ fn spawn_gossip_stale_peer_reconciliation(
                     error = error.message.as_str(),
                     "Gossip stale-peer reconciliation update failed"
                 );
+                persist_membership_propagation_failure_if_retryable(
+                    config.as_ref(),
+                    target.peer.as_str(),
+                    &request,
+                    &error,
+                    "gossip stale-peer reconciliation",
+                )
+                .await;
             }
         }
     });
+}
+
+async fn persist_membership_propagation_failure_if_retryable(
+    config: &Config,
+    peer: &str,
+    request: &ClusterMembershipUpdateRequest,
+    failure: &MembershipPropagationFailure,
+    context: &str,
+) {
+    if !failure.retryable {
+        tracing::warn!(
+            peer,
+            error = failure.message.as_str(),
+            "Skipping persistence of terminal {} failure",
+            context
+        );
+        return;
+    }
+
+    if let Err(queue_error) = record_pending_membership_propagation_failure(
+        config.data_dir.as_str(),
+        peer,
+        request,
+        Some(failure.message.as_str()),
+    )
+    .await
+    {
+        tracing::warn!(
+            peer,
+            error = ?queue_error,
+            "Failed to persist pending {} operation",
+            context
+        );
+    }
 }
 
 fn membership_propagation_target_peers(
@@ -5326,5 +5354,69 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0], concurrent_acked_peer_update);
         assert_eq!(merged[1], concurrent_failed_peer_update);
+    }
+
+    #[tokio::test]
+    async fn persist_membership_propagation_failure_if_retryable_persists_retryable_failure() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let mut config = test_config();
+        config.data_dir = temp.path().to_string_lossy().to_string();
+        let request = ClusterMembershipUpdateRequest {
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            expected_membership_view_id: Some("view-1".to_string()),
+            expected_placement_epoch: Some(7),
+        };
+        let failure = MembershipPropagationFailure::retryable("transport failure".to_string());
+
+        persist_membership_propagation_failure_if_retryable(
+            &config,
+            "node-b.internal:9000",
+            &request,
+            &failure,
+            "gossip stale-peer reconciliation",
+        )
+        .await;
+
+        let queue_path = pending_membership_propagation_queue_path(config.data_dir.as_str());
+        let queue = load_pending_membership_propagation_queue(queue_path.as_path())
+            .await
+            .expect("queue should load");
+        assert_eq!(queue.operations.len(), 1);
+        let persisted = &queue.operations[0];
+        assert_eq!(persisted.peer, "node-b.internal:9000");
+        assert_eq!(persisted.request, request);
+        assert_eq!(persisted.attempts, 1);
+        assert_eq!(persisted.last_error.as_deref(), Some("transport failure"));
+        assert!(persisted.next_retry_at_unix_ms.is_some());
+    }
+
+    #[tokio::test]
+    async fn persist_membership_propagation_failure_if_retryable_skips_terminal_failure() {
+        let temp = tempfile::tempdir().expect("temp dir should create");
+        let mut config = test_config();
+        config.data_dir = temp.path().to_string_lossy().to_string();
+        let request = ClusterMembershipUpdateRequest {
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            expected_membership_view_id: Some("view-1".to_string()),
+            expected_placement_epoch: Some(7),
+        };
+        let failure = MembershipPropagationFailure::terminal("rejected".to_string());
+
+        persist_membership_propagation_failure_if_retryable(
+            &config,
+            "node-b.internal:9000",
+            &request,
+            &failure,
+            "gossip stale-peer reconciliation",
+        )
+        .await;
+
+        let queue_path = pending_membership_propagation_queue_path(config.data_dir.as_str());
+        let queue = load_pending_membership_propagation_queue(queue_path.as_path())
+            .await
+            .expect("queue should load");
+        assert!(queue.operations.is_empty());
     }
 }
