@@ -27,6 +27,7 @@ struct PeerHealthStubState {
     membership_view_id: String,
     cluster_id: Option<String>,
     cluster_peers: Vec<String>,
+    placement_epoch: Option<u64>,
 }
 
 async fn peer_healthz_handler(
@@ -38,6 +39,7 @@ async fn peer_healthz_handler(
         "membershipViewId": state.membership_view_id,
         "clusterId": state.cluster_id,
         "clusterPeers": state.cluster_peers,
+        "placementEpoch": state.placement_epoch,
     }))
 }
 
@@ -56,6 +58,7 @@ async fn start_peer_healthz_stub_with_snapshot(
             membership_view_id: membership_view_id.to_string(),
             cluster_id,
             cluster_peers,
+            placement_epoch: None,
         });
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
@@ -86,6 +89,7 @@ async fn start_peer_healthz_stub_with_matching_single_peer_view(node_id: &str) -
             membership_view_id,
             cluster_id: None,
             cluster_peers: Vec::new(),
+            placement_epoch: None,
         });
     tokio::spawn(async move {
         axum::serve(listener, app.into_make_service())
@@ -115,6 +119,7 @@ async fn start_peer_healthz_stub_with_discovery_snapshot(
             membership_view_id: membership_view_id.to_string(),
             cluster_id: Some(cluster_id),
             cluster_peers,
+            placement_epoch: None,
         });
     tokio::spawn(async move {
         axum::serve(listener, app.into_make_service())
@@ -122,6 +127,110 @@ async fn start_peer_healthz_stub_with_discovery_snapshot(
             .expect("peer healthz stub should serve");
     });
     peer
+}
+
+#[derive(Clone)]
+struct GossipStaleReconciliationRetryStubState {
+    membership_view_id: String,
+    cluster_id: String,
+    cluster_peers: Vec<String>,
+    placement_epoch: u64,
+    retry: MembershipPropagationRetryCaptureState,
+}
+
+async fn gossip_stale_reconciliation_retry_healthz_handler(
+    axum::extract::State(state): axum::extract::State<GossipStaleReconciliationRetryStubState>,
+) -> axum::Json<serde_json::Value> {
+    axum::Json(json!({
+        "ok": true,
+        "status": "ok",
+        "membershipViewId": state.membership_view_id,
+        "clusterId": state.cluster_id,
+        "clusterPeers": state.cluster_peers,
+        "placementEpoch": state.placement_epoch,
+    }))
+}
+
+async fn gossip_stale_reconciliation_retry_membership_update_handler(
+    axum::extract::State(state): axum::extract::State<GossipStaleReconciliationRetryStubState>,
+    headers: axum::http::HeaderMap,
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> (StatusCode, axum::Json<serde_json::Value>) {
+    let propagation_header = headers
+        .get("x-maxio-internal-membership-propagated")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let forwarded_by = headers
+        .get("x-maxio-forwarded-by")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    {
+        let mut records = state.retry.records.lock().await;
+        records.push(MembershipPropagationCapture {
+            propagation_header,
+            forwarded_by,
+            payload,
+        });
+    }
+
+    let status = {
+        let mut statuses = state.retry.response_statuses.lock().await;
+        statuses.pop_front().unwrap_or(StatusCode::OK)
+    };
+    {
+        let mut served = state.retry.served_statuses.lock().await;
+        served.push(status.as_u16());
+    }
+    (
+        status,
+        axum::Json(json!({
+            "status": "applied",
+            "reason": "applied",
+            "mode": "shared_token",
+            "updated": true,
+        })),
+    )
+}
+
+async fn start_gossip_stale_reconciliation_retry_stub(
+    local_node_id: &str,
+    membership_view_id: &str,
+    cluster_peers: Vec<String>,
+    placement_epoch: u64,
+    response_statuses: Vec<StatusCode>,
+) -> (String, MembershipPropagationRetryCaptureState) {
+    let retry = MembershipPropagationRetryCaptureState::new(response_statuses);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("gossip stale reconciliation retry stub listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("gossip stale reconciliation retry stub should expose local address");
+    let peer = addr.to_string();
+    let cluster_id =
+        membership_view_id_with_self(local_node_id, std::slice::from_ref(&peer)).to_string();
+    let app = axum::Router::new()
+        .route(
+            "/healthz",
+            axum::routing::get(gossip_stale_reconciliation_retry_healthz_handler),
+        )
+        .route(
+            "/internal/cluster/membership/update",
+            axum::routing::post(gossip_stale_reconciliation_retry_membership_update_handler),
+        )
+        .with_state(GossipStaleReconciliationRetryStubState {
+            membership_view_id: membership_view_id.to_string(),
+            cluster_id,
+            cluster_peers,
+            placement_epoch,
+            retry: retry.clone(),
+        });
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("gossip stale reconciliation retry stub should serve");
+    });
+    (peer, retry)
 }
 
 fn decode_first_pem_block(payload: &str, label: &str) -> Option<Vec<u8>> {
@@ -5785,6 +5894,92 @@ async fn test_static_bootstrap_convergence_worker_propagates_discovered_peers_to
             .iter()
             .any(|value| value.as_str() == Some(healthz_peer.as_str())),
         "propagated topology should include existing probe peer"
+    );
+}
+
+#[tokio::test]
+async fn test_gossip_convergence_worker_persists_retryable_stale_peer_reconciliation_failure() {
+    let local_node_id = "node-a.internal:9000";
+    let stale_peer_view = "peer-stale-view";
+    let stale_peer_epoch = 17_u64;
+    let (stale_peer, stale_peer_state) = start_gossip_stale_reconciliation_retry_stub(
+        local_node_id,
+        stale_peer_view,
+        Vec::new(),
+        stale_peer_epoch,
+        vec![
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::SERVICE_UNAVAILABLE,
+            StatusCode::SERVICE_UNAVAILABLE,
+        ],
+    )
+    .await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = local_node_id.to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec![stale_peer.clone()];
+    config.membership_protocol = MembershipProtocol::Gossip;
+    let (_base_url, _tmp) = start_server_with_config_and_convergence_worker(config, tmp).await;
+
+    let queue_path = Path::new(data_dir.as_str())
+        .join(".maxio-runtime")
+        .join("pending-membership-propagation-queue.json");
+    let mut queued_payload = None;
+    for _ in 0..100 {
+        if let Ok(payload) = tokio::fs::read_to_string(queue_path.as_path()).await {
+            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload.as_str()) {
+                let has_expected_operation =
+                    parsed["operations"].as_array().is_some_and(|operations| {
+                        operations.iter().any(|operation| {
+                            operation["peer"].as_str() == Some(stale_peer.as_str())
+                                && operation["request"]["expectedMembershipViewId"].as_str()
+                                    == Some(stale_peer_view)
+                                && operation["request"]["expectedPlacementEpoch"].as_u64()
+                                    == Some(stale_peer_epoch)
+                        })
+                    });
+                if has_expected_operation {
+                    queued_payload = Some(parsed);
+                    break;
+                }
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let queued_payload =
+        queued_payload.expect("expected stale-peer reconciliation failure to be queued for replay");
+    let queued_operation = queued_payload["operations"]
+        .as_array()
+        .and_then(|operations| {
+            operations
+                .iter()
+                .find(|operation| operation["peer"].as_str() == Some(stale_peer.as_str()))
+        })
+        .expect("queued stale-peer operation should be present");
+    assert_eq!(
+        queued_operation["request"]["expectedMembershipViewId"],
+        stale_peer_view
+    );
+    assert_eq!(
+        queued_operation["request"]["expectedPlacementEpoch"],
+        stale_peer_epoch
+    );
+
+    let served_statuses = stale_peer_state.served_statuses.lock().await.clone();
+    assert!(
+        !served_statuses.is_empty(),
+        "stale peer reconciliation stub should receive update attempts"
+    );
+    assert!(
+        served_statuses
+            .iter()
+            .all(|status| *status == StatusCode::SERVICE_UNAVAILABLE.as_u16()),
+        "expected retryable stale-peer reconciliation statuses, got {served_statuses:?}"
     );
 }
 
