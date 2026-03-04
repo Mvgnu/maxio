@@ -645,7 +645,9 @@ pub fn build_cluster_metadata_expected_nodes(
     membership_nodes: &[String],
 ) -> Vec<String> {
     match strategy {
-        ClusterMetadataListingStrategy::LocalNodeOnly => normalize_node_ids(std::iter::once(local_node_id)),
+        ClusterMetadataListingStrategy::LocalNodeOnly => {
+            normalize_node_ids(std::iter::once(local_node_id))
+        }
         ClusterMetadataListingStrategy::ConsensusIndex
         | ClusterMetadataListingStrategy::RequestTimeAggregation
         | ClusterMetadataListingStrategy::FullReplication => normalize_node_ids(

@@ -28,8 +28,7 @@ use crate::storage::placement::{
     PendingReplicationEnqueueOutcome, PendingReplicationFailureWithBackoffOutcome,
     PendingReplicationFromQuorumInput, PendingReplicationReplayCandidate,
     PendingReplicationReplayLeaseOutcome, PendingReplicationRetryPolicy, PlacementViewState,
-    ReplicationMutationOperation,
-    acknowledge_pending_replication_target_persisted,
+    ReplicationMutationOperation, acknowledge_pending_replication_target_persisted,
     enqueue_pending_replication_operation_persisted,
     lease_pending_replication_target_for_replay_persisted, object_forward_target_with_self,
     pending_replication_operation_from_quorum_outcome,
@@ -304,8 +303,8 @@ pub(crate) fn persist_pending_replication_from_quorum_outcome(
         .duration_since(std::time::UNIX_EPOCH)
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default();
-    let Some(pending_operation) = pending_replication_operation_from_quorum_outcome(
-        PendingReplicationFromQuorumInput {
+    let Some(pending_operation) =
+        pending_replication_operation_from_quorum_outcome(PendingReplicationFromQuorumInput {
             operation,
             idempotency_key,
             bucket,
@@ -315,8 +314,8 @@ pub(crate) fn persist_pending_replication_from_quorum_outcome(
             placement,
             outcome,
             created_at_unix_ms,
-        },
-    ) else {
+        })
+    else {
         return;
     };
 
@@ -1574,7 +1573,9 @@ mod tests {
     use tempfile::TempDir;
     use tokio::io::AsyncReadExt;
 
-    use crate::config::{Config, MembershipProtocol, WriteDurabilityMode};
+    use crate::config::{
+        ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode,
+    };
     use crate::metadata::ClusterMetadataListingStrategy;
     use crate::server::AppState;
     use crate::storage::BucketMeta;
@@ -2855,6 +2856,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
             erasure_coding: false,
             chunk_size: 10 * 1024 * 1024,
             parity_shards: 0,

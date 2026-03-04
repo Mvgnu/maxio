@@ -4519,8 +4519,8 @@ async fn test_create_bucket_consensus_index_rejects_active_tombstone_without_loc
 }
 
 #[tokio::test]
-async fn test_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect(
-) {
+async fn test_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect()
+ {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
     let view_id = distributed_local_consensus_membership_view_id();
@@ -4557,8 +4557,8 @@ async fn test_create_bucket_consensus_index_rejects_existing_persisted_bucket_wi
 }
 
 #[tokio::test]
-async fn test_delete_bucket_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect(
-) {
+async fn test_delete_bucket_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
     let view_id = distributed_local_consensus_membership_view_id();
@@ -4575,7 +4575,10 @@ async fn test_delete_bucket_consensus_index_rejects_missing_persisted_bucket_wit
     let delete = s3_request("DELETE", &format!("{}/{}", base_url, bucket), vec![]).await;
     assert_eq!(delete.status(), 404);
     let body = delete.text().await.unwrap();
-    assert_eq!(extract_xml_tag(&body, "Code").as_deref(), Some("NoSuchBucket"));
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
 
     let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
         .await
@@ -4587,8 +4590,8 @@ async fn test_delete_bucket_consensus_index_rejects_missing_persisted_bucket_wit
 }
 
 #[tokio::test]
-async fn test_delete_bucket_consensus_index_rejects_tombstoned_persisted_bucket_without_local_side_effect(
-) {
+async fn test_delete_bucket_consensus_index_rejects_tombstoned_persisted_bucket_without_local_side_effect()
+ {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
     let view_id = distributed_local_consensus_membership_view_id();
@@ -4614,7 +4617,10 @@ async fn test_delete_bucket_consensus_index_rejects_tombstoned_persisted_bucket_
     let delete = s3_request("DELETE", &format!("{}/{}", base_url, bucket), vec![]).await;
     assert_eq!(delete.status(), 404);
     let body = delete.text().await.unwrap();
-    assert_eq!(extract_xml_tag(&body, "Code").as_deref(), Some("NoSuchBucket"));
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
 
     let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
         .await
@@ -4801,14 +4807,13 @@ async fn test_get_bucket_lifecycle_consensus_index_merges_peer_state_when_token_
     )
     .await;
 
-    let coordinator_create =
-        create_bucket_local_only_on_coordinator(
-            &pair.coordinator_url,
-            bucket,
-            token,
-            pair.owner_peer.as_str(),
-        )
-        .await;
+    let coordinator_create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
+    )
+    .await;
     assert_eq!(coordinator_create.status(), 200);
     let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
     assert_eq!(owner_create.status(), 200);
@@ -7958,8 +7963,8 @@ async fn test_delete_objects_batch_distributed_primary_write_surfaces_per_entry_
 }
 
 #[tokio::test]
-async fn test_delete_objects_batch_distributed_primary_write_strict_quorum_returns_service_unavailable_when_replica_unreachable(
-) {
+async fn test_delete_objects_batch_distributed_primary_write_strict_quorum_returns_service_unavailable_when_replica_unreachable()
+ {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);

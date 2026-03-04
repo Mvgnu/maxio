@@ -387,10 +387,8 @@ pub(super) fn ensure_consensus_index_create_bucket_preconditions(
         current_unix_ms_u64(),
     ) {
         Ok(PersistedBucketMutationPreconditionResolution::Present(_)) => Err(Box::new(
-            response::error(
-            StatusCode::CONFLICT,
-            "Bucket already exists",
-        ))),
+            response::error(StatusCode::CONFLICT, "Bucket already exists"),
+        )),
         Ok(PersistedBucketMutationPreconditionResolution::Tombstoned {
             retention_active: true,
             ..
@@ -451,9 +449,9 @@ pub(super) fn ensure_consensus_index_delete_bucket_preconditions(
     ) {
         Ok(PersistedBucketMutationPreconditionResolution::Present(_)) => Ok(()),
         Ok(PersistedBucketMutationPreconditionResolution::Tombstoned { .. })
-        | Ok(PersistedBucketMutationPreconditionResolution::Missing) => {
-            Err(Box::new(response::error(StatusCode::NOT_FOUND, "Bucket not found")))
-        }
+        | Ok(PersistedBucketMutationPreconditionResolution::Missing) => Err(Box::new(
+            response::error(StatusCode::NOT_FOUND, "Bucket not found"),
+        )),
         Err(PersistedMetadataQueryError::ViewIdMismatch {
             expected_view_id,
             persisted_view_id,
@@ -1087,7 +1085,9 @@ pub(super) async fn send_internal_peer_request(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Config, MembershipProtocol, WriteDurabilityMode};
+    use crate::config::{
+        ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode,
+    };
     use crate::metadata::ClusterMetadataListingStrategy;
     use crate::server::AppState;
     use tempfile::TempDir;
@@ -1112,6 +1112,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
             erasure_coding: false,
             chunk_size: 10 * 1024 * 1024,
             parity_shards: 0,

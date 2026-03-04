@@ -1125,9 +1125,9 @@ mod tests {
         record_pending_metadata_repair_failure_with_backoff,
         replay_pending_metadata_repairs_once_with_apply_fn,
         replay_pending_metadata_repairs_once_with_classified_apply_fn,
-        resolve_bucket_metadata_from_persisted_state, resolve_bucket_presence_from_persisted_state,
+        resolve_bucket_metadata_from_persisted_state,
         resolve_bucket_mutation_preconditions_from_persisted_state,
-        resolve_object_metadata_from_persisted_state,
+        resolve_bucket_presence_from_persisted_state, resolve_object_metadata_from_persisted_state,
         resolve_object_version_metadata_from_persisted_state, summarize_metadata_repair_plan,
         summarize_pending_metadata_repair_queue, validate_metadata_repair_plan,
     };
@@ -3548,8 +3548,8 @@ mod tests {
     }
 
     #[test]
-    fn resolve_bucket_mutation_preconditions_from_persisted_state_resolves_tombstone_retention_state(
-    ) {
+    fn resolve_bucket_mutation_preconditions_from_persisted_state_resolves_tombstone_retention_state()
+     {
         let state = PersistedMetadataState {
             view_id: "view-a".to_string(),
             buckets: vec![BucketMetadataState {

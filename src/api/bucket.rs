@@ -451,12 +451,10 @@ fn ensure_consensus_index_create_bucket_preconditions(
         Ok(PersistedBucketMutationPreconditionResolution::Tombstoned {
             retention_active: true,
             ..
-        }) => {
-                Err(S3Error::service_unavailable(&format!(
-                    "Distributed bucket metadata operation '{}' rejected create for '{}' because tombstone retention is still active",
-                    operation, bucket
-                )))
-        }
+        }) => Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' rejected create for '{}' because tombstone retention is still active",
+            operation, bucket
+        ))),
         Ok(PersistedBucketMutationPreconditionResolution::Tombstoned {
             retention_active: false,
             ..
@@ -1906,15 +1904,14 @@ pub async fn get_bucket_lifecycle(
             "GetBucketLifecycle",
             &bucket,
             fan_in.responded_nodes.as_slice(),
-                fan_in.lifecycle_states.as_slice(),
-            )?
+            fan_in.lifecycle_states.as_slice(),
+        )?
     } else {
-        let use_consensus_persisted_metadata =
-            should_use_consensus_index_persisted_metadata_state(
-                &state,
-                &topology,
-                internal_local_only,
-            );
+        let use_consensus_persisted_metadata = should_use_consensus_index_persisted_metadata_state(
+            &state,
+            &topology,
+            internal_local_only,
+        );
         if !internal_local_only && !use_consensus_persisted_metadata {
             ensure_distributed_bucket_metadata_operation_strategy_ready(
                 &state,

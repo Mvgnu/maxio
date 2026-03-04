@@ -2,7 +2,7 @@ use super::*;
 use axum::http::StatusCode;
 use base64::Engine;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
-use maxio::config::{MembershipProtocol, WriteDurabilityMode};
+use maxio::config::{ClusterPeerTransportMode, MembershipProtocol, WriteDurabilityMode};
 use maxio::metadata::{
     ClusterMetadataListingStrategy, MetadataReconcileAction, MetadataRepairPlan,
     PendingMetadataRepairPlan, PersistedMetadataState,
@@ -2074,7 +2074,7 @@ async fn test_healthz_and_metrics_report_shared_token_cluster_auth_mode_when_con
     assert_eq!(health_body["checks"]["clusterPeerAuthIdentityBound"], false);
     assert_eq!(
         health_body["checks"]["clusterPeerAuthTransportRequired"],
-        true
+        false
     );
     assert_eq!(
         health_body["checks"]["clusterPeerAuthTransportReady"],
@@ -2114,7 +2114,7 @@ async fn test_healthz_and_metrics_report_shared_token_cluster_auth_mode_when_con
     );
     assert_eq!(
         metric_value(&metrics_body, "maxio_cluster_peer_auth_transport_required"),
-        Some(1.0)
+        Some(0.0)
     );
     assert_eq!(
         metric_value(
@@ -2133,6 +2133,57 @@ async fn test_healthz_and_metrics_report_shared_token_cluster_auth_mode_when_con
             .contains("maxio_cluster_join_auth_readiness_reason_info{reason=\"authorized\"} 1")
     );
     assert!(metrics_body.contains("maxio_write_durability_mode_info{mode=\"degraded-success\"} 1"));
+}
+
+#[tokio::test]
+async fn test_healthz_and_metrics_report_required_peer_transport_mode_when_configured() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_peers = vec!["127.0.0.1:1".to_string()];
+    config.membership_protocol = MembershipProtocol::Gossip;
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    assert_eq!(health_body["clusterAuthMode"], "shared-token");
+    assert_eq!(health_body["clusterAuthTransportIdentity"], "none");
+    assert_eq!(
+        health_body["checks"]["clusterPeerAuthTransportRequired"],
+        true
+    );
+    assert_eq!(
+        health_body["checks"]["clusterPeerAuthTransportReady"],
+        false
+    );
+    assert_eq!(health_body["checks"]["clusterJoinAuthReady"], false);
+    assert_eq!(
+        health_body["clusterJoinAuthReason"],
+        "cluster_peer_transport_not_ready"
+    );
+
+    let metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), 200);
+    let metrics_body = metrics.text().await.unwrap();
+    assert_eq!(
+        metric_value(&metrics_body, "maxio_cluster_peer_auth_transport_required"),
+        Some(1.0)
+    );
+    assert!(
+        metrics_body
+            .contains("maxio_cluster_join_auth_readiness_reason_info{reason=\"cluster_peer_transport_not_ready\"} 1")
+    );
 }
 
 #[tokio::test]
@@ -2797,6 +2848,45 @@ async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_c
 }
 
 #[tokio::test]
+async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_cluster_peer_transport_required_without_mtls()
+ {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["127.0.0.1:30432".to_string()];
+    config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    let cluster_id = health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present");
+
+    let rejected = client()
+        .post(format!("{}/internal/cluster/join/authorize", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id)
+        .header("x-maxio-join-node-id", "peer-node-static-bootstrap")
+        .header("x-maxio-join-unix-ms", unix_ms_now_string())
+        .header("x-maxio-join-nonce", "join-probe-required-transport")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 503);
+    let rejected_body: serde_json::Value = rejected.json().await.unwrap();
+    assert_eq!(rejected_body["authorized"], false);
+    assert_eq!(rejected_body["status"], "misconfigured");
+    assert_eq!(rejected_body["mode"], "shared_token");
+    assert_eq!(rejected_body["reason"], "cluster_peer_transport_not_ready");
+}
+
+#[tokio::test]
 async fn test_cluster_join_endpoint_applies_membership_for_authorized_peer() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
@@ -3386,6 +3476,8 @@ async fn test_cluster_membership_update_endpoint_propagates_updates_to_peer_cont
         .json(&json!({
             "clusterId": cluster_id,
             "clusterPeers": [capture_peer.as_str()],
+            "expectedMembershipViewId": initial_view_id,
+            "expectedPlacementEpoch": initial_epoch,
         }))
         .send()
         .await
@@ -3541,6 +3633,13 @@ async fn test_cluster_membership_update_endpoint_skips_fanout_for_propagated_req
         .as_str()
         .expect("clusterId should be present")
         .to_string();
+    let initial_view_id = initial_health_body["membershipViewId"]
+        .as_str()
+        .expect("membershipViewId should be present")
+        .to_string();
+    let initial_epoch = initial_health_body["placementEpoch"]
+        .as_u64()
+        .expect("placementEpoch should be present");
 
     let update = client()
         .post(format!("{}/internal/cluster/membership/update", base_url))
@@ -3557,6 +3656,8 @@ async fn test_cluster_membership_update_endpoint_skips_fanout_for_propagated_req
         .json(&json!({
             "clusterId": cluster_id,
             "clusterPeers": [capture_peer.as_str()],
+            "expectedMembershipViewId": initial_view_id,
+            "expectedPlacementEpoch": initial_epoch,
         }))
         .send()
         .await
@@ -3573,6 +3674,56 @@ async fn test_cluster_membership_update_endpoint_skips_fanout_for_propagated_req
         records.is_empty(),
         "propagated requests should not trigger secondary fanout"
     );
+}
+
+#[tokio::test]
+async fn test_cluster_membership_update_endpoint_rejects_propagated_request_without_preconditions()
+{
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "node-a.internal:9000".to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let initial_health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(initial_health.status(), 200);
+    let initial_health_body: serde_json::Value = initial_health.json().await.unwrap();
+    let cluster_id = initial_health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present")
+        .to_string();
+
+    let update = client()
+        .post(format!("{}/internal/cluster/membership/update", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id.as_str())
+        .header("x-maxio-join-node-id", "node-b.internal:9000")
+        .header("x-maxio-forwarded-by", "node-b.internal:9000")
+        .header("x-maxio-join-unix-ms", unix_ms_now_string())
+        .header(
+            "x-maxio-join-nonce",
+            "membership-update-propagated-missing-preconditions",
+        )
+        .header("x-maxio-internal-auth-token", "shared-secret")
+        .header("x-maxio-internal-membership-propagated", "1")
+        .json(&json!({
+            "clusterId": cluster_id,
+            "clusterPeers": ["node-b.internal:9000"],
+        }))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(update.status(), 409);
+    let update_body: serde_json::Value = update.json().await.unwrap();
+    assert_eq!(update_body["status"], "rejected");
+    assert_eq!(update_body["reason"], "precondition_failed");
+    assert_eq!(update_body["updated"], false);
 }
 
 #[tokio::test]
@@ -3758,6 +3909,85 @@ async fn test_cluster_membership_update_endpoint_retries_propagation_on_transien
         records[0].forwarded_by.as_deref(),
         Some("node-a.internal:9000")
     );
+}
+
+#[tokio::test]
+async fn test_cluster_membership_update_endpoint_does_not_queue_terminal_propagation_failure() {
+    let (terminal_peer, terminal_state) =
+        start_membership_propagation_retry_stub(vec![StatusCode::CONFLICT]).await;
+    let (stable_peer, _stable_state) = start_membership_propagation_capture_stub().await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = "node-a.internal:9000".to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec![stable_peer.clone()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let initial_health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(initial_health.status(), 200);
+    let initial_health_body: serde_json::Value = initial_health.json().await.unwrap();
+    let cluster_id = initial_health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present")
+        .to_string();
+
+    let update = client()
+        .post(format!("{}/internal/cluster/membership/update", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id.as_str())
+        .header("x-maxio-join-node-id", stable_peer.as_str())
+        .header("x-maxio-forwarded-by", stable_peer.as_str())
+        .header("x-maxio-join-unix-ms", unix_ms_now_string())
+        .header(
+            "x-maxio-join-nonce",
+            "membership-update-propagation-terminal-failure",
+        )
+        .header("x-maxio-internal-auth-token", "shared-secret")
+        .json(&json!({
+            "clusterId": cluster_id,
+            "clusterPeers": [terminal_peer.as_str()],
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(update.status(), 200);
+
+    let mut served_statuses = Vec::new();
+    for _ in 0..30 {
+        served_statuses = terminal_state.served_statuses.lock().await.clone();
+        if !served_statuses.is_empty() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert_eq!(
+        served_statuses,
+        vec![StatusCode::CONFLICT.as_u16()],
+        "terminal propagation failure should not retry"
+    );
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let queue_path = Path::new(data_dir.as_str())
+        .join(".maxio-runtime")
+        .join("pending-membership-propagation-queue.json");
+    if queue_path.exists() {
+        let payload = std::fs::read_to_string(queue_path.as_path())
+            .expect("pending membership propagation queue should be readable");
+        let parsed: serde_json::Value =
+            serde_json::from_str(payload.as_str()).expect("queue payload should parse");
+        let operations = parsed["operations"]
+            .as_array()
+            .expect("queue operations should be an array");
+        assert!(
+            operations.is_empty(),
+            "terminal propagation failure should not be persisted for replay"
+        );
+    }
 }
 
 #[tokio::test]

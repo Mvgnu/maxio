@@ -23,6 +23,13 @@ struct ResolvedInternalPeerTransport {
 fn resolve_internal_peer_transport(
     config: &Config,
 ) -> Result<ResolvedInternalPeerTransport, S3Error> {
+    let has_configured_cluster_peers = config
+        .cluster_peers
+        .iter()
+        .any(|peer| !peer.trim().is_empty());
+    let strict_transport_required = config.cluster_peer_transport_required()
+        && config.cluster_auth_token().is_some()
+        && has_configured_cluster_peers;
     let expected_node_id = config.cluster_auth_token().map(|_| config.node_id.as_str());
     let status = probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
         config.cluster_peer_tls_cert_path(),
@@ -33,6 +40,11 @@ fn resolve_internal_peer_transport(
     );
 
     match status.mode {
+        PeerTransportIdentityMode::None if strict_transport_required => {
+            Err(S3Error::service_unavailable(
+                "Internal peer transport policy requires mTLS identity in distributed shared-token mode, but no peer TLS configuration is present",
+            ))
+        }
         PeerTransportIdentityMode::None => Ok(ResolvedInternalPeerTransport {
             scheme: "http",
             ca_path: None,
@@ -179,7 +191,9 @@ fn load_internal_peer_client_identity(config: &Config) -> Result<reqwest::Identi
 #[cfg(test)]
 mod tests {
     use super::{load_internal_peer_client_identity, resolve_internal_peer_transport};
-    use crate::config::{Config, MembershipProtocol, WriteDurabilityMode};
+    use crate::config::{
+        ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode,
+    };
     use crate::metadata::ClusterMetadataListingStrategy;
 
     fn test_config() -> Config {
@@ -206,6 +220,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
         }
     }
 
@@ -215,6 +230,17 @@ mod tests {
         let resolved = resolve_internal_peer_transport(&config).expect("transport should resolve");
         assert_eq!(resolved.scheme, "http");
         assert!(resolved.ca_path.is_none());
+    }
+
+    #[test]
+    fn resolve_internal_peer_transport_rejects_missing_mtls_when_policy_requires_transport() {
+        let mut config = test_config();
+        config.cluster_auth_token = Some("shared-secret".to_string());
+        config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+
+        let err = resolve_internal_peer_transport(&config).expect_err("should fail closed");
+        assert!(err.message.contains("requires mTLS identity"));
     }
 
     #[test]

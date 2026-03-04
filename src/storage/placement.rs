@@ -2205,8 +2205,8 @@ mod tests {
             quorum_reached: false,
         };
 
-        let pending = pending_replication_operation_from_quorum_outcome(
-            PendingReplicationFromQuorumInput {
+        let pending =
+            pending_replication_operation_from_quorum_outcome(PendingReplicationFromQuorumInput {
                 operation: ReplicationMutationOperation::CompleteMultipartUpload,
                 idempotency_key: "idem-quorum",
                 bucket: "bucket-a",
@@ -2216,9 +2216,8 @@ mod tests {
                 placement: &placement,
                 outcome: &outcome,
                 created_at_unix_ms: 100,
-            },
-        )
-        .expect("pending operation should build");
+            })
+            .expect("pending operation should build");
 
         assert_eq!(pending.targets.len(), 2);
         assert!(

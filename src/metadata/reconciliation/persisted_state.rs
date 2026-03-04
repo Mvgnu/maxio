@@ -648,8 +648,7 @@ pub fn resolve_bucket_mutation_preconditions_from_persisted_state(
     expected_view_id: Option<&str>,
     now_unix_ms: u64,
 ) -> Result<PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError> {
-    let resolution =
-        resolve_bucket_presence_from_persisted_state(state, bucket, expected_view_id)?;
+    let resolution = resolve_bucket_presence_from_persisted_state(state, bucket, expected_view_id)?;
     Ok(match resolution {
         PersistedBucketPresenceReadResolution::Present(bucket_state) => {
             PersistedBucketMutationPreconditionResolution::Present(bucket_state)

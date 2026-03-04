@@ -102,6 +102,26 @@ impl WriteDurabilityMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, ValueEnum)]
+#[value(rename_all = "kebab-case")]
+pub enum ClusterPeerTransportMode {
+    Compatibility,
+    Required,
+}
+
+impl ClusterPeerTransportMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Compatibility => "compatibility",
+            Self::Required => "required",
+        }
+    }
+
+    pub const fn is_required(self) -> bool {
+        matches!(self, Self::Required)
+    }
+}
+
 #[derive(Parser, Debug, Clone)]
 #[command(name = "maxio", about = "S3-compatible object storage server", version = env!("MAXIO_VERSION"))]
 pub struct Config {
@@ -198,6 +218,17 @@ pub struct Config {
     #[arg(long, env = "MAXIO_CLUSTER_PEER_TLS_CERT_SHA256")]
     pub cluster_peer_tls_cert_sha256: Option<String>,
 
+    /// Peer transport enforcement policy for internal node-to-node requests.
+    /// - compatibility: require mTLS transport only when mTLS paths are configured.
+    /// - required: fail closed in distributed shared-token mode when peer mTLS transport is not ready.
+    #[arg(
+        long,
+        env = "MAXIO_CLUSTER_PEER_TRANSPORT_MODE",
+        value_enum,
+        default_value_t = ClusterPeerTransportMode::Compatibility
+    )]
+    pub cluster_peer_transport_mode: ClusterPeerTransportMode,
+
     /// Enable erasure coding with per-chunk integrity checksums
     #[arg(long, env = "MAXIO_ERASURE_CODING", default_value = "false")]
     pub erasure_coding: bool,
@@ -267,6 +298,10 @@ impl Config {
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
+    }
+
+    pub fn cluster_peer_transport_required(&self) -> bool {
+        self.cluster_peer_transport_mode.is_required()
     }
 
     pub fn credential_map(&self) -> Result<HashMap<String, String>, String> {
@@ -350,8 +385,8 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::{
-        Config, MembershipProtocol, WriteDurabilityMode, parse_cluster_id,
-        parse_metadata_listing_strategy,
+        ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode,
+        parse_cluster_id, parse_metadata_listing_strategy,
     };
     use crate::metadata::ClusterMetadataListingStrategy;
 
@@ -375,6 +410,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
             erasure_coding: false,
             chunk_size: 10 * 1024 * 1024,
             parity_shards: 0,
@@ -525,6 +561,17 @@ mod tests {
             config.cluster_peer_tls_cert_sha256(),
             Some("sha256:9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08")
         );
+    }
+
+    #[test]
+    fn cluster_peer_transport_mode_flags_required_policy() {
+        let mut config = base_config();
+        assert_eq!(config.cluster_peer_transport_mode.as_str(), "compatibility");
+        assert!(!config.cluster_peer_transport_required());
+
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+        assert_eq!(config.cluster_peer_transport_mode.as_str(), "required");
+        assert!(config.cluster_peer_transport_required());
     }
 
     #[test]

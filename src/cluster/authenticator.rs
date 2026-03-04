@@ -1147,8 +1147,8 @@ mod tests {
     }
 
     #[test]
-    fn strip_untrusted_internal_forwarding_headers_ignores_legacy_headers_without_trust_markers_in_compatibility_mode(
-    ) {
+    fn strip_untrusted_internal_forwarding_headers_ignores_legacy_headers_without_trust_markers_in_compatibility_mode()
+     {
         let mut headers = HeaderMap::new();
         headers.insert("x-maxio-forwarded-write-epoch", "7".parse().unwrap());
         headers.insert(
@@ -1170,8 +1170,8 @@ mod tests {
     }
 
     #[test]
-    fn strip_untrusted_internal_forwarding_headers_rejects_legacy_headers_without_trust_markers_in_shared_token_mode(
-    ) {
+    fn strip_untrusted_internal_forwarding_headers_rejects_legacy_headers_without_trust_markers_in_shared_token_mode()
+     {
         let mut headers = HeaderMap::new();
         headers.insert("x-maxio-forwarded-write-epoch", "7".parse().unwrap());
         headers.insert(

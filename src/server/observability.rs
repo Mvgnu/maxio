@@ -20,8 +20,11 @@ pub(super) fn health_payload(
     let membership_status = topology.membership_status.clone();
     let cluster_peer_auth_status = probe_cluster_peer_auth_status(&state.config, topology);
     let cluster_join_auth_status = probe_cluster_join_auth_status(state, topology);
-    let cluster_peer_auth_transport_required =
-        topology.is_distributed() && cluster_peer_auth_status.configured;
+    let cluster_peer_auth_transport_required = cluster_peer_auth_transport_required(
+        state.config.as_ref(),
+        topology,
+        &cluster_peer_auth_status,
+    );
     let metadata_snapshot =
         metadata_snapshot_for_topology(topology, state.metadata_listing_strategy);
     let metadata_readiness =
@@ -85,7 +88,7 @@ pub(super) fn health_payload(
     }
     if cluster_peer_auth_transport_required && !cluster_peer_auth_status.transport_ready {
         warnings.push(format!(
-            "Cluster peer auth requires mTLS transport identity readiness in distributed shared-token mode (reason: {}).",
+            "Cluster peer auth requires mTLS transport identity readiness under current runtime policy (reason: {}).",
             cluster_peer_auth_status.transport_reason
         ));
     }
@@ -398,12 +401,15 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
     } else {
         0
     };
-    let cluster_peer_auth_transport_required =
-        if topology.is_distributed() && cluster_peer_auth_status.configured {
-            1
-        } else {
-            0
-        };
+    let cluster_peer_auth_transport_required = if cluster_peer_auth_transport_required(
+        state.config.as_ref(),
+        &topology,
+        &cluster_peer_auth_status,
+    ) {
+        1
+    } else {
+        0
+    };
     let membership_protocol_ready = if topology.membership_status.ready {
         1
     } else {
@@ -569,7 +575,7 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
          # HELP maxio_cluster_peer_auth_transport_ready Whether peer-transport identity configuration is ready (1=true, 0=false).\n\
          # TYPE maxio_cluster_peer_auth_transport_ready gauge\n\
          maxio_cluster_peer_auth_transport_ready {}\n\
-         # HELP maxio_cluster_peer_auth_transport_required Whether mTLS peer transport readiness is required for distributed shared-token posture (1=true, 0=false).\n\
+         # HELP maxio_cluster_peer_auth_transport_required Whether mTLS peer transport readiness is required by current cluster peer transport policy (1=true, 0=false).\n\
          # TYPE maxio_cluster_peer_auth_transport_required gauge\n\
          maxio_cluster_peer_auth_transport_required {}\n\
          # HELP maxio_cluster_peer_auth_transport_reason_info Peer-transport identity readiness reason label for current runtime configuration.\n\

@@ -264,6 +264,25 @@ Scorecard sync update (March 4, 2026):
 - Bucket create/delete consensus-index precondition logic is now single-sourced across S3 + console through metadata-plane `resolve_bucket_mutation_preconditions_from_persisted_state(...)` (`PersistedBucketMutationPreconditionResolution`), eliminating endpoint-local tombstone-retention branching drift.
 - Locked by existing S3 + console regressions for persisted-present, persisted-missing, and retained-tombstone fail-closed paths (`core_tests::*consensus_index_rejects_*`, `console_tests::*consensus_index_rejects_*`).
 - Distributed `DeleteObjects` batch now enforces strict quorum mode (`write_durability_mode=strict-quorum`) with deterministic `503 ServiceUnavailable` on quorum shortfall (`DeleteObjects write quorum not reached`) while degraded-success mode keeps per-entry degraded-quorum diagnostics.
+- Added explicit peer-transport enforcement policy control: `MAXIO_CLUSTER_PEER_TRANSPORT_MODE` (`compatibility` | `required`).
+  - `compatibility` keeps current behavior (mTLS required only when peer TLS paths are configured).
+  - `required` fail-closes distributed shared-token posture when peer mTLS identity is not ready.
+- Runtime/S3 enforcement now align on this policy:
+  - `/healthz` + `/metrics` expose `clusterPeerAuthTransportRequired` / `maxio_cluster_peer_auth_transport_required` via policy-aware evaluation, and join-auth readiness now fails with `cluster_peer_transport_not_ready` when policy requires transport but identity is unready.
+  - `/internal/cluster/join/authorize` now returns deterministic `503` with `reason=cluster_peer_transport_not_ready` in required-without-mTLS posture (`runtime_tests::test_cluster_join_authorize_endpoint_returns_service_unavailable_when_cluster_peer_transport_required_without_mtls`).
+  - Internal S3 peer transport now also fail-closes in required-without-mTLS posture (`api::object::peer_transport::tests::resolve_internal_peer_transport_rejects_missing_mtls_when_policy_requires_transport`).
+- Internal membership propagation now fail-closes when stale-state guards are missing:
+  - `/internal/cluster/membership/update` requests marked as propagated (`x-maxio-internal-membership-propagated=1`) must include both `expectedMembershipViewId` and `expectedPlacementEpoch`.
+  - missing propagated preconditions now return deterministic `409 precondition_failed`, preventing blind propagated apply under stale topology races.
+  - locked by regressions:
+    - `runtime_tests::test_cluster_membership_update_endpoint_skips_fanout_for_propagated_requests`
+    - `runtime_tests::test_cluster_membership_update_endpoint_rejects_propagated_request_without_preconditions`
+- Membership-propagation queue replay now classifies terminal peer failures and avoids dead-letter retry loops:
+  - non-retryable propagation failures (`4xx` non-transient status and transport-preflight hard failures) are no longer persisted into pending propagation queue snapshots.
+  - replay cycles now drop terminal failures from existing queue entries instead of repeatedly applying backoff retries.
+  - locked by regressions:
+    - `server::tests::apply_pending_membership_propagation_replay_outcomes_drops_terminal_failures`
+    - `runtime_tests::test_cluster_membership_update_endpoint_does_not_queue_terminal_propagation_failure`
 - Locked by regression: `core_tests::test_delete_objects_batch_distributed_primary_write_strict_quorum_returns_service_unavailable_when_replica_unreachable` (wired into `scripts/domain_check.sh s3_api_surface`).
 
 ## Distributed Implementation Exit Targets (Execution-Aligned)

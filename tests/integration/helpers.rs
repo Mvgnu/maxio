@@ -1,4 +1,4 @@
-use maxio::config::{Config, MembershipProtocol, WriteDurabilityMode};
+use maxio::config::{ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode};
 use maxio::metadata::{
     BucketMetadataState, BucketMetadataTombstoneState, ClusterMetadataListingStrategy,
     ObjectMetadataState, ObjectVersionMetadataState, PersistedMetadataState,
@@ -46,6 +46,7 @@ pub(crate) fn make_test_config(
         cluster_peer_tls_key_path: None,
         cluster_peer_tls_ca_path: None,
         cluster_peer_tls_cert_sha256: None,
+        cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
         erasure_coding,
         chunk_size,
         parity_shards,

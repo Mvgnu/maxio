@@ -1769,6 +1769,9 @@ enum PendingMembershipPropagationReplayOperationOutcome {
     Acknowledged {
         original: PendingMembershipPropagationOperation,
     },
+    Dropped {
+        original: PendingMembershipPropagationOperation,
+    },
     Failed {
         original: PendingMembershipPropagationOperation,
         retry: PendingMembershipPropagationOperation,
@@ -1776,9 +1779,31 @@ enum PendingMembershipPropagationReplayOperationOutcome {
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
+struct MembershipPropagationFailure {
+    message: String,
+    retryable: bool,
+}
+
+impl MembershipPropagationFailure {
+    fn retryable(message: String) -> Self {
+        Self {
+            message,
+            retryable: true,
+        }
+    }
+
+    fn terminal(message: String) -> Self {
+        Self {
+            message,
+            retryable: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
 struct MembershipPropagationPeerResult {
     peer: String,
-    error: Option<String>,
+    failure: Option<MembershipPropagationFailure>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2082,19 +2107,27 @@ fn spawn_membership_update_propagation(
         )
         .await;
         for result in results {
-            if let Some(error) = result.error.as_deref() {
-                if let Err(queue_error) = record_pending_membership_propagation_failure(
-                    config.data_dir.as_str(),
-                    result.peer.as_str(),
-                    &request,
-                    Some(error),
-                )
-                .await
-                {
+            if let Some(failure) = result.failure {
+                if failure.retryable {
+                    if let Err(queue_error) = record_pending_membership_propagation_failure(
+                        config.data_dir.as_str(),
+                        result.peer.as_str(),
+                        &request,
+                        Some(failure.message.as_str()),
+                    )
+                    .await
+                    {
+                        tracing::warn!(
+                            peer = result.peer.as_str(),
+                            error = ?queue_error,
+                            "Failed to persist pending membership propagation operation"
+                        );
+                    }
+                } else {
                     tracing::warn!(
                         peer = result.peer.as_str(),
-                        error = ?queue_error,
-                        "Failed to persist pending membership propagation operation"
+                        error = failure.message.as_str(),
+                        "Skipping persistence of terminal membership propagation failure"
                     );
                 }
             }
@@ -2156,7 +2189,8 @@ fn spawn_gossip_stale_peer_reconciliation(
                     peer = target.peer.as_str(),
                     expected_view = target.expected_membership_view_id.as_str(),
                     expected_epoch = target.expected_placement_epoch,
-                    error,
+                    retryable = error.retryable,
+                    error = error.message.as_str(),
                     "Gossip stale-peer reconciliation update failed"
                 );
             }
@@ -2220,7 +2254,7 @@ async fn propagate_membership_update_to_peers(
                 .into_iter()
                 .map(|peer| MembershipPropagationPeerResult {
                     peer,
-                    error: Some(err.clone()),
+                    failure: Some(MembershipPropagationFailure::terminal(err.clone())),
                 })
                 .collect();
         }
@@ -2238,10 +2272,13 @@ async fn propagate_membership_update_to_peers(
         match propagate_membership_update_to_peer(&propagation_context, peer.as_str(), request)
             .await
         {
-            Ok(()) => results.push(MembershipPropagationPeerResult { peer, error: None }),
-            Err(error) => results.push(MembershipPropagationPeerResult {
+            Ok(()) => results.push(MembershipPropagationPeerResult {
                 peer,
-                error: Some(error),
+                failure: None,
+            }),
+            Err(failure) => results.push(MembershipPropagationPeerResult {
+                peer,
+                failure: Some(failure),
             }),
         }
     }
@@ -2261,17 +2298,17 @@ async fn propagate_membership_update_to_peer(
     context: &MembershipPropagationContext<'_>,
     peer: &str,
     request: &ClusterMembershipUpdateRequest,
-) -> Result<(), String> {
+) -> Result<(), MembershipPropagationFailure> {
     attest_peer_http_target(
         context.config,
         peer,
         Duration::from_secs(MEMBERSHIP_UPDATE_PROPAGATION_TIMEOUT_SECS),
     )
     .map_err(|error| {
-        format!(
+        MembershipPropagationFailure::terminal(format!(
             "membership propagation preflight failed for '{}': {}",
             peer, error
-        )
+        ))
     })?;
 
     let url = format!(
@@ -2324,11 +2361,15 @@ async fn propagate_membership_update_to_peer(
                     status = status.as_u16(),
                     "Membership propagation failed"
                 );
-                return Err(format!(
+                let message = format!(
                     "membership propagation to peer '{}' failed with HTTP status {}",
                     peer,
                     status.as_u16()
-                ));
+                );
+                if should_retry_membership_propagation_status(status) {
+                    return Err(MembershipPropagationFailure::retryable(message));
+                }
+                return Err(MembershipPropagationFailure::terminal(message));
             }
             Err(error) => {
                 if attempt < MEMBERSHIP_UPDATE_PROPAGATION_MAX_ATTEMPTS {
@@ -2352,17 +2393,17 @@ async fn propagate_membership_update_to_peer(
                     error = ?error,
                     "Membership propagation failed after retries"
                 );
-                return Err(format!(
+                return Err(MembershipPropagationFailure::retryable(format!(
                     "membership propagation to peer '{}' failed after retries: {}",
                     peer, error
-                ));
+                )));
             }
         }
     }
-    Err(format!(
+    Err(MembershipPropagationFailure::terminal(format!(
         "membership propagation to peer '{}' did not complete",
         peer
-    ))
+    )))
 }
 
 async fn replay_pending_membership_propagation_backlog_once(
@@ -2425,11 +2466,25 @@ async fn replay_pending_membership_propagation_backlog_once(
                     },
                 );
             }
-            Err(error) => {
+            Err(failure) => {
+                if !failure.retryable {
+                    summary.acknowledged = summary.acknowledged.saturating_add(1);
+                    tracing::warn!(
+                        peer = original_operation.peer.as_str(),
+                        error = failure.message.as_str(),
+                        "Dropping pending membership propagation operation after terminal failure"
+                    );
+                    replay_outcomes.push(
+                        PendingMembershipPropagationReplayOperationOutcome::Dropped {
+                            original: original_operation,
+                        },
+                    );
+                    continue;
+                }
                 summary.failed = summary.failed.saturating_add(1);
                 operation.attempts = operation.attempts.saturating_add(1);
                 operation.updated_at_unix_ms = now_unix_ms;
-                operation.last_error = Some(error);
+                operation.last_error = Some(failure.message);
                 operation.next_retry_at_unix_ms = Some(
                     now_unix_ms
                         .saturating_add(membership_propagation_retry_delay_ms(operation.attempts)),
@@ -2459,7 +2514,8 @@ fn apply_pending_membership_propagation_replay_outcomes(
 ) -> Vec<PendingMembershipPropagationOperation> {
     for outcome in replay_outcomes {
         match outcome {
-            PendingMembershipPropagationReplayOperationOutcome::Acknowledged { original } => {
+            PendingMembershipPropagationReplayOperationOutcome::Acknowledged { original }
+            | PendingMembershipPropagationReplayOperationOutcome::Dropped { original } => {
                 if let Some(index) = operations.iter().position(|operation| {
                     peer_identity_eq(operation.peer.as_str(), original.peer.as_str())
                 }) {
@@ -2831,7 +2887,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::cluster::join_authorization::InMemoryJoinNonceReplayGuard;
-    use crate::config::{Config, MembershipProtocol, WriteDurabilityMode};
+    use crate::config::{
+        ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode,
+    };
     use crate::membership::{MembershipEngine, MembershipEngineStatus};
     use crate::metadata::{
         ClusterMetadataListingStrategy, MetadataReconcileAction, MetadataRepairPlan,
@@ -2863,6 +2921,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
         }
     }
 
@@ -5164,6 +5223,39 @@ mod tests {
         assert_eq!(merged.len(), 2);
         assert_eq!(merged[0], failed_retry);
         assert_eq!(merged[1], untouched);
+    }
+
+    #[test]
+    fn apply_pending_membership_propagation_replay_outcomes_drops_terminal_failures() {
+        let request = ClusterMembershipUpdateRequest {
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b.internal:9000".to_string()],
+            expected_membership_view_id: None,
+            expected_placement_epoch: None,
+        };
+        let operation = |peer: &str| PendingMembershipPropagationOperation {
+            peer: peer.to_string(),
+            request: request.clone(),
+            attempts: 1,
+            created_at_unix_ms: 1_000,
+            updated_at_unix_ms: 1_000,
+            next_retry_at_unix_ms: Some(2_000),
+            last_error: None,
+        };
+
+        let dropped_original = operation("node-a.internal:9000");
+        let untouched = operation("node-b.internal:9000");
+
+        let merged = apply_pending_membership_propagation_replay_outcomes(
+            vec![dropped_original.clone(), untouched.clone()],
+            vec![
+                PendingMembershipPropagationReplayOperationOutcome::Dropped {
+                    original: dropped_original,
+                },
+            ],
+        );
+
+        assert_eq!(merged, vec![untouched]);
     }
 
     #[test]

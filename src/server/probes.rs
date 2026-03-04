@@ -1019,6 +1019,20 @@ pub(super) fn probe_cluster_peer_auth_status(
     }
 }
 
+pub(super) fn cluster_peer_auth_transport_required(
+    config: &Config,
+    topology: &RuntimeTopologySnapshot,
+    auth_status: &ClusterPeerAuthStatus,
+) -> bool {
+    if !topology.is_distributed() || !auth_status.configured {
+        return false;
+    }
+    if config.cluster_peer_transport_required() {
+        return true;
+    }
+    auth_status.transport_identity == "mtls-path"
+}
+
 pub(super) fn probe_cluster_join_auth_status(
     state: &AppState,
     topology: &RuntimeTopologySnapshot,
@@ -1048,6 +1062,24 @@ pub(super) fn probe_cluster_join_auth_status(
                 "Cluster join authorization requires shared-token peer auth in distributed mode; configure MAXIO_CLUSTER_AUTH_TOKEN."
                     .to_string(),
             ),
+        };
+    }
+
+    let cluster_peer_auth_status = probe_cluster_peer_auth_status(state.config.as_ref(), topology);
+    if cluster_peer_auth_transport_required(
+        state.config.as_ref(),
+        topology,
+        &cluster_peer_auth_status,
+    ) && !cluster_peer_auth_status.transport_ready
+    {
+        return ClusterJoinAuthStatus {
+            mode,
+            ready: false,
+            reason: JOIN_AUTHORIZE_REASON_CLUSTER_PEER_TRANSPORT_NOT_READY,
+            warning: Some(format!(
+                "Cluster join authorization requires ready peer transport identity in current mode (reason: {}).",
+                cluster_peer_auth_status.transport_reason
+            )),
         };
     }
 
