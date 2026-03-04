@@ -40,6 +40,7 @@ use crate::storage::StorageError;
 
 pub(super) const INTERNAL_METADATA_SCOPE_QUERY_PARAM: &str = "x-maxio-internal-metadata-scope";
 pub(super) const INTERNAL_METADATA_SCOPE_LOCAL_ONLY: &str = "local-node-only";
+pub(super) const INTERNAL_MEMBERSHIP_VIEW_ID_HEADER: &str = "x-maxio-internal-membership-view-id";
 const PERSISTED_METADATA_STATE_FILE: &str = "cluster-metadata-state.json";
 const CONSENSUS_LISTING_PAGE_SIZE: usize = 1_000;
 const PERSISTED_BUCKET_TOMBSTONE_RETENTION_MS: u64 = 5 * 60 * 1000;
@@ -1026,6 +1027,50 @@ pub(super) fn is_trusted_internal_local_metadata_scope_request(
     auth_result.trusted
 }
 
+pub(super) fn extract_internal_peer_membership_view_id(
+    headers: &reqwest::header::HeaderMap,
+    peer: &str,
+    operation: &str,
+) -> Result<String, String> {
+    headers
+        .get(INTERNAL_MEMBERSHIP_VIEW_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| {
+            format!(
+                "Peer metadata fan-in response for '{operation}' from '{peer}' is missing internal membership view id header",
+            )
+        })
+}
+
+pub(super) fn ensure_stable_internal_peer_membership_view_id(
+    expected_view_id: &mut Option<String>,
+    current_view_id: &str,
+    peer: &str,
+    operation: &str,
+) -> Result<(), String> {
+    let current_view_id = current_view_id.trim();
+    if current_view_id.is_empty() {
+        return Err(format!(
+            "Peer metadata fan-in response for '{operation}' from '{peer}' has an empty internal membership view id header",
+        ));
+    }
+    if let Some(previous_view_id) = expected_view_id.as_deref() {
+        if previous_view_id != current_view_id {
+            return Err(format!(
+                "Peer metadata fan-in response for '{operation}' from '{peer}' changed membership view id from '{}' to '{}'",
+                previous_view_id, current_view_id
+            ));
+        }
+    } else {
+        *expected_view_id = Some(current_view_id.to_string());
+    }
+
+    Ok(())
+}
+
 pub(super) async fn send_internal_peer_get(
     state: &AppState,
     peer: &str,
@@ -1189,6 +1234,41 @@ mod tests {
     fn validate_list_delimiter_rejects_empty_values() {
         assert!(validate_list_delimiter("").is_some());
         assert!(validate_list_delimiter("/").is_none());
+    }
+
+    #[test]
+    fn extract_internal_peer_membership_view_id_accepts_valid_header() {
+        let mut headers = reqwest::header::HeaderMap::new();
+        headers.insert(
+            INTERNAL_MEMBERSHIP_VIEW_ID_HEADER,
+            reqwest::header::HeaderValue::from_static("view-a"),
+        );
+
+        let observed =
+            extract_internal_peer_membership_view_id(&headers, "node-b:9000", "ListConsole")
+                .expect("membership view id should parse");
+        assert_eq!(observed, "view-a");
+    }
+
+    #[test]
+    fn extract_internal_peer_membership_view_id_rejects_missing_header() {
+        let headers = reqwest::header::HeaderMap::new();
+        let err = extract_internal_peer_membership_view_id(&headers, "node-b:9000", "ListConsole")
+            .expect_err("missing header should fail");
+        assert!(err.contains("missing internal membership view id header"));
+    }
+
+    #[test]
+    fn ensure_stable_internal_peer_membership_view_id_rejects_view_drift() {
+        let mut expected = Some("view-a".to_string());
+        let err = ensure_stable_internal_peer_membership_view_id(
+            &mut expected,
+            "view-b",
+            "node-b:9000",
+            "ListConsole",
+        )
+        .expect_err("view drift should fail");
+        assert!(err.contains("changed membership view id"));
     }
 
     #[tokio::test]

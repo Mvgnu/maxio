@@ -253,6 +253,7 @@ async fn fetch_peer_local_object_listing(
     let mut collected = Vec::new();
     let mut next_continuation_token: Option<String> = None;
     let mut seen_tokens = HashSet::<String>::new();
+    let mut responder_membership_view_id: Option<String> = None;
 
     loop {
         let mut query = vec![
@@ -278,6 +279,17 @@ async fn fetch_peer_local_object_listing(
                 response.status().as_u16()
             ));
         }
+        let observed_membership_view_id = storage::extract_internal_peer_membership_view_id(
+            response.headers(),
+            peer,
+            "ListConsoleObjects",
+        )?;
+        storage::ensure_stable_internal_peer_membership_view_id(
+            &mut responder_membership_view_id,
+            observed_membership_view_id.as_str(),
+            peer,
+            "ListConsoleObjects",
+        )?;
 
         let body = response.text().await.map_err(|err| err.to_string())?;
         let parsed = from_str::<PeerListBucketResultV2>(&body).map_err(|err| err.to_string())?;

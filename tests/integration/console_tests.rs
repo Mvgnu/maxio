@@ -2311,7 +2311,7 @@ async fn test_console_list_objects_reports_metadata_strategy_for_consensus_index
     let shared_token = "console-object-listing-consensus-shared-token";
     let bucket = "console-distributed-list-consensus-index";
     let owner_node_id = "127.0.0.1:39243";
-    let owner_cluster_peers = vec![];
+    let owner_cluster_peers = vec!["node-a.internal:9000".to_string()];
     let owner_membership_view_id =
         consensus_membership_view_id(owner_node_id, owner_cluster_peers.as_slice());
 
@@ -3144,7 +3144,7 @@ async fn test_console_list_versions_consensus_index_merges_peer_state_when_ready
     let bucket = "console-versions-listing-consensus";
     let key = "docs/readme.txt";
     let owner_node_id = "127.0.0.1:39244";
-    let owner_cluster_peers = vec![];
+    let owner_cluster_peers = vec!["node-a.internal:9000".to_string()];
     let owner_membership_view_id =
         consensus_membership_view_id(owner_node_id, owner_cluster_peers.as_slice());
 
@@ -3255,7 +3255,7 @@ async fn test_console_list_versions_consensus_index_does_not_fallback_to_local_s
     let bucket = "console-versions-listing-consensus-authoritative";
     let key = "docs/readme.txt";
     let owner_node_id = "127.0.0.1:39246";
-    let owner_cluster_peers = vec![];
+    let owner_cluster_peers = vec!["node-a.internal:9000".to_string()];
     let owner_membership_view_id =
         consensus_membership_view_id(owner_node_id, owner_cluster_peers.as_slice());
 

@@ -656,6 +656,7 @@ async fn fetch_peer_local_object_versions(
     let mut next_key_marker: Option<String> = None;
     let mut next_version_id_marker: Option<String> = None;
     let mut seen_markers = HashSet::<String>::new();
+    let mut responder_membership_view_id: Option<String> = None;
 
     loop {
         let mut query = vec![
@@ -682,6 +683,17 @@ async fn fetch_peer_local_object_versions(
                 response.status().as_u16()
             ));
         }
+        let observed_membership_view_id = storage::extract_internal_peer_membership_view_id(
+            response.headers(),
+            peer,
+            "ListConsoleObjectVersions",
+        )?;
+        storage::ensure_stable_internal_peer_membership_view_id(
+            &mut responder_membership_view_id,
+            observed_membership_view_id.as_str(),
+            peer,
+            "ListConsoleObjectVersions",
+        )?;
 
         let body = response.text().await.map_err(|err| err.to_string())?;
         let parsed = from_str::<PeerListVersionsResult>(&body).map_err(|err| err.to_string())?;
