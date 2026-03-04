@@ -49,9 +49,9 @@ use crate::cluster::authenticator::{
 };
 use crate::cluster::internal_transport::parse_forwarded_by_chain;
 use crate::cluster::join_authorization::{
-    DEFAULT_JOIN_MAX_CLOCK_SKEW_MS, InMemoryJoinNonceReplayGuard, JOIN_CLUSTER_ID_HEADER,
+    DEFAULT_JOIN_MAX_CLOCK_SKEW_MS, DurableJoinNonceReplayGuard, JOIN_CLUSTER_ID_HEADER,
     JOIN_NODE_ID_HEADER, JOIN_NONCE_HEADER, JOIN_TIMESTAMP_HEADER, JoinAuthorizationError,
-    authorize_join_request,
+    JoinNonceReplayGuard, authorize_join_request,
 };
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::cluster::transport_identity::{
@@ -98,6 +98,7 @@ const PENDING_REBALANCE_QUEUE_FILE: &str = "pending-rebalance-queue.json";
 const PENDING_MEMBERSHIP_PROPAGATION_QUEUE_FILE: &str = "pending-membership-propagation-queue.json";
 const PENDING_METADATA_REPAIR_QUEUE_FILE: &str = "pending-metadata-repair-queue.json";
 const PERSISTED_METADATA_STATE_FILE: &str = "cluster-metadata-state.json";
+const JOIN_NONCE_REPLAY_STATE_FILE: &str = "join-nonce-replay.json";
 const PENDING_REPLICATION_DUE_TARGET_SCAN_LIMIT: usize = 10_000;
 const PENDING_REBALANCE_DUE_TRANSFER_SCAN_LIMIT: usize = 10_000;
 const PENDING_MEMBERSHIP_PROPAGATION_DUE_OPERATION_SCAN_LIMIT: usize = 10_000;
@@ -168,7 +169,7 @@ pub struct AppState {
     pub membership_engine: MembershipEngine,
     pub membership_last_update_unix_ms: Arc<AtomicU64>,
     pub membership_converged: Arc<AtomicU64>,
-    pub join_nonce_replay_guard: Arc<InMemoryJoinNonceReplayGuard>,
+    pub join_nonce_replay_guard: Arc<dyn JoinNonceReplayGuard + Send + Sync>,
     pub cluster_join_authorize_counters: Arc<ClusterJoinAuthorizeCounters>,
     pub cluster_join_counters: Arc<ClusterJoinCounters>,
     pub cluster_membership_update_counters: Arc<ClusterMembershipUpdateCounters>,
@@ -1384,6 +1385,7 @@ impl AppState {
             config.parity_shards,
         )
         .await?;
+        let join_nonce_replay_state_path = join_nonce_replay_state_path(config.data_dir.as_str());
 
         Ok(Self {
             storage: Arc::new(storage),
@@ -1400,7 +1402,8 @@ impl AppState {
             membership_engine,
             membership_last_update_unix_ms,
             membership_converged,
-            join_nonce_replay_guard: Arc::new(InMemoryJoinNonceReplayGuard::new(
+            join_nonce_replay_guard: Arc::new(DurableJoinNonceReplayGuard::new(
+                join_nonce_replay_state_path,
                 JOIN_NONCE_REPLAY_GUARD_TTL_MS,
                 JOIN_NONCE_REPLAY_GUARD_MAX_ENTRIES,
             )),
@@ -1426,6 +1429,12 @@ impl AppState {
             started_at: Instant::now(),
         })
     }
+}
+
+fn join_nonce_replay_state_path(data_dir: &str) -> PathBuf {
+    Path::new(data_dir)
+        .join(PLACEMENT_STATE_DIR)
+        .join(JOIN_NONCE_REPLAY_STATE_FILE)
 }
 
 pub fn runtime_topology_snapshot(state: &AppState) -> RuntimeTopologySnapshot {

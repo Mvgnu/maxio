@@ -2490,6 +2490,65 @@ async fn test_cluster_join_authorize_endpoint_accepts_and_rejects_nonce_replay()
 }
 
 #[tokio::test]
+async fn test_cluster_join_authorize_endpoint_persists_nonce_replay_guard_across_restart() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let (base_url, tmp) = start_server_with_config(config, tmp).await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    let cluster_id = health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present");
+
+    let request_timestamp = unix_ms_now_string();
+    let request_nonce = "join-probe-persisted";
+    let accepted = client()
+        .post(format!("{}/internal/cluster/join/authorize", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id)
+        .header("x-maxio-join-node-id", "peer-node-a")
+        .header("x-maxio-join-unix-ms", request_timestamp.as_str())
+        .header("x-maxio-join-nonce", request_nonce)
+        .header("x-maxio-internal-auth-token", "shared-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(accepted.status(), 200);
+
+    let mut restarted_config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    restarted_config.cluster_auth_token = Some("shared-secret".to_string());
+    restarted_config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let (restarted_base_url, _tmp) = start_server_with_config(restarted_config, tmp).await;
+
+    let replayed = client()
+        .post(format!(
+            "{}/internal/cluster/join/authorize",
+            restarted_base_url
+        ))
+        .header("x-maxio-join-cluster-id", cluster_id)
+        .header("x-maxio-join-node-id", "peer-node-a")
+        .header("x-maxio-join-unix-ms", request_timestamp.as_str())
+        .header("x-maxio-join-nonce", request_nonce)
+        .header("x-maxio-internal-auth-token", "shared-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replayed.status(), 403);
+    let replayed_body: serde_json::Value = replayed.json().await.unwrap();
+    assert_eq!(replayed_body["authorized"], false);
+    assert_eq!(replayed_body["status"], "rejected");
+    assert_eq!(replayed_body["reason"], "join_nonce_replay_detected");
+}
+
+#[tokio::test]
 async fn test_cluster_join_authorize_endpoint_rejects_missing_auth_token_in_shared_mode() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
