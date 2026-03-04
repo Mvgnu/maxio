@@ -23,7 +23,10 @@ use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
 use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_request};
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::error::S3Error;
-use crate::metadata::ClusterMetadataListingStrategy;
+use crate::metadata::{
+    ClusterMetadataListingStrategy, ClusterResponderMembershipView,
+    assess_cluster_responder_membership_views,
+};
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::ObjectMeta;
 use crate::xml::types::*;
@@ -41,6 +44,16 @@ struct ClusterObjectListingFanIn {
 
 struct ClusterVersionListingFanIn {
     responded_nodes: Vec<String>,
+    versions: Vec<ObjectMeta>,
+}
+
+struct PeerObjectListingFanInResult {
+    membership_view_id: String,
+    objects: Vec<ObjectMeta>,
+}
+
+struct PeerVersionListingFanInResult {
+    membership_view_id: String,
     versions: Vec<ObjectMeta>,
 }
 
@@ -532,11 +545,16 @@ async fn fetch_cluster_object_listing_fan_in(
 
     let mut responded_nodes = vec![topology.node_id.clone()];
     let mut objects = local_objects;
+    let mut responder_views = Vec::<ClusterResponderMembershipView>::new();
     for peer in &topology.cluster_peers {
         match fetch_peer_local_object_listing(state, peer, bucket, prefix).await {
-            Ok(mut peer_objects) => {
+            Ok(peer_listing) => {
                 responded_nodes.push(peer.clone());
-                objects.append(&mut peer_objects);
+                responder_views.push(ClusterResponderMembershipView {
+                    node_id: peer.clone(),
+                    membership_view_id: Some(peer_listing.membership_view_id),
+                });
+                objects.extend(peer_listing.objects);
             }
             Err(err) => {
                 tracing::warn!(
@@ -548,6 +566,7 @@ async fn fetch_cluster_object_listing_fan_in(
             }
         }
     }
+    ensure_peer_responder_membership_views_consistent("ListObjectsV2", responder_views.as_slice())?;
 
     Ok(ClusterObjectListingFanIn {
         responded_nodes,
@@ -560,7 +579,7 @@ async fn fetch_peer_local_object_listing(
     peer: &str,
     bucket: &str,
     prefix: &str,
-) -> Result<Vec<ObjectMeta>, S3Error> {
+) -> Result<PeerObjectListingFanInResult, S3Error> {
     let path = format!("/{bucket}");
     let mut collected = Vec::new();
     let mut next_continuation_token: Option<String> = None;
@@ -643,7 +662,15 @@ async fn fetch_peer_local_object_listing(
         next_continuation_token = Some(token);
     }
 
-    Ok(collected)
+    let membership_view_id = observed_membership_view_id.ok_or_else(|| {
+        S3Error::service_unavailable(
+            "Peer object listing request did not yield a responder membership view id",
+        )
+    })?;
+    Ok(PeerObjectListingFanInResult {
+        membership_view_id,
+        objects: collected,
+    })
 }
 
 async fn fetch_cluster_version_listing_fan_in(
@@ -660,11 +687,16 @@ async fn fetch_cluster_version_listing_fan_in(
 
     let mut responded_nodes = vec![topology.node_id.clone()];
     let mut versions = local_versions;
+    let mut responder_views = Vec::<ClusterResponderMembershipView>::new();
     for peer in &topology.cluster_peers {
         match fetch_peer_local_version_listing(state, peer, bucket, prefix).await {
-            Ok(mut peer_versions) => {
+            Ok(peer_listing) => {
                 responded_nodes.push(peer.clone());
-                versions.append(&mut peer_versions);
+                responder_views.push(ClusterResponderMembershipView {
+                    node_id: peer.clone(),
+                    membership_view_id: Some(peer_listing.membership_view_id),
+                });
+                versions.extend(peer_listing.versions);
             }
             Err(err) => {
                 tracing::warn!(
@@ -676,6 +708,10 @@ async fn fetch_cluster_version_listing_fan_in(
             }
         }
     }
+    ensure_peer_responder_membership_views_consistent(
+        "ListObjectVersions",
+        responder_views.as_slice(),
+    )?;
 
     versions.sort_by(|a, b| {
         let key_cmp = a.key.cmp(&b.key);
@@ -698,7 +734,7 @@ async fn fetch_peer_local_version_listing(
     peer: &str,
     bucket: &str,
     prefix: &str,
-) -> Result<Vec<ObjectMeta>, S3Error> {
+) -> Result<PeerVersionListingFanInResult, S3Error> {
     let path = format!("/{bucket}");
     let mut collected = Vec::new();
     let mut next_key_marker: Option<String> = None;
@@ -817,7 +853,15 @@ async fn fetch_peer_local_version_listing(
         next_version_id_marker = version_id_marker;
     }
 
-    Ok(collected)
+    let membership_view_id = observed_membership_view_id.ok_or_else(|| {
+        S3Error::service_unavailable(
+            "Peer object versions request did not yield a responder membership view id",
+        )
+    })?;
+    Ok(PeerVersionListingFanInResult {
+        membership_view_id,
+        versions: collected,
+    })
 }
 
 fn normalize_version_id(version_id: Option<String>) -> Option<String> {
@@ -875,6 +919,27 @@ fn ensure_stable_internal_peer_membership_view_id(
             observed, responder_membership_view_id
         ))),
     }
+}
+
+fn ensure_peer_responder_membership_views_consistent(
+    operation: &str,
+    responders: &[ClusterResponderMembershipView],
+) -> Result<(), S3Error> {
+    if responders.is_empty() {
+        return Ok(());
+    }
+    let assessment = assess_cluster_responder_membership_views(None, responders);
+    if assessment.consistent {
+        return Ok(());
+    }
+
+    let reason = assessment
+        .gap
+        .map(|gap| gap.as_str())
+        .unwrap_or("unknown-membership-view-gap");
+    Err(S3Error::service_unavailable(&format!(
+        "Distributed metadata fan-in for '{operation}' observed inconsistent peer membership view ids ({reason})",
+    )))
 }
 
 async fn send_internal_peer_get(
@@ -983,5 +1048,29 @@ mod tests {
         .expect_err("view change during pagination must fail closed");
         assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
         assert!(err.message.contains("changed membership view id"));
+    }
+
+    #[test]
+    fn ensure_peer_responder_membership_views_consistent_rejects_inconsistent_views() {
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-c:9000".to_string(),
+                membership_view_id: Some("view-b".to_string()),
+            },
+        ];
+        let err = ensure_peer_responder_membership_views_consistent(
+            "ListObjectsV2",
+            responders.as_slice(),
+        )
+        .expect_err("inconsistent responder views must fail");
+        assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
+        assert!(
+            err.message
+                .contains("inconsistent peer membership view ids")
+        );
     }
 }

@@ -27,15 +27,17 @@ use crate::metadata::{
     ClusterBucketMetadataConvergenceAssessment, ClusterBucketMetadataConvergenceGap,
     ClusterBucketMetadataConvergenceInputError, ClusterBucketMetadataReadResolution,
     ClusterBucketMetadataResponderState, ClusterBucketPresenceConvergenceExpectation,
-    ClusterBucketPresenceReadResolution, ClusterMetadataListingStrategy, MetadataNodeBucketsPage,
-    PersistedBucketMetadataOperationError, PersistedBucketMutationPreconditionResolution,
-    PersistedMetadataQueryError, apply_bucket_metadata_operation_to_persisted_state,
+    ClusterBucketPresenceReadResolution, ClusterMetadataListingStrategy,
+    ClusterResponderMembershipView, MetadataNodeBucketsPage, PersistedBucketMetadataOperationError,
+    PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError,
+    apply_bucket_metadata_operation_to_persisted_state,
     assess_cluster_bucket_metadata_convergence_for_responder_states,
     assess_cluster_bucket_presence_convergence,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
-    cluster_metadata_readiness_reject_reason, list_buckets_from_persisted_state_with_view_id,
-    load_persisted_metadata_state, merge_cluster_list_buckets_page_with_topology_snapshot,
+    assess_cluster_responder_membership_views, cluster_metadata_readiness_reject_reason,
+    list_buckets_from_persisted_state_with_view_id, load_persisted_metadata_state,
+    merge_cluster_list_buckets_page_with_topology_snapshot,
     resolve_bucket_metadata_from_persisted_state,
     resolve_bucket_mutation_preconditions_from_persisted_state,
     resolve_cluster_bucket_metadata_for_read, resolve_cluster_bucket_presence_for_read,
@@ -76,6 +78,26 @@ struct ClusterBucketVersioningFanIn {
 struct ClusterBucketLifecycleFanIn {
     responded_nodes: Vec<String>,
     lifecycle_states: Vec<ClusterBucketMetadataResponderState<BucketLifecycleResponderValue>>,
+}
+
+struct PeerBucketEntriesFanInResult {
+    membership_view_id: String,
+    entries: Vec<BucketEntry>,
+}
+
+struct PeerBucketPresenceStateFanInResult {
+    membership_view_id: Option<String>,
+    state: ClusterBucketMetadataResponderState<bool>,
+}
+
+struct PeerBucketVersioningStateFanInResult {
+    membership_view_id: Option<String>,
+    state: ClusterBucketMetadataResponderState<bool>,
+}
+
+struct PeerBucketLifecycleStateFanInResult {
+    membership_view_id: Option<String>,
+    state: ClusterBucketMetadataResponderState<BucketLifecycleResponderValue>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -560,14 +582,20 @@ async fn fetch_cluster_bucket_listing_fan_in(
         buckets: bucket_entries_to_metadata_states(local_entries.as_slice()),
     }];
     let mut bucket_creation_dates = merge_bucket_creation_dates(local_entries, BTreeMap::new());
+    let mut responder_views = Vec::<ClusterResponderMembershipView>::new();
     for peer in &topology.cluster_peers {
         match fetch_peer_bucket_entries(state, peer).await {
-            Ok(entries) => {
+            Ok(peer_entries) => {
                 bucket_pages.push(MetadataNodeBucketsPage {
                     node_id: peer.clone(),
-                    buckets: bucket_entries_to_metadata_states(entries.as_slice()),
+                    buckets: bucket_entries_to_metadata_states(peer_entries.entries.as_slice()),
                 });
-                bucket_creation_dates = merge_bucket_creation_dates(entries, bucket_creation_dates);
+                bucket_creation_dates =
+                    merge_bucket_creation_dates(peer_entries.entries, bucket_creation_dates);
+                responder_views.push(ClusterResponderMembershipView {
+                    node_id: peer.clone(),
+                    membership_view_id: Some(peer_entries.membership_view_id),
+                });
             }
             Err(err) => {
                 tracing::warn!(
@@ -578,6 +606,7 @@ async fn fetch_cluster_bucket_listing_fan_in(
             }
         }
     }
+    ensure_peer_responder_membership_views_consistent("ListBuckets", responder_views.as_slice())?;
 
     Ok(ClusterBucketListingFanIn {
         bucket_pages,
@@ -588,7 +617,7 @@ async fn fetch_cluster_bucket_listing_fan_in(
 async fn fetch_peer_bucket_entries(
     state: &AppState,
     peer: &str,
-) -> Result<Vec<BucketEntry>, S3Error> {
+) -> Result<PeerBucketEntriesFanInResult, S3Error> {
     let local_scope_query = [(
         INTERNAL_METADATA_SCOPE_QUERY_PARAM,
         INTERNAL_METADATA_SCOPE_LOCAL_ONLY,
@@ -599,11 +628,15 @@ async fn fetch_peer_bucket_entries(
             "Peer bucket listing request failed",
         ));
     }
-    extract_internal_peer_membership_view_id(response.headers(), peer, "ListBuckets")?;
+    let membership_view_id =
+        extract_internal_peer_membership_view_id(response.headers(), peer, "ListBuckets")?;
     let body = response.text().await.map_err(S3Error::internal)?;
     let parsed =
         from_str::<ListAllMyBucketsResult>(&body).map_err(|_| S3Error::internal("Invalid XML"))?;
-    Ok(parsed.buckets.bucket)
+    Ok(PeerBucketEntriesFanInResult {
+        membership_view_id,
+        entries: parsed.buckets.bucket,
+    })
 }
 
 async fn send_internal_peer_get(
@@ -737,12 +770,19 @@ async fn fetch_cluster_bucket_versioning_fan_in(
     let mut versioning_states = vec![ClusterBucketMetadataResponderState::Present(
         local_versioned,
     )];
+    let mut responder_views = Vec::<ClusterResponderMembershipView>::new();
 
     for peer in &topology.cluster_peers {
         match fetch_peer_bucket_versioning_state(state, peer, bucket).await {
-            Ok(peer_state) => {
+            Ok(peer_response) => {
                 responded_nodes.push(peer.clone());
-                versioning_states.push(peer_state);
+                versioning_states.push(peer_response.state);
+                if let Some(membership_view_id) = peer_response.membership_view_id {
+                    responder_views.push(ClusterResponderMembershipView {
+                        node_id: peer.clone(),
+                        membership_view_id: Some(membership_view_id),
+                    });
+                }
             }
             Err(err) => {
                 tracing::warn!(
@@ -754,6 +794,10 @@ async fn fetch_cluster_bucket_versioning_fan_in(
             }
         }
     }
+    ensure_peer_responder_membership_views_consistent(
+        "GetBucketVersioning",
+        responder_views.as_slice(),
+    )?;
 
     Ok(ClusterBucketVersioningFanIn {
         responded_nodes,
@@ -765,7 +809,7 @@ async fn fetch_peer_bucket_versioning_state(
     state: &AppState,
     peer: &str,
     bucket: &str,
-) -> Result<ClusterBucketMetadataResponderState<bool>, S3Error> {
+) -> Result<PeerBucketVersioningStateFanInResult, S3Error> {
     let path = format!("/{}", bucket);
     let query = [
         ("versioning", ""),
@@ -780,17 +824,27 @@ async fn fetch_peer_bucket_versioning_state(
     let body = response.text().await.map_err(S3Error::internal)?;
 
     if status.is_success() {
-        extract_internal_peer_membership_view_id(&response_headers, peer, "GetBucketVersioning")?;
+        let membership_view_id = extract_internal_peer_membership_view_id(
+            &response_headers,
+            peer,
+            "GetBucketVersioning",
+        )?;
         let parsed = from_str::<PeerVersioningConfiguration>(&body)
             .map_err(|_| S3Error::internal("Invalid XML"))?;
-        return Ok(ClusterBucketMetadataResponderState::Present(
-            parsed.status.as_deref() == Some("Enabled"),
-        ));
+        return Ok(PeerBucketVersioningStateFanInResult {
+            membership_view_id: Some(membership_view_id),
+            state: ClusterBucketMetadataResponderState::Present(
+                parsed.status.as_deref() == Some("Enabled"),
+            ),
+        });
     }
     if status == StatusCode::NOT_FOUND {
         let code = parse_peer_error_code(body.as_str());
         if code.as_deref() == Some("NoSuchBucket") {
-            return Ok(ClusterBucketMetadataResponderState::MissingBucket);
+            return Ok(PeerBucketVersioningStateFanInResult {
+                membership_view_id: None,
+                state: ClusterBucketMetadataResponderState::MissingBucket,
+            });
         }
     }
 
@@ -912,11 +966,18 @@ async fn fetch_cluster_bucket_lifecycle_fan_in(
 
     let mut responded_nodes = vec![topology.node_id.clone()];
     let mut lifecycle_states = vec![local_state];
+    let mut responder_views = Vec::<ClusterResponderMembershipView>::new();
     for peer in &topology.cluster_peers {
         match fetch_peer_bucket_lifecycle_state(state, peer, bucket).await {
-            Ok(peer_state) => {
+            Ok(peer_response) => {
                 responded_nodes.push(peer.clone());
-                lifecycle_states.push(peer_state);
+                lifecycle_states.push(peer_response.state);
+                if let Some(membership_view_id) = peer_response.membership_view_id {
+                    responder_views.push(ClusterResponderMembershipView {
+                        node_id: peer.clone(),
+                        membership_view_id: Some(membership_view_id),
+                    });
+                }
             }
             Err(err) => {
                 tracing::warn!(
@@ -928,6 +989,10 @@ async fn fetch_cluster_bucket_lifecycle_fan_in(
             }
         }
     }
+    ensure_peer_responder_membership_views_consistent(
+        "GetBucketLifecycle",
+        responder_views.as_slice(),
+    )?;
 
     Ok(ClusterBucketLifecycleFanIn {
         responded_nodes,
@@ -939,7 +1004,7 @@ async fn fetch_peer_bucket_lifecycle_state(
     state: &AppState,
     peer: &str,
     bucket: &str,
-) -> Result<ClusterBucketMetadataResponderState<BucketLifecycleResponderValue>, S3Error> {
+) -> Result<PeerBucketLifecycleStateFanInResult, S3Error> {
     let path = format!("/{}", bucket);
     let query = [
         ("lifecycle", ""),
@@ -954,27 +1019,41 @@ async fn fetch_peer_bucket_lifecycle_state(
     let body = response.text().await.map_err(S3Error::internal)?;
 
     if status.is_success() {
-        extract_internal_peer_membership_view_id(&response_headers, peer, "GetBucketLifecycle")?;
+        let membership_view_id = extract_internal_peer_membership_view_id(
+            &response_headers,
+            peer,
+            "GetBucketLifecycle",
+        )?;
         let rules = parse_lifecycle_rules(body.as_str())?;
         if rules.is_empty() {
-            return Ok(ClusterBucketMetadataResponderState::Present(
-                BucketLifecycleResponderValue::NoLifecycleConfiguration,
-            ));
+            return Ok(PeerBucketLifecycleStateFanInResult {
+                membership_view_id: Some(membership_view_id),
+                state: ClusterBucketMetadataResponderState::Present(
+                    BucketLifecycleResponderValue::NoLifecycleConfiguration,
+                ),
+            });
         }
-        return Ok(ClusterBucketMetadataResponderState::Present(
-            BucketLifecycleResponderValue::Rules(canonicalize_lifecycle_rules(rules)),
-        ));
+        return Ok(PeerBucketLifecycleStateFanInResult {
+            membership_view_id: Some(membership_view_id),
+            state: ClusterBucketMetadataResponderState::Present(
+                BucketLifecycleResponderValue::Rules(canonicalize_lifecycle_rules(rules)),
+            ),
+        });
     }
 
     if status == StatusCode::NOT_FOUND {
         let code = parse_peer_error_code(body.as_str());
         return match code.as_deref() {
-            Some("NoSuchLifecycleConfiguration") => {
-                Ok(ClusterBucketMetadataResponderState::Present(
+            Some("NoSuchLifecycleConfiguration") => Ok(PeerBucketLifecycleStateFanInResult {
+                membership_view_id: None,
+                state: ClusterBucketMetadataResponderState::Present(
                     BucketLifecycleResponderValue::NoLifecycleConfiguration,
-                ))
-            }
-            Some("NoSuchBucket") => Ok(ClusterBucketMetadataResponderState::MissingBucket),
+                ),
+            }),
+            Some("NoSuchBucket") => Ok(PeerBucketLifecycleStateFanInResult {
+                membership_view_id: None,
+                state: ClusterBucketMetadataResponderState::MissingBucket,
+            }),
             _ => Err(S3Error::service_unavailable(
                 "Peer bucket lifecycle request failed",
             )),
@@ -1503,11 +1582,18 @@ async fn fetch_cluster_bucket_presence_fan_in(
 
     let mut responded_nodes = vec![topology.node_id.clone()];
     let mut bucket_presence_states = vec![local_state];
+    let mut responder_views = Vec::<ClusterResponderMembershipView>::new();
     for peer in &topology.cluster_peers {
         match fetch_peer_bucket_presence_state(state, peer, bucket).await {
-            Ok(peer_state) => {
+            Ok(peer_response) => {
                 responded_nodes.push(peer.clone());
-                bucket_presence_states.push(peer_state);
+                bucket_presence_states.push(peer_response.state);
+                if let Some(membership_view_id) = peer_response.membership_view_id {
+                    responder_views.push(ClusterResponderMembershipView {
+                        node_id: peer.clone(),
+                        membership_view_id: Some(membership_view_id),
+                    });
+                }
             }
             Err(err) => {
                 tracing::warn!(
@@ -1519,6 +1605,7 @@ async fn fetch_cluster_bucket_presence_fan_in(
             }
         }
     }
+    ensure_peer_responder_membership_views_consistent("HeadBucket", responder_views.as_slice())?;
 
     Ok(ClusterBucketPresenceFanIn {
         responded_nodes,
@@ -1530,7 +1617,7 @@ async fn fetch_peer_bucket_presence_state(
     state: &AppState,
     peer: &str,
     bucket: &str,
-) -> Result<ClusterBucketMetadataResponderState<bool>, S3Error> {
+) -> Result<PeerBucketPresenceStateFanInResult, S3Error> {
     let path = format!("/{}", bucket);
     let query = [(
         INTERNAL_METADATA_SCOPE_QUERY_PARAM,
@@ -1540,11 +1627,18 @@ async fn fetch_peer_bucket_presence_state(
         send_internal_peer_request(state, peer, Method::HEAD, path.as_str(), &query, None).await?;
     let status = response.status();
     if status.is_success() {
-        extract_internal_peer_membership_view_id(response.headers(), peer, "HeadBucket")?;
-        return Ok(ClusterBucketMetadataResponderState::Present(true));
+        let membership_view_id =
+            extract_internal_peer_membership_view_id(response.headers(), peer, "HeadBucket")?;
+        return Ok(PeerBucketPresenceStateFanInResult {
+            membership_view_id: Some(membership_view_id),
+            state: ClusterBucketMetadataResponderState::Present(true),
+        });
     }
     if status == StatusCode::NOT_FOUND {
-        return Ok(ClusterBucketMetadataResponderState::MissingBucket);
+        return Ok(PeerBucketPresenceStateFanInResult {
+            membership_view_id: None,
+            state: ClusterBucketMetadataResponderState::MissingBucket,
+        });
     }
 
     Err(S3Error::service_unavailable(
@@ -2007,6 +2101,27 @@ fn extract_internal_peer_membership_view_id(
         })
 }
 
+fn ensure_peer_responder_membership_views_consistent(
+    operation: &str,
+    responders: &[ClusterResponderMembershipView],
+) -> Result<(), S3Error> {
+    if responders.is_empty() {
+        return Ok(());
+    }
+    let assessment = assess_cluster_responder_membership_views(None, responders);
+    if assessment.consistent {
+        return Ok(());
+    }
+
+    let reason = assessment
+        .gap
+        .map(|gap| gap.as_str())
+        .unwrap_or("unknown-membership-view-gap");
+    Err(S3Error::service_unavailable(&format!(
+        "Distributed bucket metadata fan-in for '{operation}' observed inconsistent peer membership view ids ({reason})",
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2021,6 +2136,30 @@ mod tests {
         assert!(
             err.message
                 .contains("missing internal membership view id header")
+        );
+    }
+
+    #[test]
+    fn ensure_peer_responder_membership_views_consistent_rejects_inconsistent_views() {
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-c:9000".to_string(),
+                membership_view_id: Some("view-b".to_string()),
+            },
+        ];
+        let err = ensure_peer_responder_membership_views_consistent(
+            "GetBucketVersioning",
+            responders.as_slice(),
+        )
+        .expect_err("inconsistent responder views must fail");
+        assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
+        assert!(
+            err.message
+                .contains("inconsistent peer membership view ids")
         );
     }
 }
