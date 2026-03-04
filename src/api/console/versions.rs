@@ -14,7 +14,7 @@ use crate::api::console::storage;
 use crate::metadata::{
     BucketMetadataOperation, ClusterBucketMetadataConvergenceGap,
     ClusterBucketMetadataReadResolution, ClusterBucketMetadataResponderState,
-    ClusterMetadataListingStrategy, ObjectVersionMetadataState,
+    ClusterMetadataListingStrategy, ClusterResponderMembershipView, ObjectVersionMetadataState,
     resolve_cluster_bucket_metadata_for_read,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
@@ -103,6 +103,12 @@ struct PeerDeleteMarkerEntry {
 
 struct ClusterObjectVersionListingFanIn {
     responded_nodes: Vec<String>,
+    responder_membership_views: Vec<ClusterResponderMembershipView>,
+    versions: Vec<ObjectMeta>,
+}
+
+struct PeerObjectVersionsFanInResult {
+    membership_view_id: String,
     versions: Vec<ObjectMeta>,
 }
 
@@ -542,6 +548,14 @@ pub(super) async fn list_versions(
             Ok(fan_in) => fan_in,
             Err(err) => return storage::map_bucket_storage_err(err),
         };
+        if let Some(resp) = storage::reject_unready_metadata_fan_in_preflight_for_responders(
+            &topology,
+            state.metadata_listing_strategy,
+            "ListConsoleObjectVersions",
+            fan_in.responder_membership_views.as_slice(),
+        ) {
+            return resp;
+        }
         let coverage = storage::list_metadata_fan_in_coverage_for_responders(
             &state,
             fan_in.responded_nodes.as_slice(),
@@ -619,13 +633,18 @@ async fn fetch_cluster_object_version_listing_fan_in(
 ) -> Result<ClusterObjectVersionListingFanIn, StorageError> {
     let local_versions = state.storage.list_object_versions(bucket, key).await?;
     let mut responded_nodes = vec![topology.node_id.clone()];
+    let mut responder_membership_views = Vec::<ClusterResponderMembershipView>::new();
     let mut versions = local_versions;
 
     for peer in &topology.cluster_peers {
         match fetch_peer_local_object_versions(state, peer, bucket, key).await {
-            Ok(mut peer_versions) => {
+            Ok(peer_listing) => {
                 responded_nodes.push(peer.clone());
-                versions.append(&mut peer_versions);
+                responder_membership_views.push(ClusterResponderMembershipView {
+                    node_id: peer.clone(),
+                    membership_view_id: Some(peer_listing.membership_view_id),
+                });
+                versions.extend(peer_listing.versions);
             }
             Err(err) => {
                 tracing::warn!(
@@ -641,6 +660,7 @@ async fn fetch_cluster_object_version_listing_fan_in(
 
     Ok(ClusterObjectVersionListingFanIn {
         responded_nodes,
+        responder_membership_views,
         versions,
     })
 }
@@ -650,7 +670,7 @@ async fn fetch_peer_local_object_versions(
     peer: &str,
     bucket: &str,
     key: &str,
-) -> Result<Vec<ObjectMeta>, String> {
+) -> Result<PeerObjectVersionsFanInResult, String> {
     let path = format!("/{bucket}");
     let mut collected = Vec::new();
     let mut next_key_marker: Option<String> = None;
@@ -761,7 +781,15 @@ async fn fetch_peer_local_object_versions(
         next_version_id_marker = version_id_marker;
     }
 
-    Ok(collected)
+    let membership_view_id = responder_membership_view_id.ok_or_else(|| {
+        format!(
+            "Peer metadata fan-in response for 'ListConsoleObjectVersions' from '{peer}' did not yield a responder membership view id",
+        )
+    })?;
+    Ok(PeerObjectVersionsFanInResult {
+        membership_view_id,
+        versions: collected,
+    })
 }
 
 fn normalize_version_id(version_id: Option<String>) -> Option<String> {

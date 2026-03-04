@@ -10,7 +10,9 @@ use futures::TryStreamExt;
 use quick_xml::de::from_str;
 
 use super::{response, storage};
-use crate::metadata::{ClusterMetadataListingStrategy, ObjectMetadataState};
+use crate::metadata::{
+    ClusterMetadataListingStrategy, ClusterResponderMembershipView, ObjectMetadataState,
+};
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::{ObjectMeta, StorageError};
 
@@ -39,6 +41,12 @@ struct PeerObjectEntry {
 
 struct ClusterObjectListingFanIn {
     responded_nodes: Vec<String>,
+    responder_membership_views: Vec<ClusterResponderMembershipView>,
+    objects: Vec<ObjectMeta>,
+}
+
+struct PeerObjectListingFanInResult {
+    membership_view_id: String,
     objects: Vec<ObjectMeta>,
 }
 
@@ -126,6 +134,14 @@ pub(super) async fn list_objects(
                 Ok(fan_in) => fan_in,
                 Err(err) => return storage::map_bucket_storage_err(err),
             };
+        if let Some(resp) = storage::reject_unready_metadata_fan_in_preflight_for_responders(
+            &topology,
+            state.metadata_listing_strategy,
+            "ListConsoleObjects",
+            fan_in.responder_membership_views.as_slice(),
+        ) {
+            return resp;
+        }
         let coverage = storage::list_metadata_fan_in_coverage_for_responders(
             &state,
             fan_in.responded_nodes.as_slice(),
@@ -218,13 +234,18 @@ async fn fetch_cluster_object_listing_fan_in(
 ) -> Result<ClusterObjectListingFanIn, StorageError> {
     let local_objects = state.storage.list_objects(bucket, prefix).await?;
     let mut responded_nodes = vec![topology.node_id.clone()];
+    let mut responder_membership_views = Vec::<ClusterResponderMembershipView>::new();
     let mut objects = local_objects;
 
     for peer in &topology.cluster_peers {
         match fetch_peer_local_object_listing(state, peer, bucket, prefix).await {
-            Ok(mut peer_objects) => {
+            Ok(peer_listing) => {
                 responded_nodes.push(peer.clone());
-                objects.append(&mut peer_objects);
+                responder_membership_views.push(ClusterResponderMembershipView {
+                    node_id: peer.clone(),
+                    membership_view_id: Some(peer_listing.membership_view_id),
+                });
+                objects.extend(peer_listing.objects);
             }
             Err(err) => {
                 tracing::warn!(
@@ -239,6 +260,7 @@ async fn fetch_cluster_object_listing_fan_in(
 
     Ok(ClusterObjectListingFanIn {
         responded_nodes,
+        responder_membership_views,
         objects,
     })
 }
@@ -248,7 +270,7 @@ async fn fetch_peer_local_object_listing(
     peer: &str,
     bucket: &str,
     prefix: &str,
-) -> Result<Vec<ObjectMeta>, String> {
+) -> Result<PeerObjectListingFanInResult, String> {
     let path = format!("/{bucket}");
     let mut collected = Vec::new();
     let mut next_continuation_token: Option<String> = None;
@@ -330,7 +352,15 @@ async fn fetch_peer_local_object_listing(
         next_continuation_token = Some(token);
     }
 
-    Ok(collected)
+    let membership_view_id = responder_membership_view_id.ok_or_else(|| {
+        format!(
+            "Peer metadata fan-in response for 'ListConsoleObjects' from '{peer}' did not yield a responder membership view id",
+        )
+    })?;
+    Ok(PeerObjectListingFanInResult {
+        membership_view_id,
+        objects: collected,
+    })
 }
 
 fn hydrate_objects_from_consensus_states(

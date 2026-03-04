@@ -1114,6 +1114,9 @@ mod tests {
         .expect_err("inconsistent responder views must fail");
         assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
         assert!(err.message.contains("not ready"));
-        assert!(err.message.contains("inconsistent-responder-membership-view-id"));
+        assert!(
+            err.message
+                .contains("inconsistent-responder-membership-view-id")
+        );
     }
 }

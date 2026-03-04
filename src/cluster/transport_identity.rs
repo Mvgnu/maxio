@@ -100,6 +100,8 @@ pub enum PeerTransportPeerAttestationError {
     TlsHandshakeFailed,
     PeerCertificateMissing,
     PeerCertificateValidityWindowInvalid,
+    PeerCertificateFingerprintPinInvalid,
+    PeerCertificateFingerprintPinMismatch,
     PeerCertificateNodeIdentityMismatch,
 }
 
@@ -120,6 +122,12 @@ impl PeerTransportPeerAttestationError {
             Self::PeerCertificateMissing => "peer_certificate_missing",
             Self::PeerCertificateValidityWindowInvalid => {
                 "peer_certificate_validity_window_invalid"
+            }
+            Self::PeerCertificateFingerprintPinInvalid => {
+                "peer_certificate_fingerprint_pin_invalid"
+            }
+            Self::PeerCertificateFingerprintPinMismatch => {
+                "peer_certificate_fingerprint_pin_mismatch"
             }
             Self::PeerCertificateNodeIdentityMismatch => "peer_certificate_node_identity_mismatch",
         }
@@ -506,6 +514,26 @@ pub fn attest_peer_transport_identity_with_mtls(
     trust_store_path: &str,
     timeout: Duration,
 ) -> Result<(), PeerTransportPeerAttestationError> {
+    attest_peer_transport_identity_with_mtls_and_cert_sha256_pin(
+        peer_endpoint,
+        expected_node_id,
+        cert_path,
+        key_path,
+        trust_store_path,
+        None,
+        timeout,
+    )
+}
+
+pub fn attest_peer_transport_identity_with_mtls_and_cert_sha256_pin(
+    peer_endpoint: &str,
+    expected_node_id: &str,
+    cert_path: &str,
+    key_path: &str,
+    trust_store_path: &str,
+    peer_cert_sha256_pin: Option<&str>,
+    timeout: Duration,
+) -> Result<(), PeerTransportPeerAttestationError> {
     let Some((peer_host, peer_port)) =
         crate::cluster::peer_identity::parse_peer_identity(peer_endpoint)
     else {
@@ -570,6 +598,23 @@ pub fn attest_peer_transport_identity_with_mtls(
         .ok_or(PeerTransportPeerAttestationError::PeerCertificateMissing)?;
     ensure_certificate_valid_now(&peer_certificate)
         .map_err(|_| PeerTransportPeerAttestationError::PeerCertificateValidityWindowInvalid)?;
+
+    if let Some(peer_cert_sha256_pin) = normalize_path(peer_cert_sha256_pin) {
+        let Some(normalized_pins) = normalize_sha256_fingerprint_set(peer_cert_sha256_pin) else {
+            return Err(PeerTransportPeerAttestationError::PeerCertificateFingerprintPinInvalid);
+        };
+        let observed_peer_cert_fingerprint = peer_certificate_sha256_hex(&peer_certificate)
+            .map_err(|_| {
+                PeerTransportPeerAttestationError::PeerCertificateFingerprintPinMismatch
+            })?;
+        if !normalized_pins
+            .iter()
+            .any(|pin| pin == &observed_peer_cert_fingerprint)
+        {
+            return Err(PeerTransportPeerAttestationError::PeerCertificateFingerprintPinMismatch);
+        }
+    }
+
     let matches = certificate_matches_expected_node_host_in_x509(
         &peer_certificate,
         expected_node_host.as_str(),
@@ -617,6 +662,14 @@ fn socket_target(host: &str, port: u16) -> String {
 
 fn normalize_path(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
+}
+
+fn peer_certificate_sha256_hex(peer_certificate: &X509) -> Result<String, String> {
+    let peer_der = peer_certificate
+        .to_der()
+        .map_err(|error| error.to_string())?;
+    let digest = Sha256::digest(peer_der.as_slice());
+    Ok(hex::encode(digest))
 }
 
 fn normalize_peer_node_host(node_id: &str) -> Option<String> {
@@ -886,6 +939,7 @@ mod tests {
     use super::{
         PeerTransportIdentityMode, PeerTransportIdentityReadinessReason,
         PeerTransportPeerAttestationError, attest_peer_transport_identity_with_mtls,
+        attest_peer_transport_identity_with_mtls_and_cert_sha256_pin,
         ensure_certificate_valid_at_reference, probe_peer_transport_identity,
         probe_peer_transport_identity_with_cert_sha256_pin,
         probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding,
@@ -1506,6 +1560,88 @@ mod tests {
         handle.join().expect("tls server thread");
 
         assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn peer_attestation_with_pin_succeeds_when_peer_fingerprint_matches() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, key_path, trust_store_path, cert_sha256_pin) =
+            write_valid_identity_fixture(&dir);
+        let (peer_endpoint, handle) = spawn_tls_server(cert_path.as_str(), key_path.as_str());
+        let port = peer_endpoint
+            .rsplit(':')
+            .next()
+            .expect("peer endpoint should include port");
+        let expected_node_id = format!("maxio-peer:{port}");
+
+        let result = attest_peer_transport_identity_with_mtls_and_cert_sha256_pin(
+            peer_endpoint.as_str(),
+            expected_node_id.as_str(),
+            cert_path.as_str(),
+            key_path.as_str(),
+            trust_store_path.as_str(),
+            Some(cert_sha256_pin.as_str()),
+            Duration::from_secs(2),
+        );
+        handle.join().expect("tls server thread");
+
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn peer_attestation_with_pin_rejects_invalid_pin_shape() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, key_path, trust_store_path, _) = write_valid_identity_fixture(&dir);
+        let (peer_endpoint, handle) = spawn_tls_server(cert_path.as_str(), key_path.as_str());
+        let port = peer_endpoint
+            .rsplit(':')
+            .next()
+            .expect("peer endpoint should include port");
+        let expected_node_id = format!("maxio-peer:{port}");
+
+        let result = attest_peer_transport_identity_with_mtls_and_cert_sha256_pin(
+            peer_endpoint.as_str(),
+            expected_node_id.as_str(),
+            cert_path.as_str(),
+            key_path.as_str(),
+            trust_store_path.as_str(),
+            Some("invalid-pin"),
+            Duration::from_secs(2),
+        );
+        handle.join().expect("tls server thread");
+
+        assert_eq!(
+            result,
+            Err(PeerTransportPeerAttestationError::PeerCertificateFingerprintPinInvalid)
+        );
+    }
+
+    #[test]
+    fn peer_attestation_with_pin_rejects_mismatched_fingerprint() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, key_path, trust_store_path, _) = write_valid_identity_fixture(&dir);
+        let (peer_endpoint, handle) = spawn_tls_server(cert_path.as_str(), key_path.as_str());
+        let port = peer_endpoint
+            .rsplit(':')
+            .next()
+            .expect("peer endpoint should include port");
+        let expected_node_id = format!("maxio-peer:{port}");
+
+        let result = attest_peer_transport_identity_with_mtls_and_cert_sha256_pin(
+            peer_endpoint.as_str(),
+            expected_node_id.as_str(),
+            cert_path.as_str(),
+            key_path.as_str(),
+            trust_store_path.as_str(),
+            Some("ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"),
+            Duration::from_secs(2),
+        );
+        handle.join().expect("tls server thread");
+
+        assert_eq!(
+            result,
+            Err(PeerTransportPeerAttestationError::PeerCertificateFingerprintPinMismatch)
+        );
     }
 
     #[test]

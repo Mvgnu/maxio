@@ -390,10 +390,51 @@ pub fn assess_cluster_responder_membership_views(
 pub fn cluster_metadata_fan_in_preflight_reject_reason(
     preflight: &ClusterMetadataFanInPreflightAssessment,
 ) -> Option<ClusterMetadataFanInPreflightGap> {
-    if preflight.ready {
-        None
-    } else {
-        preflight.gap
+    if preflight.ready { None } else { preflight.gap }
+}
+
+fn build_cluster_metadata_fan_in_preflight_assessment(
+    snapshot: ClusterMetadataSnapshotAssessment,
+    responders: &[ClusterResponderMembershipView],
+) -> ClusterMetadataFanInPreflightAssessment {
+    let responder_membership_views =
+        assess_cluster_responder_membership_views(snapshot.view_id.as_deref(), responders);
+    let gap = cluster_metadata_readiness_reject_reason(&snapshot.readiness_assessment)
+        .map(|readiness_gap| match readiness_gap {
+            ClusterMetadataReadinessGap::StrategyNotClusterAuthoritative => {
+                ClusterMetadataFanInPreflightGap::StrategyNotClusterAuthoritative
+            }
+            ClusterMetadataReadinessGap::MissingExpectedNodes => {
+                ClusterMetadataFanInPreflightGap::MissingExpectedNodes
+            }
+            ClusterMetadataReadinessGap::UnexpectedResponderNodes => {
+                ClusterMetadataFanInPreflightGap::UnexpectedResponderNodes
+            }
+            ClusterMetadataReadinessGap::MissingAndUnexpectedNodes => {
+                ClusterMetadataFanInPreflightGap::MissingAndUnexpectedNodes
+            }
+        })
+        .or_else(|| {
+            responder_membership_views
+                .gap
+                .map(|membership_gap| match membership_gap {
+                    ClusterResponderMembershipViewGap::MissingResponderMembershipViewId => {
+                        ClusterMetadataFanInPreflightGap::MissingResponderMembershipViewId
+                    }
+                    ClusterResponderMembershipViewGap::InconsistentResponderMembershipViewId => {
+                        ClusterMetadataFanInPreflightGap::InconsistentResponderMembershipViewId
+                    }
+                    ClusterResponderMembershipViewGap::MembershipViewIdMismatch => {
+                        ClusterMetadataFanInPreflightGap::MembershipViewIdMismatch
+                    }
+                })
+        });
+
+    ClusterMetadataFanInPreflightAssessment {
+        ready: gap.is_none(),
+        snapshot,
+        responder_membership_views,
+        gap,
     }
 }
 
@@ -860,44 +901,9 @@ pub fn assess_cluster_metadata_fan_in_preflight_for_topology_responders(
         membership_nodes,
         responder_node_ids.as_slice(),
     )?;
-
-    let responder_membership_views =
-        assess_cluster_responder_membership_views(snapshot.view_id.as_deref(), responders);
-    let gap = cluster_metadata_readiness_reject_reason(&snapshot.readiness_assessment)
-        .map(|readiness_gap| match readiness_gap {
-            ClusterMetadataReadinessGap::StrategyNotClusterAuthoritative => {
-                ClusterMetadataFanInPreflightGap::StrategyNotClusterAuthoritative
-            }
-            ClusterMetadataReadinessGap::MissingExpectedNodes => {
-                ClusterMetadataFanInPreflightGap::MissingExpectedNodes
-            }
-            ClusterMetadataReadinessGap::UnexpectedResponderNodes => {
-                ClusterMetadataFanInPreflightGap::UnexpectedResponderNodes
-            }
-            ClusterMetadataReadinessGap::MissingAndUnexpectedNodes => {
-                ClusterMetadataFanInPreflightGap::MissingAndUnexpectedNodes
-            }
-        })
-        .or_else(|| {
-            responder_membership_views.gap.map(|membership_gap| match membership_gap {
-                ClusterResponderMembershipViewGap::MissingResponderMembershipViewId => {
-                    ClusterMetadataFanInPreflightGap::MissingResponderMembershipViewId
-                }
-                ClusterResponderMembershipViewGap::InconsistentResponderMembershipViewId => {
-                    ClusterMetadataFanInPreflightGap::InconsistentResponderMembershipViewId
-                }
-                ClusterResponderMembershipViewGap::MembershipViewIdMismatch => {
-                    ClusterMetadataFanInPreflightGap::MembershipViewIdMismatch
-                }
-            })
-        });
-
-    Ok(ClusterMetadataFanInPreflightAssessment {
-        ready: gap.is_none(),
-        snapshot,
-        responder_membership_views,
-        gap,
-    })
+    Ok(build_cluster_metadata_fan_in_preflight_assessment(
+        snapshot, responders,
+    ))
 }
 
 /// Build a canonical single-responder fan-in snapshot assessment from topology inputs.
@@ -918,6 +924,33 @@ pub fn assess_cluster_metadata_fan_in_snapshot_for_topology_single_responder(
         membership_nodes,
         responder_node_id,
     )
+}
+
+/// Build a canonical single-responder fan-in preflight assessment from topology + responder-view
+/// inputs.
+///
+/// This composes single-responder fan-in snapshot readiness with responder membership-view
+/// consistency so callers can consume one typed preflight gate without responder-slice plumbing.
+pub fn assess_cluster_metadata_fan_in_preflight_for_topology_single_responder(
+    source_strategy: ClusterMetadataListingStrategy,
+    view_id: Option<&str>,
+    local_node_id: &str,
+    membership_nodes: &[String],
+    responder_node_id: &str,
+    responder_membership_view_id: Option<&str>,
+) -> ClusterMetadataFanInPreflightAssessment {
+    let snapshot = assess_cluster_metadata_fan_in_snapshot_for_topology_single_responder(
+        source_strategy,
+        view_id,
+        local_node_id,
+        membership_nodes,
+        responder_node_id,
+    );
+    let responder = ClusterResponderMembershipView {
+        node_id: responder_node_id.trim().to_string(),
+        membership_view_id: responder_membership_view_id.map(ToOwned::to_owned),
+    };
+    build_cluster_metadata_fan_in_preflight_assessment(snapshot, std::slice::from_ref(&responder))
 }
 
 /// Build a canonical single-responder metadata snapshot assessment from topology inputs.
@@ -1963,14 +1996,15 @@ mod tests {
         ClusterBucketPresenceConvergenceExpectation, ClusterBucketPresenceConvergenceGap,
         ClusterBucketPresenceReadResolution, ClusterMetadataCoverageGap,
         ClusterMetadataFanInPreflightGap, ClusterMetadataListingStrategy,
-        ClusterMetadataReadinessGap,
-        ClusterResponderMembershipView, ClusterResponderMembershipViewGap, InMemoryMetadataIndex,
-        MetadataIndex, MetadataNodeBucketsPage, MetadataNodeObjectsPage, MetadataNodeVersionsPage,
-        MetadataQuery, MetadataQueryError, MetadataVersionsQuery,
-        assess_cluster_bucket_metadata_consistency, assess_cluster_bucket_metadata_convergence,
+        ClusterMetadataReadinessGap, ClusterResponderMembershipView,
+        ClusterResponderMembershipViewGap, InMemoryMetadataIndex, MetadataIndex,
+        MetadataNodeBucketsPage, MetadataNodeObjectsPage, MetadataNodeVersionsPage, MetadataQuery,
+        MetadataQueryError, MetadataVersionsQuery, assess_cluster_bucket_metadata_consistency,
+        assess_cluster_bucket_metadata_convergence,
         assess_cluster_bucket_metadata_convergence_for_responder_states,
         assess_cluster_bucket_presence_convergence, assess_cluster_metadata_coverage,
         assess_cluster_metadata_fan_in_preflight_for_topology_responders,
+        assess_cluster_metadata_fan_in_preflight_for_topology_single_responder,
         assess_cluster_metadata_fan_in_snapshot_for_topology_responders,
         assess_cluster_metadata_fan_in_snapshot_for_topology_single_responder,
         assess_cluster_metadata_readiness, assess_cluster_metadata_snapshot,
@@ -1982,8 +2016,7 @@ mod tests {
         build_cluster_metadata_coverage_from_responses, build_cluster_metadata_expected_nodes,
         build_cluster_metadata_snapshot_id, cluster_metadata_fan_in_execution_strategy,
         cluster_metadata_fan_in_preflight_reject_reason, cluster_metadata_readiness_reject_reason,
-        merge_cluster_list_buckets,
-        merge_cluster_list_buckets_page_with_coverage,
+        merge_cluster_list_buckets, merge_cluster_list_buckets_page_with_coverage,
         merge_cluster_list_buckets_page_with_topology_snapshot,
         merge_cluster_list_object_versions_page,
         merge_cluster_list_object_versions_page_with_coverage,
@@ -4484,6 +4517,53 @@ mod tests {
         assert_eq!(
             assessment.gap,
             Some(ClusterMetadataFanInPreflightGap::MissingResponderMembershipViewId)
+        );
+    }
+
+    #[test]
+    fn assess_cluster_metadata_fan_in_preflight_single_responder_is_ready_when_snapshot_and_view_align()
+     {
+        let membership = vec!["node-a:9000".to_string()];
+
+        let assessment = assess_cluster_metadata_fan_in_preflight_for_topology_single_responder(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            "node-a:9000",
+            Some("view-1"),
+        );
+
+        assert!(assessment.ready);
+        assert_eq!(assessment.gap, None);
+        assert!(assessment.responder_membership_views.consistent);
+        assert_eq!(
+            cluster_metadata_fan_in_preflight_reject_reason(&assessment),
+            None
+        );
+    }
+
+    #[test]
+    fn assess_cluster_metadata_fan_in_preflight_single_responder_reports_membership_mismatch_gap() {
+        let membership = vec!["node-a:9000".to_string()];
+
+        let assessment = assess_cluster_metadata_fan_in_preflight_for_topology_single_responder(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            "node-a:9000",
+            Some("view-2"),
+        );
+
+        assert!(!assessment.ready);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterMetadataFanInPreflightGap::MembershipViewIdMismatch)
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_preflight_reject_reason(&assessment),
+            Some(ClusterMetadataFanInPreflightGap::MembershipViewIdMismatch)
         );
     }
 }

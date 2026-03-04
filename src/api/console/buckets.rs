@@ -13,8 +13,9 @@ use super::{response, storage};
 use crate::metadata::{
     BucketMetadataOperation, BucketMetadataState, ClusterBucketMetadataConsistencyGap,
     ClusterBucketMetadataResponderState, ClusterBucketPresenceConvergenceExpectation,
-    MetadataNodeBucketsPage, assess_cluster_bucket_metadata_consistency,
-    assess_cluster_bucket_presence_convergence, cluster_metadata_readiness_reject_reason,
+    ClusterResponderMembershipView, MetadataNodeBucketsPage,
+    assess_cluster_bucket_metadata_consistency, assess_cluster_bucket_presence_convergence,
+    cluster_metadata_readiness_reject_reason,
     merge_cluster_list_buckets_page_with_topology_snapshot,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
@@ -75,6 +76,12 @@ struct ClusterBucketListingNodePage {
 
 struct ClusterBucketListingFanIn {
     bucket_pages: Vec<ClusterBucketListingNodePage>,
+    responder_membership_views: Vec<ClusterResponderMembershipView>,
+}
+
+struct PeerBucketSummariesFanInResult {
+    membership_view_id: String,
+    buckets: Vec<BucketSummary>,
 }
 
 struct ClusterBucketPresenceFanIn {
@@ -114,6 +121,16 @@ pub(super) async fn list_buckets(
     ) {
         match fetch_cluster_bucket_listing_fan_in(&state, &topology).await {
             Ok(fan_in) => {
+                if let Some(error_response) =
+                    storage::reject_unready_metadata_fan_in_preflight_for_responders(
+                        &topology,
+                        state.metadata_listing_strategy,
+                        "ListConsoleBuckets",
+                        fan_in.responder_membership_views.as_slice(),
+                    )
+                {
+                    return error_response;
+                }
                 let responded_nodes = fan_in.responded_nodes();
                 let metadata_coverage = storage::list_metadata_coverage_for_responders(
                     &state,
@@ -213,13 +230,18 @@ async fn fetch_cluster_bucket_listing_fan_in(
         node_id: topology.node_id.clone(),
         buckets: local_buckets,
     }];
+    let mut responder_membership_views = Vec::<ClusterResponderMembershipView>::new();
 
     for peer in &topology.cluster_peers {
         match fetch_peer_bucket_summaries(state, peer).await {
-            Ok(peer_buckets) => {
+            Ok(peer_summaries) => {
                 bucket_pages.push(ClusterBucketListingNodePage {
                     node_id: peer.clone(),
-                    buckets: peer_buckets,
+                    buckets: peer_summaries.buckets,
+                });
+                responder_membership_views.push(ClusterResponderMembershipView {
+                    node_id: peer.clone(),
+                    membership_view_id: Some(peer_summaries.membership_view_id),
                 });
             }
             Err(err) => {
@@ -232,13 +254,16 @@ async fn fetch_cluster_bucket_listing_fan_in(
         }
     }
 
-    Ok(ClusterBucketListingFanIn { bucket_pages })
+    Ok(ClusterBucketListingFanIn {
+        bucket_pages,
+        responder_membership_views,
+    })
 }
 
 async fn fetch_peer_bucket_summaries(
     state: &AppState,
     peer: &str,
-) -> Result<Vec<BucketSummary>, String> {
+) -> Result<PeerBucketSummariesFanInResult, String> {
     let list_response = storage::send_internal_peer_get(
         state,
         peer,
@@ -255,6 +280,18 @@ async fn fetch_peer_bucket_summaries(
             list_response.status().as_u16()
         ));
     }
+    let mut responder_membership_view_id = None::<String>;
+    let observed_membership_view_id = storage::extract_internal_peer_membership_view_id(
+        list_response.headers(),
+        peer,
+        "ListConsoleBuckets",
+    )?;
+    storage::ensure_stable_internal_peer_membership_view_id(
+        &mut responder_membership_view_id,
+        observed_membership_view_id.as_str(),
+        peer,
+        "ListConsoleBuckets",
+    )?;
 
     let list_body = list_response.text().await.map_err(|err| err.to_string())?;
     let peer_listing =
@@ -262,7 +299,13 @@ async fn fetch_peer_bucket_summaries(
 
     let mut buckets = Vec::with_capacity(peer_listing.buckets.bucket.len());
     for bucket in peer_listing.buckets.bucket {
-        let versioning = fetch_peer_bucket_versioning(state, peer, bucket.name.as_str()).await?;
+        let versioning = fetch_peer_bucket_versioning(
+            state,
+            peer,
+            bucket.name.as_str(),
+            &mut responder_membership_view_id,
+        )
+        .await?;
         buckets.push(BucketSummary {
             name: bucket.name,
             created_at: bucket.creation_date,
@@ -270,13 +313,22 @@ async fn fetch_peer_bucket_summaries(
         });
     }
 
-    Ok(buckets)
+    let membership_view_id = responder_membership_view_id.ok_or_else(|| {
+        format!(
+            "Peer metadata fan-in response for 'ListConsoleBuckets' from '{peer}' did not yield a responder membership view id",
+        )
+    })?;
+    Ok(PeerBucketSummariesFanInResult {
+        membership_view_id,
+        buckets,
+    })
 }
 
 async fn fetch_peer_bucket_versioning(
     state: &AppState,
     peer: &str,
     bucket: &str,
+    responder_membership_view_id: &mut Option<String>,
 ) -> Result<bool, String> {
     let path = format!("/{}", bucket);
     let versioning_response = storage::send_internal_peer_get(
@@ -298,6 +350,17 @@ async fn fetch_peer_bucket_versioning(
             versioning_response.status().as_u16()
         ));
     }
+    let observed_membership_view_id = storage::extract_internal_peer_membership_view_id(
+        versioning_response.headers(),
+        peer,
+        "ListConsoleBuckets",
+    )?;
+    storage::ensure_stable_internal_peer_membership_view_id(
+        responder_membership_view_id,
+        observed_membership_view_id.as_str(),
+        peer,
+        "ListConsoleBuckets",
+    )?;
 
     let versioning_body = versioning_response
         .text()

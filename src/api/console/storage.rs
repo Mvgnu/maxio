@@ -16,23 +16,24 @@ use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::metadata::{
     BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
     ClusterBucketMetadataConvergenceAssessment, ClusterBucketMetadataConvergenceInputError,
-    ClusterBucketMetadataResponderState, ClusterMetadataListingStrategy, MetadataQuery,
-    MetadataVersionsQuery, ObjectMetadataOperation, ObjectMetadataOperationError,
-    ObjectMetadataState, ObjectVersionMetadataOperation, ObjectVersionMetadataOperationError,
-    ObjectVersionMetadataState, PersistedBucketMetadataOperationError,
-    PersistedBucketMetadataReadResolution, PersistedBucketMutationPreconditionResolution,
-    PersistedMetadataQueryError, PersistedObjectMetadataOperationError,
-    PersistedObjectVersionMetadataOperationError,
+    ClusterBucketMetadataResponderState, ClusterMetadataListingStrategy,
+    ClusterResponderMembershipView, MetadataQuery, MetadataVersionsQuery, ObjectMetadataOperation,
+    ObjectMetadataOperationError, ObjectMetadataState, ObjectVersionMetadataOperation,
+    ObjectVersionMetadataOperationError, ObjectVersionMetadataState,
+    PersistedBucketMetadataOperationError, PersistedBucketMetadataReadResolution,
+    PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError,
+    PersistedObjectMetadataOperationError, PersistedObjectVersionMetadataOperationError,
     apply_bucket_metadata_operation_to_persisted_state,
     apply_object_metadata_operation_to_persisted_state,
     apply_object_version_metadata_operation_to_persisted_state,
     assess_cluster_bucket_metadata_convergence_for_responder_states,
+    assess_cluster_metadata_fan_in_preflight_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
-    cluster_metadata_fan_in_execution_strategy, cluster_metadata_readiness_reject_reason,
-    list_buckets_from_persisted_state_with_view_id, list_object_versions_page_from_persisted_state,
-    list_objects_page_from_persisted_state, load_persisted_metadata_state,
-    resolve_bucket_metadata_from_persisted_state,
+    cluster_metadata_fan_in_execution_strategy, cluster_metadata_fan_in_preflight_reject_reason,
+    cluster_metadata_readiness_reject_reason, list_buckets_from_persisted_state_with_view_id,
+    list_object_versions_page_from_persisted_state, list_objects_page_from_persisted_state,
+    load_persisted_metadata_state, resolve_bucket_metadata_from_persisted_state,
     resolve_bucket_mutation_preconditions_from_persisted_state,
 };
 use crate::server::{AppState, RuntimeTopologySnapshot, runtime_topology_snapshot};
@@ -211,6 +212,39 @@ pub(super) fn reject_unready_metadata_listing(
     let message =
         format!("Distributed metadata listing strategy is not ready for this request ({reason})");
     Some(response::error(StatusCode::SERVICE_UNAVAILABLE, message))
+}
+
+pub(super) fn reject_unready_metadata_fan_in_preflight_for_responders(
+    topology: &RuntimeTopologySnapshot,
+    source_strategy: ClusterMetadataListingStrategy,
+    operation: &str,
+    responders: &[ClusterResponderMembershipView],
+) -> Option<Response> {
+    let preflight = assess_cluster_metadata_fan_in_preflight_for_topology_responders(
+        source_strategy,
+        None,
+        topology.node_id.as_str(),
+        topology.membership_nodes.as_slice(),
+        responders,
+    )
+    .map_err(|_| {
+        response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("Distributed metadata fan-in preflight failed for '{operation}'"),
+        )
+    })
+    .ok()?;
+    if preflight.ready {
+        return None;
+    }
+
+    let reason = cluster_metadata_fan_in_preflight_reject_reason(&preflight)
+        .map(|gap| gap.as_str())
+        .unwrap_or("unknown-fan-in-preflight-gap");
+    Some(response::error(
+        StatusCode::SERVICE_UNAVAILABLE,
+        format!("Distributed metadata fan-in for '{operation}' is not ready ({reason})"),
+    ))
 }
 
 pub(super) fn reject_unready_bucket_metadata_operation(
@@ -1133,8 +1167,11 @@ mod tests {
     use crate::config::{
         ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode,
     };
+    use crate::membership::MembershipEngineStatus;
     use crate::metadata::ClusterMetadataListingStrategy;
+    use crate::metadata::ClusterResponderMembershipView;
     use crate::server::AppState;
+    use crate::server::{RuntimeMode, RuntimeTopologySnapshot};
     use tempfile::TempDir;
 
     fn test_config(data_dir: String) -> Config {
@@ -1167,6 +1204,34 @@ mod tests {
 
     fn response_status(response: Response) -> StatusCode {
         response.status()
+    }
+
+    fn distributed_test_topology() -> RuntimeTopologySnapshot {
+        RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a.internal:9000".to_string(),
+            cluster_id: "cluster-dev".to_string(),
+            cluster_peers: vec![
+                "node-b.internal:9000".to_string(),
+                "node-c.internal:9000".to_string(),
+            ],
+            membership_nodes: vec![
+                "node-a.internal:9000".to_string(),
+                "node-b.internal:9000".to_string(),
+                "node-c.internal:9000".to_string(),
+            ],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 1,
+                warning: None,
+            },
+            membership_view_id: "view-a".to_string(),
+            placement_epoch: 1,
+        }
     }
 
     #[test]
@@ -1412,6 +1477,51 @@ mod tests {
         let response = reject_unready_metadata_listing(Some(&coverage))
             .expect("authoritative unready coverage should reject");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn reject_unready_metadata_fan_in_preflight_rejects_inconsistent_responder_views() {
+        let topology = distributed_test_topology();
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-b.internal:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-c.internal:9000".to_string(),
+                membership_view_id: Some("view-b".to_string()),
+            },
+        ];
+        let response = reject_unready_metadata_fan_in_preflight_for_responders(
+            &topology,
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            "ListConsoleObjects",
+            responders.as_slice(),
+        )
+        .expect("inconsistent responder views must fail closed");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[test]
+    fn reject_unready_metadata_fan_in_preflight_accepts_consistent_responder_views() {
+        let topology = distributed_test_topology();
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-b.internal:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-c.internal:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+        ];
+        let response = reject_unready_metadata_fan_in_preflight_for_responders(
+            &topology,
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            "ListConsoleObjects",
+            responders.as_slice(),
+        );
+        assert!(response.is_none());
     }
 
     #[tokio::test]
