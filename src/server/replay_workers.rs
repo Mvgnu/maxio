@@ -459,17 +459,12 @@ pub fn spawn_pending_metadata_repair_replay_worker(state: AppState) {
                 PENDING_METADATA_REPAIR_REPLAY_LEASE_MS,
                 PENDING_METADATA_REPAIR_REPLAY_BACKOFF_BASE_MS,
                 PENDING_METADATA_REPAIR_REPLAY_BACKOFF_MAX_MS,
-                |pending_plan| match apply_pending_metadata_repair_plan_to_persisted_state(
-                    metadata_state_path.as_path(),
-                    pending_plan,
-                ) {
-                    Ok(_) => Ok(()),
-                    Err(error @ PendingMetadataRepairApplyError::Execution(_)) => Err(
-                        PendingMetadataRepairApplyFailure::permanent(error.to_string()),
-                    ),
-                    Err(error) => Err(PendingMetadataRepairApplyFailure::transient(
-                        error.to_string(),
-                    )),
+                |pending_plan| {
+                    apply_pending_metadata_repair_plan_to_persisted_state_classified(
+                        metadata_state_path.as_path(),
+                        pending_plan,
+                    )
+                    .map(|_| ())
                 },
             ) {
                 Ok(outcome) => {

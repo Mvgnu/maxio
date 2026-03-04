@@ -63,8 +63,8 @@ use crate::embedded::ui_handler;
 use crate::membership::{MembershipEngine, MembershipEngineStatus, unix_ms_now};
 use crate::metadata::{
     ClusterMetadataListingStrategy, ClusterMetadataSnapshotAssessment,
-    PendingMetadataRepairApplyError, PendingMetadataRepairApplyFailure,
-    PendingMetadataRepairQueueSummary, apply_pending_metadata_repair_plan_to_persisted_state,
+    PendingMetadataRepairQueueSummary,
+    apply_pending_metadata_repair_plan_to_persisted_state_classified,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
     build_queryable_metadata_index_from_persisted_state, load_persisted_metadata_state,
