@@ -866,7 +866,12 @@ async fn fan_out_bucket_metadata_mutation_to_peers(
             continue;
         }
 
-        let body = response.text().await.unwrap_or_default();
+        let body = response.text().await.map_err(|err| {
+            S3Error::service_unavailable(&format!(
+                "Distributed bucket metadata mutation '{}' failed while reading responder error payload from node '{}': {}",
+                operation, peer, err
+            ))
+        })?;
         if status == StatusCode::NOT_FOUND
             && parse_peer_error_code(body.as_str()).as_deref() == Some("NoSuchBucket")
         {
@@ -1723,7 +1728,12 @@ async fn fan_out_delete_bucket_mutation_to_peers(
             continue;
         }
 
-        let body = response.text().await.unwrap_or_default();
+        let body = response.text().await.map_err(|err| {
+            S3Error::service_unavailable(&format!(
+                "Distributed bucket metadata mutation 'DeleteBucket' failed while reading responder error payload from node '{}': {}",
+                peer, err
+            ))
+        })?;
         if status == StatusCode::NOT_FOUND
             && parse_peer_error_code(body.as_str()).as_deref() == Some("NoSuchBucket")
         {
