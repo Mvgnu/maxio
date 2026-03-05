@@ -267,6 +267,7 @@ run_domain() {
         core_tests::test_bucket_versioning_distributed_request_aggregation_returns_service_unavailable_when_unready \
         core_tests::test_get_bucket_versioning_consensus_index_uses_persisted_metadata_state \
         core_tests::test_get_bucket_lifecycle_consensus_index_uses_persisted_metadata_state_for_disabled_state \
+        core_tests::test_get_bucket_lifecycle_consensus_index_uses_persisted_lifecycle_configuration_payload \
         core_tests::test_get_bucket_lifecycle_consensus_index_persists_local_mutation_state \
         core_tests::test_get_bucket_lifecycle_consensus_index_returns_service_unavailable_when_token_missing_for_enabled_rules \
         core_tests::test_get_bucket_lifecycle_consensus_index_merges_peer_state_when_token_configured \
@@ -441,6 +442,7 @@ run_domain() {
         console_tests::test_console_get_bucket_versioning_consensus_index_rejects_persisted_view_mismatch \
         console_tests::test_console_get_bucket_versioning_consensus_index_persists_local_mutation_state \
         console_tests::test_console_get_bucket_lifecycle_consensus_index_returns_empty_rules_when_disabled \
+        console_tests::test_console_get_bucket_lifecycle_consensus_index_uses_persisted_lifecycle_configuration_payload \
         console_tests::test_console_get_bucket_lifecycle_consensus_index_persists_local_mutation_state \
         console_tests::test_console_get_bucket_lifecycle_consensus_index_returns_service_unavailable_when_token_missing_for_enabled_rules \
         console_tests::test_console_get_bucket_lifecycle_consensus_index_merges_peer_state_when_token_configured \
