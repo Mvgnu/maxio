@@ -245,6 +245,7 @@ run_domain() {
       cargo test api::list::response::tests
       cargo test api::list::service::tests
       cargo test api::object::parsing::tests
+      cargo test api::object::peer_transport::tests
       cargo test api::object::service::tests
       cargo test api::object::tests
       cargo test api::multipart::tests
