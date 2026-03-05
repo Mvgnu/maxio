@@ -1824,13 +1824,7 @@ fn forwarded_delete_objects_outcome(
             is_delete_marker,
         }
     } else {
-        let code = match response.status() {
-            StatusCode::BAD_REQUEST => "InvalidArgument",
-            StatusCode::NOT_FOUND => "NoSuchBucket",
-            StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => "ServiceUnavailable",
-            StatusCode::SERVICE_UNAVAILABLE => "ServiceUnavailable",
-            _ => "InternalError",
-        };
+        let code = forwarded_delete_error_code_for_status(response.status());
         let message = response
             .status()
             .canonical_reason()
@@ -1842,6 +1836,18 @@ fn forwarded_delete_objects_outcome(
                 )
             });
         DeleteObjectsOutcome::Error { key, code, message }
+    }
+}
+
+fn forwarded_delete_error_code_for_status(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::BAD_REQUEST => "InvalidArgument",
+        StatusCode::NOT_FOUND => "NoSuchBucket",
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS => {
+            "ServiceUnavailable"
+        }
+        _ if status.is_server_error() => "ServiceUnavailable",
+        _ => "InternalError",
     }
 }
 
@@ -2121,6 +2127,41 @@ mod tests {
             }
             DeleteObjectsOutcome::Deleted { .. } => {
                 panic!("unauthorized forwarded delete should map to error");
+            }
+        }
+    }
+
+    #[test]
+    fn forwarded_delete_objects_outcome_maps_upstream_server_errors_to_service_unavailable() {
+        let internal_error = Response::builder()
+            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .body(Body::empty())
+            .expect("response");
+        let bad_gateway = Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .body(Body::empty())
+            .expect("response");
+
+        let internal_error_outcome =
+            forwarded_delete_objects_outcome("internal-error.txt".to_string(), &internal_error);
+        let bad_gateway_outcome =
+            forwarded_delete_objects_outcome("bad-gateway.txt".to_string(), &bad_gateway);
+
+        match internal_error_outcome {
+            DeleteObjectsOutcome::Error { code, .. } => {
+                assert_eq!(code, "ServiceUnavailable");
+            }
+            DeleteObjectsOutcome::Deleted { .. } => {
+                panic!("internal-error forwarded delete should map to error");
+            }
+        }
+
+        match bad_gateway_outcome {
+            DeleteObjectsOutcome::Error { code, .. } => {
+                assert_eq!(code, "ServiceUnavailable");
+            }
+            DeleteObjectsOutcome::Deleted { .. } => {
+                panic!("bad-gateway forwarded delete should map to error");
             }
         }
     }
