@@ -381,7 +381,12 @@ async fn fan_out_bucket_versioning_mutation_to_peers(
             responded_nodes.push(peer.clone());
             continue;
         }
-        let body = response.text().await.unwrap_or_default();
+        let body = response.text().await.map_err(|err| {
+            format!(
+                "Distributed bucket metadata mutation 'SetBucketVersioning' failed while reading responder error payload from node '{}': {}",
+                peer, err
+            )
+        })?;
         if status == StatusCode::NOT_FOUND
             && parse_peer_error_code(body.as_str()).as_deref() == Some("NoSuchBucket")
         {
