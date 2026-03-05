@@ -663,6 +663,36 @@ pub const fn cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_v
     )
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterBucketMetadataMutationPreconditionFailureDisposition {
+    NoSuchBucket,
+    ServiceUnavailable,
+}
+
+impl ClusterBucketMetadataMutationPreconditionFailureDisposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoSuchBucket => "no-such-bucket",
+            Self::ServiceUnavailable => "service-unavailable",
+        }
+    }
+}
+
+pub const fn cluster_bucket_metadata_mutation_precondition_failure_disposition(
+    gap: Option<ClusterBucketMetadataMutationPreconditionGap>,
+) -> Option<ClusterBucketMetadataMutationPreconditionFailureDisposition> {
+    match gap {
+        Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => {
+            Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket)
+        }
+        Some(_) => Some(
+            ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable,
+        ),
+        None => None,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterBucketMetadataMutationPreconditionAssessment<T> {
     pub ready: bool,
@@ -4916,6 +4946,86 @@ mod tests {
             !super::cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
                 ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues
             )
+        );
+    }
+
+    #[test]
+    fn mutation_precondition_failure_disposition_maps_missing_bucket_gaps_to_no_such_bucket() {
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterBucketMetadataMutationPreconditionGap::BucketMissing
+            )),
+            Some(
+                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket
+            )
+        );
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder
+            )),
+            Some(
+                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket
+            )
+        );
+    }
+
+    #[test]
+    fn mutation_precondition_failure_disposition_maps_non_missing_gaps_to_service_unavailable() {
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            )),
+            Some(
+                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+            )
+        );
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes
+            )),
+            Some(
+                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+            )
+        );
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes
+            )),
+            Some(
+                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+            )
+        );
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes
+            )),
+            Some(
+                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+            )
+        );
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues
+            )),
+            Some(
+                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+            )
+        );
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterBucketMetadataMutationPreconditionGap::NoResponderValues
+            )),
+            Some(
+                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+            )
+        );
+    }
+
+    #[test]
+    fn mutation_precondition_failure_disposition_returns_none_when_no_gap_is_present() {
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_failure_disposition(None),
+            None
         );
     }
 
