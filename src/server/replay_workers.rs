@@ -452,20 +452,14 @@ pub fn spawn_pending_metadata_repair_replay_worker(state: AppState) {
         loop {
             interval.tick().await;
             let now_unix_ms = unix_ms_now();
-            match replay_pending_metadata_repairs_once_with_classified_apply_fn(
+            match replay_pending_metadata_repairs_once_with_persisted_state_apply(
                 queue_path.as_path(),
+                metadata_state_path.as_path(),
                 now_unix_ms,
                 PENDING_METADATA_REPAIR_REPLAY_BATCH_SIZE,
                 PENDING_METADATA_REPAIR_REPLAY_LEASE_MS,
                 PENDING_METADATA_REPAIR_REPLAY_BACKOFF_BASE_MS,
                 PENDING_METADATA_REPAIR_REPLAY_BACKOFF_MAX_MS,
-                |pending_plan| {
-                    apply_pending_metadata_repair_plan_to_persisted_state_classified(
-                        metadata_state_path.as_path(),
-                        pending_plan,
-                    )
-                    .map(|_| ())
-                },
             ) {
                 Ok(outcome) => {
                     let skipped_plans = outcome.skipped_plans.saturating_add(outcome.dropped_plans);
