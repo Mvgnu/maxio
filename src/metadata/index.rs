@@ -9,6 +9,8 @@ use super::state::{BucketMetadataState, ObjectMetadataState, ObjectVersionMetada
 const METADATA_CONTINUATION_TOKEN_PREFIX: &str = "v1:";
 const METADATA_VERSIONS_CONTINUATION_TOKEN_PREFIX: &str = "v1v:";
 const METADATA_LIST_MAX_KEYS: usize = 1000;
+pub const CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON: &str =
+    "consensus-index-peer-fan-in-auth-token-missing";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataQuery {
@@ -851,6 +853,30 @@ pub const fn cluster_metadata_fan_in_execution_strategy(
         }
         other => other,
     }
+}
+
+/// Determine whether a source strategy requires shared-token transport auth for fan-in.
+///
+/// `consensus-index` keeps persisted metadata as canonical source-of-truth and uses
+/// authenticated peer fan-in for payload hydration.
+pub const fn cluster_metadata_fan_in_requires_auth_token(
+    source_strategy: ClusterMetadataListingStrategy,
+) -> bool {
+    matches!(source_strategy, ClusterMetadataListingStrategy::ConsensusIndex)
+}
+
+/// Return canonical transport reject reason for metadata fan-in auth-token readiness.
+///
+/// Callers provide token availability and can map the reject reason to domain-specific
+/// error payloads while keeping the reason label single-sourced.
+pub const fn cluster_metadata_fan_in_auth_token_reject_reason(
+    source_strategy: ClusterMetadataListingStrategy,
+    has_cluster_auth_token: bool,
+) -> Option<&'static str> {
+    if cluster_metadata_fan_in_requires_auth_token(source_strategy) && !has_cluster_auth_token {
+        return Some(CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON);
+    }
+    None
 }
 
 /// Build a canonical fan-in snapshot assessment from topology inputs.
@@ -2015,6 +2041,8 @@ mod tests {
         build_cluster_metadata_coverage_for_single_responder,
         build_cluster_metadata_coverage_from_responses, build_cluster_metadata_expected_nodes,
         build_cluster_metadata_snapshot_id, cluster_metadata_fan_in_execution_strategy,
+        cluster_metadata_fan_in_auth_token_reject_reason,
+        cluster_metadata_fan_in_requires_auth_token,
         cluster_metadata_fan_in_preflight_reject_reason, cluster_metadata_readiness_reject_reason,
         merge_cluster_list_buckets, merge_cluster_list_buckets_page_with_coverage,
         merge_cluster_list_buckets_page_with_topology_snapshot,
@@ -2025,6 +2053,7 @@ mod tests {
         merge_cluster_list_objects_page_with_topology_snapshot,
         merge_cluster_list_objects_page_with_topology_snapshot_and_marker,
         resolve_cluster_bucket_metadata_for_read, resolve_cluster_bucket_presence_for_read,
+        CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
     };
     use crate::metadata::state::{
         BucketMetadataState, ObjectMetadataState, ObjectVersionMetadataState,
@@ -3797,6 +3826,47 @@ mod tests {
                 ClusterMetadataListingStrategy::FullReplication
             ),
             ClusterMetadataListingStrategy::FullReplication
+        );
+    }
+
+    #[test]
+    fn cluster_metadata_fan_in_requires_auth_token_only_for_consensus_index() {
+        assert!(cluster_metadata_fan_in_requires_auth_token(
+            ClusterMetadataListingStrategy::ConsensusIndex
+        ));
+        assert!(!cluster_metadata_fan_in_requires_auth_token(
+            ClusterMetadataListingStrategy::RequestTimeAggregation
+        ));
+        assert!(!cluster_metadata_fan_in_requires_auth_token(
+            ClusterMetadataListingStrategy::FullReplication
+        ));
+        assert!(!cluster_metadata_fan_in_requires_auth_token(
+            ClusterMetadataListingStrategy::LocalNodeOnly
+        ));
+    }
+
+    #[test]
+    fn cluster_metadata_fan_in_auth_token_reject_reason_matches_consensus_contract() {
+        assert_eq!(
+            cluster_metadata_fan_in_auth_token_reject_reason(
+                ClusterMetadataListingStrategy::ConsensusIndex,
+                false,
+            ),
+            Some(CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON)
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_auth_token_reject_reason(
+                ClusterMetadataListingStrategy::ConsensusIndex,
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_auth_token_reject_reason(
+                ClusterMetadataListingStrategy::RequestTimeAggregation,
+                false,
+            ),
+            None
         );
     }
 
