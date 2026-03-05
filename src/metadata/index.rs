@@ -567,6 +567,41 @@ pub struct ClusterBucketMetadataConvergenceAssessment<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterBucketMetadataMutationPreconditionGap {
+    StrategyNotClusterAuthoritative,
+    MissingExpectedNodes,
+    UnexpectedResponderNodes,
+    MissingAndUnexpectedNodes,
+    BucketMissing,
+    MissingBucketOnResponder,
+    InconsistentResponderValues,
+    NoResponderValues,
+}
+
+impl ClusterBucketMetadataMutationPreconditionGap {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StrategyNotClusterAuthoritative => "strategy-not-cluster-authoritative",
+            Self::MissingExpectedNodes => "missing-expected-nodes",
+            Self::UnexpectedResponderNodes => "unexpected-responder-nodes",
+            Self::MissingAndUnexpectedNodes => "missing-and-unexpected-nodes",
+            Self::BucketMissing => "bucket-missing",
+            Self::MissingBucketOnResponder => "missing-bucket-on-responder",
+            Self::InconsistentResponderValues => "inconsistent-responder-values",
+            Self::NoResponderValues => "no-responder-values",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterBucketMetadataMutationPreconditionAssessment<T> {
+    pub ready: bool,
+    pub current_value: Option<T>,
+    pub convergence: ClusterBucketMetadataConvergenceAssessment<T>,
+    pub gap: Option<ClusterBucketMetadataMutationPreconditionGap>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClusterBucketMetadataConvergenceInputError {
     ResponderStateCardinalityMismatch,
     InvalidResponderTopology(MetadataQueryError),
@@ -799,6 +834,66 @@ pub fn assess_cluster_bucket_metadata_convergence_for_responder_states<T: Clone 
         responder_states.as_slice(),
     )
     .map_err(ClusterBucketMetadataConvergenceInputError::InvalidResponderTopology)
+}
+
+pub fn assess_cluster_bucket_metadata_mutation_preconditions<T: Clone + Eq>(
+    strategy: ClusterMetadataListingStrategy,
+    view_id: Option<&str>,
+    local_node_id: &str,
+    membership_nodes: &[String],
+    responder_states: &[ClusterBucketMetadataResponderSnapshot<T>],
+) -> Result<ClusterBucketMetadataMutationPreconditionAssessment<T>, MetadataQueryError> {
+    let convergence = assess_cluster_bucket_metadata_convergence(
+        strategy,
+        view_id,
+        local_node_id,
+        membership_nodes,
+        responder_states,
+    )?;
+    let all_missing = convergence.gap == Some(ClusterBucketMetadataConvergenceGap::MissingBucketOnResponder)
+        && !responder_states.is_empty()
+        && convergence.consistency.missing_bucket_responders == responder_states.len();
+
+    let gap = match convergence.gap {
+        Some(ClusterBucketMetadataConvergenceGap::StrategyNotClusterAuthoritative) => {
+            Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
+        }
+        Some(ClusterBucketMetadataConvergenceGap::MissingExpectedNodes) => {
+            Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
+        }
+        Some(ClusterBucketMetadataConvergenceGap::UnexpectedResponderNodes) => {
+            Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
+        }
+        Some(ClusterBucketMetadataConvergenceGap::MissingAndUnexpectedNodes) => {
+            Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes)
+        }
+        Some(ClusterBucketMetadataConvergenceGap::MissingBucketOnResponder) if all_missing => {
+            Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
+        }
+        Some(ClusterBucketMetadataConvergenceGap::MissingBucketOnResponder) => {
+            Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder)
+        }
+        Some(ClusterBucketMetadataConvergenceGap::InconsistentResponderValues) => {
+            Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues)
+        }
+        Some(ClusterBucketMetadataConvergenceGap::NoResponderValues) => {
+            Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues)
+        }
+        None => None,
+    };
+
+    let ready = gap.is_none();
+    let current_value = if ready {
+        convergence.consistency.value.clone()
+    } else {
+        None
+    };
+    Ok(ClusterBucketMetadataMutationPreconditionAssessment {
+        ready,
+        current_value,
+        convergence,
+        gap,
+    })
 }
 
 pub fn build_cluster_metadata_snapshot_id(
@@ -2018,6 +2113,7 @@ mod tests {
     use super::{
         ClusterBucketMetadataConsistencyGap, ClusterBucketMetadataConvergenceGap,
         ClusterBucketMetadataConvergenceInputError, ClusterBucketMetadataReadResolution,
+        ClusterBucketMetadataMutationPreconditionGap,
         ClusterBucketMetadataResponderSnapshot, ClusterBucketMetadataResponderState,
         ClusterBucketPresenceConvergenceExpectation, ClusterBucketPresenceConvergenceGap,
         ClusterBucketPresenceReadResolution, ClusterMetadataCoverageGap,
@@ -2028,6 +2124,7 @@ mod tests {
         MetadataQueryError, MetadataVersionsQuery, assess_cluster_bucket_metadata_consistency,
         assess_cluster_bucket_metadata_convergence,
         assess_cluster_bucket_metadata_convergence_for_responder_states,
+        assess_cluster_bucket_metadata_mutation_preconditions,
         assess_cluster_bucket_presence_convergence, assess_cluster_metadata_coverage,
         assess_cluster_metadata_fan_in_preflight_for_topology_responders,
         assess_cluster_metadata_fan_in_preflight_for_topology_single_responder,
@@ -4366,6 +4463,94 @@ mod tests {
             ClusterBucketMetadataConvergenceInputError::InvalidResponderTopology(
                 MetadataQueryError::DuplicateCoverageNodeResponse
             )
+        );
+    }
+
+    #[test]
+    fn assess_cluster_bucket_metadata_mutation_preconditions_reports_ready_with_current_value() {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders = vec![
+            ClusterBucketMetadataResponderSnapshot {
+                node_id: "node-a:9000".to_string(),
+                state: ClusterBucketMetadataResponderState::Present(true),
+            },
+            ClusterBucketMetadataResponderSnapshot {
+                node_id: "node-b:9000".to_string(),
+                state: ClusterBucketMetadataResponderState::Present(true),
+            },
+        ];
+        let assessment = assess_cluster_bucket_metadata_mutation_preconditions(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+        )
+        .expect("mutation preconditions should build");
+
+        assert!(assessment.ready);
+        assert_eq!(assessment.current_value, Some(true));
+        assert_eq!(assessment.gap, None);
+    }
+
+    #[test]
+    fn assess_cluster_bucket_metadata_mutation_preconditions_reports_bucket_missing_when_all_missing()
+     {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders: Vec<ClusterBucketMetadataResponderSnapshot<bool>> = vec![
+            ClusterBucketMetadataResponderSnapshot {
+                node_id: "node-a:9000".to_string(),
+                state: ClusterBucketMetadataResponderState::MissingBucket,
+            },
+            ClusterBucketMetadataResponderSnapshot {
+                node_id: "node-b:9000".to_string(),
+                state: ClusterBucketMetadataResponderState::MissingBucket,
+            },
+        ];
+        let assessment = assess_cluster_bucket_metadata_mutation_preconditions(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+        )
+        .expect("mutation preconditions should build");
+
+        assert!(!assessment.ready);
+        assert_eq!(assessment.current_value, None);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
+        );
+    }
+
+    #[test]
+    fn assess_cluster_bucket_metadata_mutation_preconditions_reports_partial_missing_gap() {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders = vec![
+            ClusterBucketMetadataResponderSnapshot {
+                node_id: "node-a:9000".to_string(),
+                state: ClusterBucketMetadataResponderState::Present(true),
+            },
+            ClusterBucketMetadataResponderSnapshot {
+                node_id: "node-b:9000".to_string(),
+                state: ClusterBucketMetadataResponderState::MissingBucket,
+            },
+        ];
+        let assessment = assess_cluster_bucket_metadata_mutation_preconditions(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+        )
+        .expect("mutation preconditions should build");
+
+        assert!(!assessment.ready);
+        assert_eq!(assessment.current_value, None);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder)
         );
     }
 
