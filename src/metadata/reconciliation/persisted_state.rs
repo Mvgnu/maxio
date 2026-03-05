@@ -9,6 +9,10 @@ fn materialized_source_metadata_from_plan(
     plan: &MetadataRepairPlan,
 ) -> MetadataRepairExecutionOutput {
     let mut bucket_map: BTreeMap<String, BucketMetadataState> = BTreeMap::new();
+    let mut bucket_lifecycle_configuration_map: BTreeMap<
+        String,
+        BucketLifecycleConfigurationState,
+    > = BTreeMap::new();
     let mut bucket_tombstone_map: BTreeMap<String, BucketMetadataTombstoneState> = BTreeMap::new();
     let mut object_map: BTreeMap<(String, String), ObjectMetadataState> = BTreeMap::new();
     let mut object_version_map: BTreeMap<(String, String, String), ObjectVersionMetadataState> =
@@ -33,6 +37,24 @@ fn materialized_source_metadata_from_plan(
             }
             MetadataReconcileAction::DeleteBucket { bucket } => {
                 bucket_map.remove(bucket);
+                bucket_lifecycle_configuration_map.remove(bucket);
+            }
+            MetadataReconcileAction::UpsertBucketLifecycleConfiguration {
+                bucket,
+                configuration_xml,
+                updated_at_unix_ms,
+            } => {
+                bucket_lifecycle_configuration_map.insert(
+                    bucket.clone(),
+                    BucketLifecycleConfigurationState {
+                        bucket: bucket.clone(),
+                        configuration_xml: configuration_xml.clone(),
+                        updated_at_unix_ms: *updated_at_unix_ms,
+                    },
+                );
+            }
+            MetadataReconcileAction::DeleteBucketLifecycleConfiguration { bucket } => {
+                bucket_lifecycle_configuration_map.remove(bucket);
             }
             MetadataReconcileAction::UpsertBucketTombstone {
                 bucket,
@@ -48,6 +70,7 @@ fn materialized_source_metadata_from_plan(
                     },
                 );
                 bucket_map.remove(bucket);
+                bucket_lifecycle_configuration_map.remove(bucket);
             }
             MetadataReconcileAction::DeleteBucketTombstone { bucket } => {
                 bucket_tombstone_map.remove(bucket);
@@ -112,6 +135,7 @@ fn materialized_source_metadata_from_plan(
 
     MetadataRepairExecutionOutput {
         buckets: bucket_map.into_values().collect(),
+        bucket_lifecycle_configurations: bucket_lifecycle_configuration_map.into_values().collect(),
         bucket_tombstones: bucket_tombstone_map.into_values().collect(),
         objects: object_map.into_values().collect(),
         object_versions: object_version_map.into_values().collect(),
@@ -132,7 +156,7 @@ pub fn apply_pending_metadata_repair_plan_to_persisted_state(
         persisted_state.view_id.as_str()
     };
 
-    let applied = apply_metadata_repair_plan(
+    let applied = apply_metadata_repair_plan_with_lifecycle_configs(
         pending_plan.plan.source_view_id.as_str(),
         expected_target_view_id,
         &pending_plan.plan,
@@ -146,19 +170,24 @@ pub fn apply_pending_metadata_repair_plan_to_persisted_state(
             source_object_versions: &source_state.object_versions,
             target_object_versions: &persisted_state.object_versions,
         },
+        &source_state.bucket_lifecycle_configurations,
+        &persisted_state.bucket_lifecycle_configurations,
     )
     .map_err(PendingMetadataRepairApplyError::Execution)?;
 
     persisted_state.view_id = pending_plan.plan.source_view_id.trim().to_string();
     persisted_state.buckets = applied.buckets.clone();
-    let valid_buckets: BTreeSet<String> = persisted_state
+    let valid_buckets: BTreeSet<String> = applied
         .buckets
         .iter()
         .map(|bucket| bucket.bucket.clone())
         .collect();
-    persisted_state
+    persisted_state.bucket_lifecycle_configurations = applied
         .bucket_lifecycle_configurations
-        .retain(|entry| valid_buckets.contains(&entry.bucket));
+        .iter()
+        .filter(|entry| valid_buckets.contains(&entry.bucket))
+        .cloned()
+        .collect();
     persisted_state.bucket_tombstones = applied.bucket_tombstones.clone();
     persisted_state.objects = applied.objects.clone();
     persisted_state.object_versions = applied.object_versions.clone();
@@ -345,12 +374,9 @@ pub fn apply_bucket_lifecycle_configuration_operation_to_persisted_state(
         .bucket_lifecycle_configurations
         .iter()
         .find(|state| state.bucket == operation_bucket);
-    let outcome = apply_bucket_lifecycle_configuration_operation(
-        current_state,
-        bucket_exists,
-        operation,
-    )
-    .map_err(PersistedBucketLifecycleConfigurationOperationError::Operation)?;
+    let outcome =
+        apply_bucket_lifecycle_configuration_operation(current_state, bucket_exists, operation)
+            .map_err(PersistedBucketLifecycleConfigurationOperationError::Operation)?;
 
     match outcome.configuration_state.clone() {
         Some(next_state) => {
@@ -361,7 +387,9 @@ pub fn apply_bucket_lifecycle_configuration_operation_to_persisted_state(
             {
                 *existing = next_state;
             } else {
-                persisted_state.bucket_lifecycle_configurations.push(next_state);
+                persisted_state
+                    .bucket_lifecycle_configurations
+                    .push(next_state);
             }
         }
         None => {

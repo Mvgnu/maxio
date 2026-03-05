@@ -116,6 +116,7 @@ pub async fn put_object(
             &path_and_query,
             &headers,
             body_bytes,
+            true,
             &forward.envelope,
         )
         .await;
@@ -1275,6 +1276,7 @@ async fn copy_object(
             &path_and_query,
             &headers,
             Vec::new(),
+            true,
             &forward.envelope,
         )
         .await;
@@ -1447,6 +1449,7 @@ pub async fn get_object(
             &path_and_query,
             &headers,
             Vec::new(),
+            true,
             &forward.envelope,
         )
         .await;
@@ -1589,6 +1592,7 @@ pub async fn head_object(
             &path_and_query,
             &headers,
             Vec::new(),
+            true,
             &forward.envelope,
         )
         .await;
@@ -1672,6 +1676,7 @@ pub async fn delete_object(
             &path_and_query,
             &headers,
             Vec::new(),
+            true,
             &forward.envelope,
         )
         .await;
@@ -1932,6 +1937,7 @@ pub async fn delete_objects(
                 &path_and_query,
                 &headers,
                 body_bytes,
+                true,
                 &forward.envelope,
             )
             .await;
@@ -1978,6 +1984,7 @@ pub async fn delete_objects(
                 path_and_query.as_str(),
                 &forwarded_delete_headers,
                 Vec::new(),
+                true,
                 &forward.envelope,
             )
             .await

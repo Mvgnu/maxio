@@ -463,11 +463,42 @@ pub enum ClusterBucketMetadataResponderState<T> {
     Present(T),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterObjectMetadataConsistencyGap {
+    MissingObjectOnResponder,
+    InconsistentResponderValues,
+    NoResponderValues,
+}
+
+impl ClusterObjectMetadataConsistencyGap {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::MissingObjectOnResponder => "missing-object-on-responder",
+            Self::InconsistentResponderValues => "inconsistent-responder-values",
+            Self::NoResponderValues => "no-responder-values",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClusterObjectMetadataResponderState<T> {
+    MissingObject,
+    Present(T),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterBucketMetadataConsistencyAssessment<T> {
     pub consistent: bool,
     pub gap: Option<ClusterBucketMetadataConsistencyGap>,
     pub missing_bucket_responders: usize,
+    pub value: Option<T>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterObjectMetadataConsistencyAssessment<T> {
+    pub consistent: bool,
+    pub gap: Option<ClusterObjectMetadataConsistencyGap>,
+    pub missing_object_responders: usize,
     pub value: Option<T>,
 }
 
@@ -522,6 +553,13 @@ pub struct ClusterBucketPresenceConvergenceAssessment {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClusterBucketMetadataReadResolution<T> {
+    Present(T),
+    Missing,
+    Inconsistent,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClusterObjectMetadataReadResolution<T> {
     Present(T),
     Missing,
     Inconsistent,
@@ -591,6 +629,38 @@ impl ClusterBucketMetadataMutationPreconditionGap {
             Self::NoResponderValues => "no-responder-values",
         }
     }
+}
+
+pub const fn cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
+    gap: ClusterBucketMetadataMutationPreconditionGap,
+) -> bool {
+    matches!(
+        gap,
+        ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            | ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes
+            | ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes
+            | ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes
+    )
+}
+
+pub const fn cluster_bucket_metadata_mutation_precondition_gap_is_responder_inconsistency(
+    gap: ClusterBucketMetadataMutationPreconditionGap,
+) -> bool {
+    matches!(
+        gap,
+        ClusterBucketMetadataMutationPreconditionGap::BucketMissing
+            | ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder
+            | ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues
+    )
+}
+
+pub const fn cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
+    gap: ClusterBucketMetadataMutationPreconditionGap,
+) -> bool {
+    matches!(
+        gap,
+        ClusterBucketMetadataMutationPreconditionGap::NoResponderValues
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -675,6 +745,52 @@ pub fn assess_cluster_bucket_metadata_consistency<T: Clone + Eq>(
     }
 }
 
+pub fn assess_cluster_object_metadata_consistency<T: Clone + Eq>(
+    states: &[ClusterObjectMetadataResponderState<T>],
+) -> ClusterObjectMetadataConsistencyAssessment<T> {
+    let missing_object_responders = states
+        .iter()
+        .filter(|state| matches!(state, ClusterObjectMetadataResponderState::MissingObject))
+        .count();
+    if missing_object_responders > 0 {
+        return ClusterObjectMetadataConsistencyAssessment {
+            consistent: false,
+            gap: Some(ClusterObjectMetadataConsistencyGap::MissingObjectOnResponder),
+            missing_object_responders,
+            value: None,
+        };
+    }
+
+    let mut present_values = states.iter().filter_map(|state| match state {
+        ClusterObjectMetadataResponderState::Present(value) => Some(value),
+        ClusterObjectMetadataResponderState::MissingObject => None,
+    });
+    let Some(first) = present_values.next() else {
+        return ClusterObjectMetadataConsistencyAssessment {
+            consistent: false,
+            gap: Some(ClusterObjectMetadataConsistencyGap::NoResponderValues),
+            missing_object_responders: 0,
+            value: None,
+        };
+    };
+
+    if present_values.any(|value| value != first) {
+        return ClusterObjectMetadataConsistencyAssessment {
+            consistent: false,
+            gap: Some(ClusterObjectMetadataConsistencyGap::InconsistentResponderValues),
+            missing_object_responders: 0,
+            value: None,
+        };
+    }
+
+    ClusterObjectMetadataConsistencyAssessment {
+        consistent: true,
+        gap: None,
+        missing_object_responders: 0,
+        value: Some(first.clone()),
+    }
+}
+
 pub fn resolve_cluster_bucket_presence_for_read(
     states: &[ClusterBucketMetadataResponderState<bool>],
 ) -> ClusterBucketPresenceReadResolution {
@@ -704,6 +820,21 @@ pub fn resolve_cluster_bucket_metadata_for_read<T: Clone + Eq>(
             ClusterBucketMetadataReadResolution::Missing
         }
         _ => ClusterBucketMetadataReadResolution::Inconsistent,
+    }
+}
+
+pub fn resolve_cluster_object_metadata_for_read<T: Clone + Eq>(
+    states: &[ClusterObjectMetadataResponderState<T>],
+) -> ClusterObjectMetadataReadResolution<T> {
+    let assessment = assess_cluster_object_metadata_consistency(states);
+    match (&assessment.gap, assessment.value) {
+        (None, Some(value)) => ClusterObjectMetadataReadResolution::Present(value),
+        (Some(ClusterObjectMetadataConsistencyGap::MissingObjectOnResponder), None)
+            if assessment.missing_object_responders == states.len() =>
+        {
+            ClusterObjectMetadataReadResolution::Missing
+        }
+        _ => ClusterObjectMetadataReadResolution::Inconsistent,
     }
 }
 
@@ -850,7 +981,8 @@ pub fn assess_cluster_bucket_metadata_mutation_preconditions<T: Clone + Eq>(
         membership_nodes,
         responder_states,
     )?;
-    let all_missing = convergence.gap == Some(ClusterBucketMetadataConvergenceGap::MissingBucketOnResponder)
+    let all_missing = convergence.gap
+        == Some(ClusterBucketMetadataConvergenceGap::MissingBucketOnResponder)
         && !responder_states.is_empty()
         && convergence.consistency.missing_bucket_responders == responder_states.len();
 
@@ -957,7 +1089,10 @@ pub const fn cluster_metadata_fan_in_execution_strategy(
 pub const fn cluster_metadata_fan_in_requires_auth_token(
     source_strategy: ClusterMetadataListingStrategy,
 ) -> bool {
-    matches!(source_strategy, ClusterMetadataListingStrategy::ConsensusIndex)
+    matches!(
+        source_strategy,
+        ClusterMetadataListingStrategy::ConsensusIndex
+    )
 }
 
 /// Return canonical transport reject reason for metadata fan-in auth-token readiness.
@@ -2111,14 +2246,16 @@ fn decode_versions_continuation_token(
 #[cfg(test)]
 mod tests {
     use super::{
+        CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
         ClusterBucketMetadataConsistencyGap, ClusterBucketMetadataConvergenceGap,
-        ClusterBucketMetadataConvergenceInputError, ClusterBucketMetadataReadResolution,
-        ClusterBucketMetadataMutationPreconditionGap,
-        ClusterBucketMetadataResponderSnapshot, ClusterBucketMetadataResponderState,
-        ClusterBucketPresenceConvergenceExpectation, ClusterBucketPresenceConvergenceGap,
-        ClusterBucketPresenceReadResolution, ClusterMetadataCoverageGap,
-        ClusterMetadataFanInPreflightGap, ClusterMetadataListingStrategy,
-        ClusterMetadataReadinessGap, ClusterResponderMembershipView,
+        ClusterBucketMetadataConvergenceInputError, ClusterBucketMetadataMutationPreconditionGap,
+        ClusterBucketMetadataReadResolution, ClusterBucketMetadataResponderSnapshot,
+        ClusterBucketMetadataResponderState, ClusterBucketPresenceConvergenceExpectation,
+        ClusterBucketPresenceConvergenceGap, ClusterBucketPresenceReadResolution,
+        ClusterMetadataCoverageGap, ClusterMetadataFanInPreflightGap,
+        ClusterMetadataListingStrategy, ClusterMetadataReadinessGap,
+        ClusterObjectMetadataConsistencyGap, ClusterObjectMetadataReadResolution,
+        ClusterObjectMetadataResponderState, ClusterResponderMembershipView,
         ClusterResponderMembershipViewGap, InMemoryMetadataIndex, MetadataIndex,
         MetadataNodeBucketsPage, MetadataNodeObjectsPage, MetadataNodeVersionsPage, MetadataQuery,
         MetadataQueryError, MetadataVersionsQuery, assess_cluster_bucket_metadata_consistency,
@@ -2134,13 +2271,13 @@ mod tests {
         assess_cluster_metadata_snapshot_for_single_responder,
         assess_cluster_metadata_snapshot_for_topology_responders,
         assess_cluster_metadata_snapshot_for_topology_single_responder,
-        assess_cluster_responder_membership_views,
+        assess_cluster_object_metadata_consistency, assess_cluster_responder_membership_views,
         build_cluster_metadata_coverage_for_single_responder,
         build_cluster_metadata_coverage_from_responses, build_cluster_metadata_expected_nodes,
-        build_cluster_metadata_snapshot_id, cluster_metadata_fan_in_execution_strategy,
-        cluster_metadata_fan_in_auth_token_reject_reason,
-        cluster_metadata_fan_in_requires_auth_token,
-        cluster_metadata_fan_in_preflight_reject_reason, cluster_metadata_readiness_reject_reason,
+        build_cluster_metadata_snapshot_id, cluster_metadata_fan_in_auth_token_reject_reason,
+        cluster_metadata_fan_in_execution_strategy,
+        cluster_metadata_fan_in_preflight_reject_reason,
+        cluster_metadata_fan_in_requires_auth_token, cluster_metadata_readiness_reject_reason,
         merge_cluster_list_buckets, merge_cluster_list_buckets_page_with_coverage,
         merge_cluster_list_buckets_page_with_topology_snapshot,
         merge_cluster_list_object_versions_page,
@@ -2150,7 +2287,7 @@ mod tests {
         merge_cluster_list_objects_page_with_topology_snapshot,
         merge_cluster_list_objects_page_with_topology_snapshot_and_marker,
         resolve_cluster_bucket_metadata_for_read, resolve_cluster_bucket_presence_for_read,
-        CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
+        resolve_cluster_object_metadata_for_read,
     };
     use crate::metadata::state::{
         BucketMetadataState, ObjectMetadataState, ObjectVersionMetadataState,
@@ -3827,6 +3964,102 @@ mod tests {
     }
 
     #[test]
+    fn assess_cluster_object_metadata_consistency_reports_consistent_present_value() {
+        let states = vec![
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+        ];
+        let assessment = assess_cluster_object_metadata_consistency(states.as_slice());
+        assert!(assessment.consistent);
+        assert_eq!(assessment.gap, None);
+        assert_eq!(assessment.missing_object_responders, 0);
+        assert_eq!(assessment.value, Some("etag-a".to_string()));
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_consistency_reports_missing_object_gap() {
+        let states = vec![
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            ClusterObjectMetadataResponderState::MissingObject,
+        ];
+        let assessment = assess_cluster_object_metadata_consistency(states.as_slice());
+        assert!(!assessment.consistent);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterObjectMetadataConsistencyGap::MissingObjectOnResponder)
+        );
+        assert_eq!(assessment.missing_object_responders, 1);
+        assert_eq!(assessment.value, None);
+        assert_eq!(
+            assessment
+                .gap
+                .map(ClusterObjectMetadataConsistencyGap::as_str),
+            Some("missing-object-on-responder")
+        );
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_consistency_reports_no_responder_values_gap() {
+        let states: Vec<ClusterObjectMetadataResponderState<String>> = Vec::new();
+        let assessment = assess_cluster_object_metadata_consistency(states.as_slice());
+        assert!(!assessment.consistent);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterObjectMetadataConsistencyGap::NoResponderValues)
+        );
+        assert_eq!(assessment.missing_object_responders, 0);
+        assert_eq!(assessment.value, None);
+    }
+
+    #[test]
+    fn resolve_cluster_object_metadata_for_read_reports_present_for_converged_value() {
+        let states = vec![
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+        ];
+        assert_eq!(
+            resolve_cluster_object_metadata_for_read(states.as_slice()),
+            ClusterObjectMetadataReadResolution::Present("etag-a".to_string())
+        );
+    }
+
+    #[test]
+    fn resolve_cluster_object_metadata_for_read_reports_missing_when_all_responders_missing() {
+        let states = vec![
+            ClusterObjectMetadataResponderState::<String>::MissingObject,
+            ClusterObjectMetadataResponderState::<String>::MissingObject,
+        ];
+        assert_eq!(
+            resolve_cluster_object_metadata_for_read(states.as_slice()),
+            ClusterObjectMetadataReadResolution::Missing
+        );
+    }
+
+    #[test]
+    fn resolve_cluster_object_metadata_for_read_reports_inconsistent_for_mixed_states() {
+        let states = vec![
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            ClusterObjectMetadataResponderState::MissingObject,
+        ];
+        assert_eq!(
+            resolve_cluster_object_metadata_for_read(states.as_slice()),
+            ClusterObjectMetadataReadResolution::Inconsistent
+        );
+    }
+
+    #[test]
+    fn resolve_cluster_object_metadata_for_read_reports_inconsistent_for_divergent_values() {
+        let states = vec![
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            ClusterObjectMetadataResponderState::Present("etag-b".to_string()),
+        ];
+        assert_eq!(
+            resolve_cluster_object_metadata_for_read(states.as_slice()),
+            ClusterObjectMetadataReadResolution::Inconsistent
+        );
+    }
+
+    #[test]
     fn assess_cluster_metadata_readiness_rejects_local_only_strategy_even_with_full_coverage() {
         let expected = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
         let responded = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
@@ -4551,6 +4784,138 @@ mod tests {
         assert_eq!(
             assessment.gap,
             Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder)
+        );
+    }
+
+    #[test]
+    fn mutation_precondition_gap_strategy_unready_classification_matches_expected_gaps() {
+        assert!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            )
+        );
+        assert!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes
+            )
+        );
+        assert!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes
+            )
+        );
+        assert!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterBucketMetadataMutationPreconditionGap::BucketMissing
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterBucketMetadataMutationPreconditionGap::NoResponderValues
+            )
+        );
+    }
+
+    #[test]
+    fn mutation_precondition_gap_responder_inconsistency_classification_matches_expected_gaps() {
+        assert!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterBucketMetadataMutationPreconditionGap::BucketMissing
+            )
+        );
+        assert!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder
+            )
+        );
+        assert!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterBucketMetadataMutationPreconditionGap::NoResponderValues
+            )
+        );
+    }
+
+    #[test]
+    fn mutation_precondition_gap_no_responder_values_classification_matches_expected_gaps() {
+        assert!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterBucketMetadataMutationPreconditionGap::NoResponderValues
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterBucketMetadataMutationPreconditionGap::BucketMissing
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder
+            )
+        );
+        assert!(
+            !super::cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues
+            )
         );
     }
 

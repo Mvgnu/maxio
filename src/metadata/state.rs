@@ -151,10 +151,8 @@ pub fn apply_bucket_lifecycle_configuration_operation(
     current_state: Option<&BucketLifecycleConfigurationState>,
     bucket_exists: bool,
     operation: &BucketLifecycleConfigurationOperation,
-) -> Result<
-    BucketLifecycleConfigurationOperationOutcome,
-    BucketLifecycleConfigurationOperationError,
-> {
+) -> Result<BucketLifecycleConfigurationOperationOutcome, BucketLifecycleConfigurationOperationError>
+{
     match operation {
         BucketLifecycleConfigurationOperation::UpsertConfiguration {
             bucket,
@@ -541,13 +539,12 @@ pub fn apply_object_version_metadata_operation(
 mod tests {
     use super::{
         BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
-        BucketLifecycleConfigurationState,
-        BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
-        BucketMetadataTombstoneState, ObjectMetadataOperation, ObjectMetadataOperationError,
-        ObjectMetadataState, ObjectVersionMetadataOperation, ObjectVersionMetadataOperationError,
-        ObjectVersionMetadataState, apply_bucket_lifecycle_configuration_operation,
-        apply_bucket_metadata_operation, apply_object_metadata_operation,
-        apply_object_version_metadata_operation,
+        BucketLifecycleConfigurationState, BucketMetadataOperation, BucketMetadataOperationError,
+        BucketMetadataState, BucketMetadataTombstoneState, ObjectMetadataOperation,
+        ObjectMetadataOperationError, ObjectMetadataState, ObjectVersionMetadataOperation,
+        ObjectVersionMetadataOperationError, ObjectVersionMetadataState,
+        apply_bucket_lifecycle_configuration_operation, apply_bucket_metadata_operation,
+        apply_object_metadata_operation, apply_object_version_metadata_operation,
     };
 
     #[test]
@@ -1008,8 +1005,8 @@ mod tests {
             outcome.configuration_state,
             Some(BucketLifecycleConfigurationState {
                 bucket: "photos".to_string(),
-                configuration_xml:
-                    "<LifecycleConfiguration><Rule/></LifecycleConfiguration>".to_string(),
+                configuration_xml: "<LifecycleConfiguration><Rule/></LifecycleConfiguration>"
+                    .to_string(),
                 updated_at_unix_ms: 9,
             })
         );

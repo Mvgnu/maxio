@@ -13,6 +13,8 @@ use crate::api::console::{response, storage};
 use crate::metadata::{
     BucketLifecycleConfigurationOperation, BucketMetadataOperation,
     ClusterBucketMetadataMutationPreconditionGap, ClusterBucketMetadataResponderState,
+    cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values,
+    cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::{StorageError, lifecycle::LifecycleRule};
@@ -512,7 +514,10 @@ fn resolve_cluster_bucket_lifecycle_state(
         states,
     )?;
     ensure_cluster_bucket_metadata_operation_ready(operation, assessment.gap)?;
-    if assessment.gap == Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) {
+    if assessment
+        .gap
+        .is_some_and(cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values)
+    {
         return Err(
             "Distributed bucket metadata fan-in did not include any lifecycle responders"
                 .to_string(),
@@ -533,17 +538,10 @@ fn resolve_cluster_bucket_lifecycle_state(
                 bucket
             ))
         }
-        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) => Err(format!(
+        Some(gap) => Err(format!(
             "Distributed bucket metadata fan-in for '{}' is not ready ({})",
             operation,
-            assessment
-                .gap
-                .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
-                .unwrap_or("unknown")
+            gap.as_str()
         )),
         None => match assessment.current_value {
             Some(BucketLifecycleResponderValue::NoLifecycleConfiguration) => Ok(Vec::new()),
@@ -560,20 +558,15 @@ fn ensure_cluster_bucket_metadata_operation_ready(
     operation: &str,
     gap: Option<ClusterBucketMetadataMutationPreconditionGap>,
 ) -> Result<(), String> {
-    match gap {
-        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes) => {
-            let reason = gap
-                .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
-                .unwrap_or("unknown");
-            Err(format!(
-                "Distributed metadata strategy is not ready for bucket metadata operation '{}' ({})",
-                operation, reason
-            ))
-        }
-        _ => Ok(()),
+    match gap
+        .filter(|gap| cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(*gap))
+    {
+        Some(gap) => Err(format!(
+            "Distributed metadata strategy is not ready for bucket metadata operation '{}' ({})",
+            operation,
+            gap.as_str()
+        )),
+        None => Ok(()),
     }
 }
 

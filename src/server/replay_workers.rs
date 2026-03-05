@@ -203,9 +203,16 @@ async fn replay_pending_rebalance_candidate(
     state: &AppState,
     candidate: &PendingRebalanceCandidate,
 ) -> Result<PendingRebalanceApplyOutcome, String> {
-    if !matches!(candidate.scope, RebalanceObjectScope::Object) {
+    if matches!(candidate.scope, RebalanceObjectScope::Chunk { .. }) {
+        tracing::debug!(
+            rebalance_id = candidate.rebalance_id.as_str(),
+            bucket = candidate.bucket.as_str(),
+            key = candidate.key.as_str(),
+            "Skipping pending rebalance replay because chunk transfer execution is not implemented"
+        );
         return Ok(PendingRebalanceApplyOutcome::Dropped);
     }
+
     if !pending_rebalance_target_is_current_owner(state, candidate) {
         tracing::debug!(
             rebalance_id = candidate.rebalance_id.as_str(),
@@ -245,12 +252,21 @@ pub(super) fn pending_rebalance_target_is_current_owner(
         return false;
     }
 
-    let owners = select_object_owners_with_self(
-        candidate.key.as_str(),
-        state.node_id.as_ref(),
-        peers.as_slice(),
-        replica_count,
-    );
+    let owners = match candidate.scope {
+        RebalanceObjectScope::Object => select_object_owners_with_self(
+            candidate.key.as_str(),
+            state.node_id.as_ref(),
+            peers.as_slice(),
+            replica_count,
+        ),
+        RebalanceObjectScope::Chunk { chunk_index } => select_chunk_owners_with_self(
+            candidate.key.as_str(),
+            chunk_index,
+            state.node_id.as_ref(),
+            peers.as_slice(),
+            replica_count,
+        ),
+    };
     owners
         .iter()
         .any(|owner| peer_identity_eq(owner.as_str(), candidate.to.as_str()))

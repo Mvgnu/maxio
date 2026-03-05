@@ -70,6 +70,7 @@ pub async fn create_multipart_upload(
             &path_and_query,
             &headers,
             Vec::new(),
+            true,
             &forward.envelope,
         )
         .await;
@@ -141,6 +142,7 @@ pub async fn upload_part(
             &path_and_query,
             &headers,
             body_bytes,
+            true,
             &forward.envelope,
         )
         .await;
@@ -213,6 +215,7 @@ pub async fn complete_multipart_upload(
             &path_and_query,
             &headers,
             body_bytes,
+            true,
             &forward.envelope,
         )
         .await;
@@ -517,6 +520,7 @@ pub async fn abort_multipart_upload(
             &path_and_query,
             &headers,
             Vec::new(),
+            true,
             &forward.envelope,
         )
         .await;
@@ -571,6 +575,7 @@ pub async fn list_parts(
             &path_and_query,
             &headers,
             Vec::new(),
+            true,
             &forward.envelope,
         )
         .await;

@@ -114,6 +114,32 @@ pub struct PeerTransportEnforcementAssessment {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerTransportPolicyAssessment {
+    pub required: bool,
+    pub enforcement: PeerTransportEnforcementAssessment,
+}
+
+impl PeerTransportPolicyAssessment {
+    pub const fn is_ready(&self) -> bool {
+        !self.required || self.enforcement.ready
+    }
+
+    pub const fn gap(&self) -> Option<PeerTransportIdentityReadinessReason> {
+        if self.is_ready() {
+            None
+        } else {
+            Some(self.enforcement.reason)
+        }
+    }
+}
+
+pub const fn peer_transport_policy_reject_reason(
+    assessment: &PeerTransportPolicyAssessment,
+) -> Option<PeerTransportIdentityReadinessReason> {
+    assessment.gap()
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PeerCertificatePolicy<'a> {
     pub sha256_pin: Option<&'a str>,
@@ -396,7 +422,8 @@ pub fn probe_peer_transport_identity_with_cert_sha256_pin_and_revocations(
     };
 
     if let Some(cert_sha256_revocations) = normalize_path(cert_sha256_revocations) {
-        let Some(normalized_revocations) = normalize_sha256_fingerprint_set(cert_sha256_revocations)
+        let Some(normalized_revocations) =
+            normalize_sha256_fingerprint_set(cert_sha256_revocations)
         else {
             return PeerTransportIdentityStatus {
                 mode: PeerTransportIdentityMode::MtlsPath,
@@ -557,6 +584,23 @@ pub fn assess_peer_transport_enforcement(
     }
 }
 
+pub fn assess_peer_transport_policy(
+    status: &PeerTransportIdentityStatus,
+    mode: PeerTransportEnforcementMode,
+) -> PeerTransportPolicyAssessment {
+    let enforcement = assess_peer_transport_enforcement(status, mode);
+    let required = match mode {
+        PeerTransportEnforcementMode::StrictMtlsIdentityBound => true,
+        PeerTransportEnforcementMode::Compatibility => {
+            status.mode == PeerTransportIdentityMode::MtlsPath
+        }
+    };
+    PeerTransportPolicyAssessment {
+        required,
+        enforcement,
+    }
+}
+
 pub fn probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
     cert_path: Option<&str>,
     key_path: Option<&str>,
@@ -564,11 +608,31 @@ pub fn probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
     cert_sha256_pin: Option<&str>,
     expected_node_id: Option<&str>,
 ) -> PeerTransportIdentityStatus {
-    let mut status = probe_peer_transport_identity_with_cert_sha256_pin(
+    probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
         cert_path,
         key_path,
         trust_store_path,
-        cert_sha256_pin,
+        PeerCertificatePolicy {
+            sha256_pin: cert_sha256_pin,
+            sha256_revocations: None,
+        },
+        expected_node_id,
+    )
+}
+
+pub fn probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
+    cert_path: Option<&str>,
+    key_path: Option<&str>,
+    trust_store_path: Option<&str>,
+    certificate_policy: PeerCertificatePolicy<'_>,
+    expected_node_id: Option<&str>,
+) -> PeerTransportIdentityStatus {
+    let mut status = probe_peer_transport_identity_with_cert_sha256_pin_and_revocations(
+        cert_path,
+        key_path,
+        trust_store_path,
+        certificate_policy.sha256_pin,
+        certificate_policy.sha256_revocations,
     );
 
     let Some(expected_node_id) = normalize_path(expected_node_id) else {
@@ -1123,16 +1187,17 @@ fn ensure_certificate_valid_at_reference(
 #[cfg(test)]
 mod tests {
     use super::{
-        PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityStatus,
-        PeerTransportIdentityMode, PeerTransportIdentityReadinessReason,
-        PeerTransportPeerAttestationError, attest_peer_transport_identity_with_mtls,
+        PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityMode,
+        PeerTransportIdentityReadinessReason, PeerTransportIdentityStatus,
+        PeerTransportPeerAttestationError, assess_peer_transport_enforcement,
+        assess_peer_transport_policy, attest_peer_transport_identity_with_mtls,
         attest_peer_transport_identity_with_mtls_and_cert_sha256_pin,
-        assess_peer_transport_enforcement,
         attest_peer_transport_identity_with_mtls_with_policy,
-        ensure_certificate_valid_at_reference, probe_peer_transport_identity,
-        probe_peer_transport_identity_with_cert_sha256_pin,
-        probe_peer_transport_identity_with_cert_sha256_pin_and_revocations,
+        ensure_certificate_valid_at_reference, peer_transport_policy_reject_reason,
+        probe_peer_transport_identity, probe_peer_transport_identity_with_cert_sha256_pin,
         probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding,
+        probe_peer_transport_identity_with_cert_sha256_pin_and_revocations,
+        probe_peer_transport_identity_with_certificate_policy_and_node_id_binding,
     };
     use openssl::asn1::Asn1Time;
     use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
@@ -1310,8 +1375,112 @@ mod tests {
             PeerTransportEnforcementMode::StrictMtlsIdentityBound,
         );
         assert!(assessment.ready);
-        assert_eq!(assessment.reason, PeerTransportIdentityReadinessReason::Ready);
+        assert_eq!(
+            assessment.reason,
+            PeerTransportIdentityReadinessReason::Ready
+        );
         assert!(assessment.warning.is_none());
+    }
+
+    #[test]
+    fn transport_policy_assessment_compatibility_none_is_not_required() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::None,
+            transport_ready: false,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::NotConfigured,
+            warning: None,
+        };
+
+        let assessment =
+            assess_peer_transport_policy(&status, PeerTransportEnforcementMode::Compatibility);
+        assert!(!assessment.required);
+        assert!(assessment.is_ready());
+        assert_eq!(assessment.gap(), None);
+        assert!(assessment.enforcement.ready);
+        assert_eq!(
+            assessment.enforcement.reason,
+            PeerTransportIdentityReadinessReason::NotConfigured
+        );
+        assert_eq!(peer_transport_policy_reject_reason(&assessment), None);
+    }
+
+    #[test]
+    fn transport_policy_assessment_compatibility_mtls_is_required() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::MtlsPath,
+            transport_ready: true,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::Ready,
+            warning: Some("pin not configured".to_string()),
+        };
+
+        let assessment =
+            assess_peer_transport_policy(&status, PeerTransportEnforcementMode::Compatibility);
+        assert!(assessment.required);
+        assert!(assessment.is_ready());
+        assert_eq!(assessment.gap(), None);
+        assert!(assessment.enforcement.ready);
+        assert_eq!(
+            assessment.enforcement.reason,
+            PeerTransportIdentityReadinessReason::Ready
+        );
+        assert_eq!(peer_transport_policy_reject_reason(&assessment), None);
+    }
+
+    #[test]
+    fn transport_policy_assessment_strict_always_requires_transport() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::None,
+            transport_ready: false,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::NotConfigured,
+            warning: None,
+        };
+
+        let assessment = assess_peer_transport_policy(
+            &status,
+            PeerTransportEnforcementMode::StrictMtlsIdentityBound,
+        );
+        assert!(assessment.required);
+        assert!(!assessment.is_ready());
+        assert_eq!(
+            assessment.gap(),
+            Some(PeerTransportIdentityReadinessReason::NotConfigured)
+        );
+        assert!(!assessment.enforcement.ready);
+        assert_eq!(
+            assessment.enforcement.reason,
+            PeerTransportIdentityReadinessReason::NotConfigured
+        );
+        assert_eq!(
+            peer_transport_policy_reject_reason(&assessment),
+            Some(PeerTransportIdentityReadinessReason::NotConfigured)
+        );
+    }
+
+    #[test]
+    fn transport_policy_assessment_compatibility_mtls_unready_sets_gap_reason() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::MtlsPath,
+            transport_ready: false,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::CertificatePathUnreadable,
+            warning: Some("missing cert".to_string()),
+        };
+
+        let assessment =
+            assess_peer_transport_policy(&status, PeerTransportEnforcementMode::Compatibility);
+        assert!(assessment.required);
+        assert!(!assessment.is_ready());
+        assert_eq!(
+            assessment.gap(),
+            Some(PeerTransportIdentityReadinessReason::CertificatePathUnreadable)
+        );
+        assert_eq!(
+            peer_transport_policy_reject_reason(&assessment),
+            Some(PeerTransportIdentityReadinessReason::CertificatePathUnreadable)
+        );
     }
 
     fn spawn_tls_server(cert_path: &str, key_path: &str) -> (String, thread::JoinHandle<()>) {
@@ -1752,6 +1921,31 @@ mod tests {
         assert!(status.transport_ready);
         assert!(status.identity_bound);
         assert!(status.warning.is_none());
+    }
+
+    #[test]
+    fn node_binding_reports_revoked_when_certificate_policy_revocation_matches() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, key_path, trust_store_path, cert_sha256_pin) =
+            write_valid_identity_fixture(&dir);
+
+        let status = probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
+            Some(cert_path.as_str()),
+            Some(key_path.as_str()),
+            Some(trust_store_path.as_str()),
+            PeerCertificatePolicy {
+                sha256_pin: Some(cert_sha256_pin.as_str()),
+                sha256_revocations: Some(cert_sha256_pin.as_str()),
+            },
+            Some("maxio-peer:9000"),
+        );
+
+        assert_eq!(
+            status.reason,
+            PeerTransportIdentityReadinessReason::CertificateFingerprintRevoked
+        );
+        assert!(!status.transport_ready);
+        assert!(!status.identity_bound);
     }
 
     #[test]

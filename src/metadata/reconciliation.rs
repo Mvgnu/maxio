@@ -14,9 +14,8 @@ use super::state::{
     ObjectMetadataOperationError, ObjectMetadataOperationOutcome, ObjectMetadataState,
     ObjectVersionMetadataOperation, ObjectVersionMetadataOperationError,
     ObjectVersionMetadataOperationOutcome, ObjectVersionMetadataState,
-    apply_bucket_lifecycle_configuration_operation,
-    apply_bucket_metadata_operation, apply_object_metadata_operation,
-    apply_object_version_metadata_operation,
+    apply_bucket_lifecycle_configuration_operation, apply_bucket_metadata_operation,
+    apply_object_metadata_operation, apply_object_version_metadata_operation,
 };
 
 mod persisted_state;
@@ -34,6 +33,14 @@ pub enum MetadataReconcileAction {
         lifecycle_enabled: bool,
     },
     DeleteBucket {
+        bucket: String,
+    },
+    UpsertBucketLifecycleConfiguration {
+        bucket: String,
+        configuration_xml: String,
+        updated_at_unix_ms: u64,
+    },
+    DeleteBucketLifecycleConfiguration {
         bucket: String,
     },
     UpsertBucketTombstone {
@@ -221,6 +228,8 @@ pub struct MetadataRepairPlanSummary {
     pub total_actions: usize,
     pub upsert_buckets: usize,
     pub delete_buckets: usize,
+    pub upsert_bucket_lifecycle_configurations: usize,
+    pub delete_bucket_lifecycle_configurations: usize,
     pub upsert_bucket_tombstones: usize,
     pub delete_bucket_tombstones: usize,
     pub upsert_objects: usize,
@@ -233,6 +242,7 @@ pub struct MetadataRepairPlanSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MetadataRepairExecutionOutput {
     pub buckets: Vec<BucketMetadataState>,
+    pub bucket_lifecycle_configurations: Vec<BucketLifecycleConfigurationState>,
     pub bucket_tombstones: Vec<BucketMetadataTombstoneState>,
     pub objects: Vec<ObjectMetadataState>,
     pub object_versions: Vec<ObjectVersionMetadataState>,
@@ -551,6 +561,9 @@ pub enum MetadataRepairPlanValidationError {
     ConflictingBucketAction {
         bucket: String,
     },
+    ConflictingBucketLifecycleConfigurationAction {
+        bucket: String,
+    },
     ConflictingBucketTombstoneAction {
         bucket: String,
     },
@@ -579,6 +592,12 @@ pub enum MetadataRepairExecutionError {
         bucket: String,
     },
     SourceContainsBucketForDelete {
+        bucket: String,
+    },
+    MissingSourceBucketLifecycleConfiguration {
+        bucket: String,
+    },
+    SourceContainsBucketLifecycleConfigurationForDelete {
         bucket: String,
     },
     MissingSourceBucketTombstone {
@@ -634,6 +653,7 @@ pub fn validate_metadata_repair_plan(
     plan: &MetadataRepairPlan,
 ) -> Result<(), MetadataRepairPlanValidationError> {
     let mut bucket_actions = BTreeSet::new();
+    let mut bucket_lifecycle_configuration_actions = BTreeSet::new();
     let mut bucket_tombstone_actions = BTreeSet::new();
     let mut object_actions = BTreeSet::new();
     let mut object_version_actions = BTreeSet::new();
@@ -646,6 +666,16 @@ pub fn validate_metadata_repair_plan(
                     return Err(MetadataRepairPlanValidationError::ConflictingBucketAction {
                         bucket: bucket.clone(),
                     });
+                }
+            }
+            MetadataReconcileAction::UpsertBucketLifecycleConfiguration { bucket, .. }
+            | MetadataReconcileAction::DeleteBucketLifecycleConfiguration { bucket } => {
+                if !bucket_lifecycle_configuration_actions.insert(bucket.clone()) {
+                    return Err(
+                        MetadataRepairPlanValidationError::ConflictingBucketLifecycleConfigurationAction {
+                            bucket: bucket.clone(),
+                        },
+                    );
                 }
             }
             MetadataReconcileAction::UpsertBucketTombstone { bucket, .. }
@@ -701,6 +731,22 @@ pub fn build_metadata_repair_plan(
     target_view_id: &str,
     inputs: MetadataRepairInputs<'_>,
 ) -> MetadataRepairPlan {
+    build_metadata_repair_plan_with_lifecycle_configs(
+        source_view_id,
+        target_view_id,
+        inputs,
+        &[],
+        &[],
+    )
+}
+
+pub fn build_metadata_repair_plan_with_lifecycle_configs(
+    source_view_id: &str,
+    target_view_id: &str,
+    inputs: MetadataRepairInputs<'_>,
+    source_bucket_lifecycle_configurations: &[BucketLifecycleConfigurationState],
+    target_bucket_lifecycle_configurations: &[BucketLifecycleConfigurationState],
+) -> MetadataRepairPlan {
     let mut actions = Vec::new();
 
     let source_bucket_map: BTreeMap<&str, &BucketMetadataState> = inputs
@@ -735,6 +781,44 @@ pub fn build_metadata_repair_plan(
         actions.push(MetadataReconcileAction::DeleteBucket {
             bucket: (*bucket_name).to_string(),
         });
+    }
+
+    let source_lifecycle_configuration_map: BTreeMap<&str, &BucketLifecycleConfigurationState> =
+        source_bucket_lifecycle_configurations
+            .iter()
+            .map(|configuration| (configuration.bucket.as_str(), configuration))
+            .collect();
+    let target_lifecycle_configuration_map: BTreeMap<&str, &BucketLifecycleConfigurationState> =
+        target_bucket_lifecycle_configurations
+            .iter()
+            .map(|configuration| (configuration.bucket.as_str(), configuration))
+            .collect();
+
+    for (bucket_name, source_configuration) in &source_lifecycle_configuration_map {
+        let needs_upsert = target_lifecycle_configuration_map
+            .get(bucket_name)
+            .map(|target_configuration| *target_configuration != *source_configuration)
+            .unwrap_or(true);
+        if needs_upsert {
+            actions.push(
+                MetadataReconcileAction::UpsertBucketLifecycleConfiguration {
+                    bucket: (*bucket_name).to_string(),
+                    configuration_xml: source_configuration.configuration_xml.clone(),
+                    updated_at_unix_ms: source_configuration.updated_at_unix_ms,
+                },
+            );
+        }
+    }
+
+    for bucket_name in target_lifecycle_configuration_map.keys() {
+        if source_lifecycle_configuration_map.contains_key(bucket_name) {
+            continue;
+        }
+        actions.push(
+            MetadataReconcileAction::DeleteBucketLifecycleConfiguration {
+                bucket: (*bucket_name).to_string(),
+            },
+        );
     }
 
     let source_tombstone_map: BTreeMap<&str, &BucketMetadataTombstoneState> = inputs
@@ -895,6 +979,13 @@ pub fn summarize_metadata_repair_plan(plan: &MetadataRepairPlan) -> MetadataRepa
                 summary.delete_buckets += 1;
                 summary.destructive_actions += 1;
             }
+            MetadataReconcileAction::UpsertBucketLifecycleConfiguration { .. } => {
+                summary.upsert_bucket_lifecycle_configurations += 1;
+            }
+            MetadataReconcileAction::DeleteBucketLifecycleConfiguration { .. } => {
+                summary.delete_bucket_lifecycle_configurations += 1;
+                summary.destructive_actions += 1;
+            }
             MetadataReconcileAction::UpsertBucketTombstone { .. } => {
                 summary.upsert_bucket_tombstones += 1;
             }
@@ -927,6 +1018,24 @@ pub fn apply_metadata_repair_plan(
     plan: &MetadataRepairPlan,
     inputs: MetadataRepairInputs<'_>,
 ) -> Result<MetadataRepairExecutionOutput, MetadataRepairExecutionError> {
+    apply_metadata_repair_plan_with_lifecycle_configs(
+        expected_source_view_id,
+        expected_target_view_id,
+        plan,
+        inputs,
+        &[],
+        &[],
+    )
+}
+
+pub fn apply_metadata_repair_plan_with_lifecycle_configs(
+    expected_source_view_id: &str,
+    expected_target_view_id: &str,
+    plan: &MetadataRepairPlan,
+    inputs: MetadataRepairInputs<'_>,
+    source_bucket_lifecycle_configurations: &[BucketLifecycleConfigurationState],
+    target_bucket_lifecycle_configurations: &[BucketLifecycleConfigurationState],
+) -> Result<MetadataRepairExecutionOutput, MetadataRepairExecutionError> {
     if let Err(reason) = validate_metadata_repair_plan(plan) {
         return Err(MetadataRepairExecutionError::InvalidPlan { reason });
     }
@@ -949,6 +1058,13 @@ pub fn apply_metadata_repair_plan(
         .source_buckets
         .iter()
         .map(|bucket| (bucket.bucket.as_str(), bucket))
+        .collect();
+    let source_bucket_lifecycle_configuration_map: BTreeMap<
+        &str,
+        &BucketLifecycleConfigurationState,
+    > = source_bucket_lifecycle_configurations
+        .iter()
+        .map(|configuration| (configuration.bucket.as_str(), configuration))
         .collect();
     let source_bucket_tombstone_map: BTreeMap<&str, &BucketMetadataTombstoneState> = inputs
         .source_bucket_tombstones
@@ -980,6 +1096,13 @@ pub fn apply_metadata_repair_plan(
         .target_buckets
         .iter()
         .map(|bucket| (bucket.bucket.clone(), bucket.clone()))
+        .collect();
+    let mut bucket_lifecycle_configuration_map: BTreeMap<
+        String,
+        BucketLifecycleConfigurationState,
+    > = target_bucket_lifecycle_configurations
+        .iter()
+        .map(|configuration| (configuration.bucket.clone(), configuration.clone()))
         .collect();
     let mut bucket_tombstone_map: BTreeMap<String, BucketMetadataTombstoneState> = inputs
         .target_bucket_tombstones
@@ -1027,6 +1150,30 @@ pub fn apply_metadata_repair_plan(
                     );
                 }
                 bucket_map.remove(bucket);
+                bucket_lifecycle_configuration_map.remove(bucket);
+            }
+            MetadataReconcileAction::UpsertBucketLifecycleConfiguration { bucket, .. } => {
+                let Some(source_configuration) =
+                    source_bucket_lifecycle_configuration_map.get(bucket.as_str())
+                else {
+                    return Err(
+                        MetadataRepairExecutionError::MissingSourceBucketLifecycleConfiguration {
+                            bucket: bucket.clone(),
+                        },
+                    );
+                };
+                bucket_lifecycle_configuration_map
+                    .insert(bucket.clone(), (*source_configuration).clone());
+            }
+            MetadataReconcileAction::DeleteBucketLifecycleConfiguration { bucket } => {
+                if source_bucket_lifecycle_configuration_map.contains_key(bucket.as_str()) {
+                    return Err(
+                        MetadataRepairExecutionError::SourceContainsBucketLifecycleConfigurationForDelete {
+                            bucket: bucket.clone(),
+                        },
+                    );
+                }
+                bucket_lifecycle_configuration_map.remove(bucket);
             }
             MetadataReconcileAction::UpsertBucketTombstone { bucket, .. } => {
                 let Some(source_tombstone) = source_bucket_tombstone_map.get(bucket.as_str())
@@ -1037,6 +1184,7 @@ pub fn apply_metadata_repair_plan(
                 };
                 bucket_tombstone_map.insert(bucket.clone(), (*source_tombstone).clone());
                 bucket_map.remove(bucket);
+                bucket_lifecycle_configuration_map.remove(bucket);
             }
             MetadataReconcileAction::DeleteBucketTombstone { bucket } => {
                 if source_bucket_tombstone_map.contains_key(bucket.as_str()) {
@@ -1154,6 +1302,7 @@ pub fn apply_metadata_repair_plan(
 
     Ok(MetadataRepairExecutionOutput {
         buckets: bucket_map.into_values().collect(),
+        bucket_lifecycle_configurations: bucket_lifecycle_configuration_map.into_values().collect(),
         bucket_tombstones: bucket_tombstone_map.into_values().collect(),
         objects: object_map.into_values().collect(),
         object_versions: object_version_map.into_values().collect(),
@@ -1169,9 +1318,9 @@ mod tests {
         PendingMetadataRepairApplyFailure, PendingMetadataRepairEnqueueOutcome,
         PendingMetadataRepairFailureWithBackoffOutcome, PendingMetadataRepairLeaseOutcome,
         PendingMetadataRepairPlan, PendingMetadataRepairQueue, PendingMetadataRepairQueueSummary,
-        PendingMetadataRepairReplayCycleOutcome, PersistedBucketMetadataOperationError,
+        PendingMetadataRepairReplayCycleOutcome,
         PersistedBucketLifecycleConfigurationOperationError,
-        PersistedBucketLifecycleConfigurationReadResolution,
+        PersistedBucketLifecycleConfigurationReadResolution, PersistedBucketMetadataOperationError,
         PersistedBucketMetadataReadResolution, PersistedBucketMutationPreconditionResolution,
         PersistedBucketPresenceReadResolution, PersistedMetadataQueryError,
         PersistedMetadataQueryableStateError, PersistedMetadataState,
@@ -1180,12 +1329,14 @@ mod tests {
         acknowledge_pending_metadata_repair_plan,
         apply_bucket_lifecycle_configuration_operation_to_persisted_state,
         apply_bucket_metadata_operation_to_persisted_state, apply_metadata_repair_plan,
+        apply_metadata_repair_plan_with_lifecycle_configs,
         apply_object_metadata_operation_to_persisted_state,
         apply_object_version_metadata_operation_to_persisted_state,
         apply_pending_metadata_repair_plan_to_persisted_state,
-        apply_pending_metadata_repair_plan_to_persisted_state_classified, build_metadata_repair_plan,
-        build_queryable_metadata_index_from_persisted_state, enqueue_pending_metadata_repair_plan,
-        classify_pending_metadata_repair_apply_error,
+        apply_pending_metadata_repair_plan_to_persisted_state_classified,
+        build_metadata_repair_plan, build_metadata_repair_plan_with_lifecycle_configs,
+        build_queryable_metadata_index_from_persisted_state,
+        classify_pending_metadata_repair_apply_error, enqueue_pending_metadata_repair_plan,
         lease_pending_metadata_repair_plan_for_execution, list_buckets_from_persisted_state,
         list_buckets_from_persisted_state_with_view_id,
         list_object_versions_page_from_persisted_state, list_objects_page_from_persisted_state,
@@ -1287,6 +1438,8 @@ mod tests {
                 total_actions: 8,
                 upsert_buckets: 1,
                 delete_buckets: 1,
+                upsert_bucket_lifecycle_configurations: 0,
+                delete_bucket_lifecycle_configurations: 0,
                 upsert_bucket_tombstones: 1,
                 delete_bucket_tombstones: 1,
                 upsert_objects: 1,
@@ -1413,6 +1566,54 @@ mod tests {
             vec![MetadataReconcileAction::DeleteBucket {
                 bucket: "orphaned".to_string(),
             }]
+        );
+    }
+
+    #[test]
+    fn build_metadata_repair_plan_with_lifecycle_configs_reconciles_configuration_drift() {
+        let source_lifecycle_configurations = vec![BucketLifecycleConfigurationState {
+            bucket: "photos".to_string(),
+            configuration_xml: "<LifecycleConfiguration><Rule/></LifecycleConfiguration>"
+                .to_string(),
+            updated_at_unix_ms: 100,
+        }];
+        let target_lifecycle_configurations = vec![BucketLifecycleConfigurationState {
+            bucket: "stale".to_string(),
+            configuration_xml: "<LifecycleConfiguration><Old/></LifecycleConfiguration>"
+                .to_string(),
+            updated_at_unix_ms: 40,
+        }];
+
+        let plan = build_metadata_repair_plan_with_lifecycle_configs(
+            "view-a",
+            "view-b",
+            MetadataRepairInputs {
+                source_buckets: &[],
+                target_buckets: &[],
+                source_bucket_tombstones: &[],
+                target_bucket_tombstones: &[],
+                source_objects: &[],
+                target_objects: &[],
+                source_object_versions: &[],
+                target_object_versions: &[],
+            },
+            &source_lifecycle_configurations,
+            &target_lifecycle_configurations,
+        );
+
+        assert_eq!(
+            plan.actions,
+            vec![
+                MetadataReconcileAction::UpsertBucketLifecycleConfiguration {
+                    bucket: "photos".to_string(),
+                    configuration_xml: "<LifecycleConfiguration><Rule/></LifecycleConfiguration>"
+                        .to_string(),
+                    updated_at_unix_ms: 100,
+                },
+                MetadataReconcileAction::DeleteBucketLifecycleConfiguration {
+                    bucket: "stale".to_string(),
+                },
+            ]
         );
     }
 
@@ -1686,6 +1887,69 @@ mod tests {
             }]
         );
         assert!(result.bucket_tombstones.is_empty());
+    }
+
+    #[test]
+    fn apply_metadata_repair_plan_with_lifecycle_configs_applies_configuration_updates() {
+        let source_buckets = vec![BucketMetadataState {
+            bucket: "photos".to_string(),
+            versioning_enabled: true,
+            lifecycle_enabled: true,
+        }];
+        let target_buckets = source_buckets.clone();
+        let source_lifecycle_configurations = vec![BucketLifecycleConfigurationState {
+            bucket: "photos".to_string(),
+            configuration_xml: "<LifecycleConfiguration><Rule/></LifecycleConfiguration>"
+                .to_string(),
+            updated_at_unix_ms: 500,
+        }];
+        let target_lifecycle_configurations = vec![BucketLifecycleConfigurationState {
+            bucket: "photos".to_string(),
+            configuration_xml: "<LifecycleConfiguration><Old/></LifecycleConfiguration>"
+                .to_string(),
+            updated_at_unix_ms: 200,
+        }];
+
+        let plan = build_metadata_repair_plan_with_lifecycle_configs(
+            "view-a",
+            "view-b",
+            MetadataRepairInputs {
+                source_buckets: &source_buckets,
+                target_buckets: &target_buckets,
+                source_bucket_tombstones: &[],
+                target_bucket_tombstones: &[],
+                source_objects: &[],
+                target_objects: &[],
+                source_object_versions: &[],
+                target_object_versions: &[],
+            },
+            &source_lifecycle_configurations,
+            &target_lifecycle_configurations,
+        );
+
+        let result = apply_metadata_repair_plan_with_lifecycle_configs(
+            "view-a",
+            "view-b",
+            &plan,
+            MetadataRepairInputs {
+                source_buckets: &source_buckets,
+                target_buckets: &target_buckets,
+                source_bucket_tombstones: &[],
+                target_bucket_tombstones: &[],
+                source_objects: &[],
+                target_objects: &[],
+                source_object_versions: &[],
+                target_object_versions: &[],
+            },
+            &source_lifecycle_configurations,
+            &target_lifecycle_configurations,
+        )
+        .expect("lifecycle-aware repair execution should succeed");
+
+        assert_eq!(
+            result.bucket_lifecycle_configurations,
+            source_lifecycle_configurations
+        );
     }
 
     #[test]
@@ -2254,6 +2518,34 @@ mod tests {
                 bucket: "photos".to_string(),
                 key: "docs/a.txt".to_string(),
             })
+        );
+    }
+
+    #[test]
+    fn validate_metadata_repair_plan_rejects_conflicting_lifecycle_configuration_actions() {
+        let plan = MetadataRepairPlan {
+            source_view_id: "view-a".to_string(),
+            target_view_id: "view-b".to_string(),
+            actions: vec![
+                MetadataReconcileAction::UpsertBucketLifecycleConfiguration {
+                    bucket: "photos".to_string(),
+                    configuration_xml: "<LifecycleConfiguration><Rule/></LifecycleConfiguration>"
+                        .to_string(),
+                    updated_at_unix_ms: 10,
+                },
+                MetadataReconcileAction::DeleteBucketLifecycleConfiguration {
+                    bucket: "photos".to_string(),
+                },
+            ],
+        };
+
+        assert_eq!(
+            validate_metadata_repair_plan(&plan),
+            Err(
+                MetadataRepairPlanValidationError::ConflictingBucketLifecycleConfigurationAction {
+                    bucket: "photos".to_string(),
+                }
+            )
         );
     }
 
@@ -3763,8 +4055,8 @@ mod tests {
             persisted.bucket_lifecycle_configurations,
             vec![BucketLifecycleConfigurationState {
                 bucket: "photos".to_string(),
-                configuration_xml:
-                    "<LifecycleConfiguration><Rule/></LifecycleConfiguration>".to_string(),
+                configuration_xml: "<LifecycleConfiguration><Rule/></LifecycleConfiguration>"
+                    .to_string(),
                 updated_at_unix_ms: 123,
             }]
         );
@@ -3886,8 +4178,8 @@ mod tests {
     }
 
     #[test]
-    fn build_queryable_metadata_index_from_persisted_state_rejects_invalid_lifecycle_configuration_rows(
-    ) {
+    fn build_queryable_metadata_index_from_persisted_state_rejects_invalid_lifecycle_configuration_rows()
+     {
         let duplicate = PersistedMetadataState {
             view_id: "view-a".to_string(),
             buckets: vec![BucketMetadataState::new("photos")],

@@ -42,12 +42,16 @@ use crate::metadata::{
     assess_cluster_metadata_fan_in_preflight_for_topology_single_responder,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
-    assess_cluster_responder_membership_views, cluster_metadata_fan_in_preflight_reject_reason,
-    cluster_metadata_readiness_reject_reason, list_buckets_from_persisted_state_with_view_id,
-    load_persisted_metadata_state, merge_cluster_list_buckets_page_with_topology_snapshot,
+    assess_cluster_responder_membership_views,
+    cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values,
+    cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready,
+    cluster_metadata_fan_in_preflight_reject_reason, cluster_metadata_readiness_reject_reason,
+    list_buckets_from_persisted_state_with_view_id, load_persisted_metadata_state,
+    merge_cluster_list_buckets_page_with_topology_snapshot,
     resolve_bucket_lifecycle_configuration_from_persisted_state,
     resolve_bucket_metadata_from_persisted_state,
-    resolve_bucket_mutation_preconditions_from_persisted_state, resolve_cluster_bucket_presence_for_read,
+    resolve_bucket_mutation_preconditions_from_persisted_state,
+    resolve_cluster_bucket_presence_for_read,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::{BucketMeta, StorageError, lifecycle::LifecycleRule as StorageLifecycleRule};
@@ -994,7 +998,10 @@ fn resolve_cluster_bucket_versioning_state(
         states,
     )?;
     ensure_cluster_bucket_metadata_operation_ready(operation, assessment.gap)?;
-    if assessment.gap == Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) {
+    if assessment
+        .gap
+        .is_some_and(cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values)
+    {
         return Err(S3Error::service_unavailable(
             "Distributed bucket metadata fan-in did not include any versioning responders",
         ));
@@ -1002,32 +1009,23 @@ fn resolve_cluster_bucket_versioning_state(
 
     match assessment.gap {
         Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => Err(
-            S3Error::service_unavailable(&format!(
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => {
+            Err(S3Error::service_unavailable(&format!(
                 "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
                 bucket
-            )),
-        ),
+            )))
+        }
         Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
             Err(S3Error::service_unavailable(&format!(
                 "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
                 bucket
             )))
         }
-        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) => Err(
-            S3Error::service_unavailable(&format!(
-                "Distributed bucket metadata fan-in for '{}' is not ready ({})",
-                operation,
-                assessment
-                    .gap
-                    .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
-                    .unwrap_or("unknown")
-            )),
-        ),
+        Some(gap) => Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata fan-in for '{}' is not ready ({})",
+            operation,
+            gap.as_str()
+        ))),
         None => assessment.current_value.ok_or_else(|| {
             S3Error::service_unavailable(
                 "Distributed bucket metadata fan-in did not include any versioning responders",
@@ -1070,18 +1068,17 @@ fn assess_cluster_bucket_metadata_operation_preconditions<T: Clone + Eq>(
             "Failed to assess distributed bucket metadata convergence for operation '{}'",
             operation
         )),
-        MetadataQueryError::InvalidContinuationToken | MetadataQueryError::InvalidVersionsMarker => {
+        MetadataQueryError::InvalidContinuationToken
+        | MetadataQueryError::InvalidVersionsMarker => S3Error::service_unavailable(&format!(
+            "Failed to assess distributed bucket metadata convergence for operation '{}'",
+            operation
+        )),
+        MetadataQueryError::InconsistentBucketMetadataResponse => {
             S3Error::service_unavailable(&format!(
                 "Failed to assess distributed bucket metadata convergence for operation '{}'",
                 operation
             ))
         }
-        MetadataQueryError::InconsistentBucketMetadataResponse => S3Error::service_unavailable(
-            &format!(
-                "Failed to assess distributed bucket metadata convergence for operation '{}'",
-                operation
-            ),
-        ),
     })
 }
 
@@ -1089,20 +1086,15 @@ fn ensure_cluster_bucket_metadata_operation_ready(
     operation: &str,
     gap: Option<ClusterBucketMetadataMutationPreconditionGap>,
 ) -> Result<(), S3Error> {
-    match gap {
-        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes) => {
-            let reason = gap
-                .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
-                .unwrap_or("unknown");
-            Err(S3Error::service_unavailable(&format!(
-                "Distributed metadata strategy is not ready for bucket metadata operation '{}' ({})",
-                operation, reason
-            )))
-        }
-        _ => Ok(()),
+    match gap
+        .filter(|gap| cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(*gap))
+    {
+        Some(gap) => Err(S3Error::service_unavailable(&format!(
+            "Distributed metadata strategy is not ready for bucket metadata operation '{}' ({})",
+            operation,
+            gap.as_str()
+        ))),
+        None => Ok(()),
     }
 }
 
@@ -1243,7 +1235,10 @@ fn resolve_cluster_bucket_lifecycle_state(
         states,
     )?;
     ensure_cluster_bucket_metadata_operation_ready(operation, assessment.gap)?;
-    if assessment.gap == Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) {
+    if assessment
+        .gap
+        .is_some_and(cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values)
+    {
         return Err(S3Error::service_unavailable(
             "Distributed bucket metadata fan-in did not include any lifecycle responders",
         ));
@@ -1251,32 +1246,23 @@ fn resolve_cluster_bucket_lifecycle_state(
 
     match assessment.gap {
         Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => Err(
-            S3Error::service_unavailable(&format!(
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => {
+            Err(S3Error::service_unavailable(&format!(
                 "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
                 bucket
-            )),
-        ),
+            )))
+        }
         Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
             Err(S3Error::service_unavailable(&format!(
                 "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}'",
                 bucket
             )))
         }
-        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) => Err(
-            S3Error::service_unavailable(&format!(
-                "Distributed bucket metadata fan-in for '{}' is not ready ({})",
-                operation,
-                assessment
-                    .gap
-                    .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
-                    .unwrap_or("unknown")
-            )),
-        ),
+        Some(gap) => Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata fan-in for '{}' is not ready ({})",
+            operation,
+            gap.as_str()
+        ))),
         None => match assessment.current_value {
             Some(BucketLifecycleResponderValue::NoLifecycleConfiguration) => {
                 Err(S3Error::no_such_lifecycle_configuration(bucket))
@@ -2375,6 +2361,24 @@ mod tests {
         assert!(
             err.message
                 .contains("inconsistent peer membership view ids")
+        );
+    }
+
+    #[test]
+    fn ensure_cluster_bucket_metadata_operation_ready_only_rejects_strategy_gaps() {
+        assert!(
+            ensure_cluster_bucket_metadata_operation_ready(
+                "GetBucketVersioning",
+                Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes),
+            )
+            .is_err()
+        );
+        assert!(
+            ensure_cluster_bucket_metadata_operation_ready(
+                "GetBucketVersioning",
+                Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues),
+            )
+            .is_ok()
         );
     }
 }

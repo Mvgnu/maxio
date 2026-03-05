@@ -10,9 +10,11 @@ use maxio::metadata::{
 };
 use maxio::server::AppState;
 use maxio::storage::placement::{
-    PendingRebalanceOperation, PlacementViewState, RebalanceObjectScope, RebalanceTransfer,
-    enqueue_pending_rebalance_operation_persisted, local_rebalance_actions,
-    membership_view_id_with_self, membership_with_self, object_rebalance_plan,
+    PendingRebalanceOperation, PendingReplicationOperation, PlacementViewState,
+    RebalanceObjectScope, RebalanceTransfer, ReplicationMutationOperation,
+    enqueue_pending_rebalance_operation_persisted, enqueue_pending_replication_operation_persisted,
+    local_rebalance_actions, membership_view_id_with_self, membership_with_self,
+    object_rebalance_plan,
 };
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -231,6 +233,47 @@ async fn start_gossip_stale_reconciliation_retry_stub(
             .expect("gossip stale reconciliation retry stub should serve");
     });
     (peer, retry)
+}
+
+async fn start_gossip_stale_reconciliation_retry_stub_with_local_view(
+    local_node_id: &str,
+    cluster_peers: Vec<String>,
+    placement_epoch: u64,
+    response_statuses: Vec<StatusCode>,
+) -> (String, String, MembershipPropagationRetryCaptureState) {
+    let retry = MembershipPropagationRetryCaptureState::new(response_statuses);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("gossip stale reconciliation retry stub listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("gossip stale reconciliation retry stub should expose local address");
+    let peer = addr.to_string();
+    let membership_view_id =
+        membership_view_id_with_self(local_node_id, std::slice::from_ref(&peer)).to_string();
+    let cluster_id = membership_view_id.clone();
+    let app = axum::Router::new()
+        .route(
+            "/healthz",
+            axum::routing::get(gossip_stale_reconciliation_retry_healthz_handler),
+        )
+        .route(
+            "/internal/cluster/membership/update",
+            axum::routing::post(gossip_stale_reconciliation_retry_membership_update_handler),
+        )
+        .with_state(GossipStaleReconciliationRetryStubState {
+            membership_view_id: membership_view_id.clone(),
+            cluster_id,
+            cluster_peers,
+            placement_epoch,
+            retry: retry.clone(),
+        });
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("gossip stale reconciliation retry stub should serve");
+    });
+    (peer, membership_view_id, retry)
 }
 
 fn decode_first_pem_block(payload: &str, label: &str) -> Option<Vec<u8>> {
@@ -495,6 +538,30 @@ struct RebalanceTransferCaptureState {
     records: Arc<Mutex<Vec<RebalanceTransferCapture>>>,
 }
 
+#[derive(Clone, Debug)]
+struct ReplicationReplayCapture {
+    path_and_query: String,
+    method: String,
+    forwarded_by: Option<String>,
+    auth_token: Option<String>,
+    trusted_operation: Option<String>,
+}
+
+#[derive(Clone)]
+struct ReplicationReplayCaptureState {
+    records: Arc<Mutex<Vec<ReplicationReplayCapture>>>,
+    status: StatusCode,
+}
+
+impl ReplicationReplayCaptureState {
+    fn new(status: StatusCode) -> Self {
+        Self {
+            records: Arc::new(Mutex::new(Vec::new())),
+            status,
+        }
+    }
+}
+
 async fn rebalance_transfer_capture_put_handler(
     axum::extract::State(state): axum::extract::State<RebalanceTransferCaptureState>,
     uri: axum::http::Uri,
@@ -545,6 +612,65 @@ async fn start_rebalance_transfer_capture_stub() -> (String, RebalanceTransferCa
         axum::serve(listener, app.into_make_service())
             .await
             .expect("rebalance capture stub should serve");
+    });
+    (addr.to_string(), state)
+}
+
+async fn replication_replay_capture_handler(
+    axum::extract::State(state): axum::extract::State<ReplicationReplayCaptureState>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    headers: axum::http::HeaderMap,
+    _body: axum::body::Bytes,
+) -> StatusCode {
+    let path_and_query = uri
+        .path_and_query()
+        .map(|value| value.as_str().to_string())
+        .unwrap_or_else(|| uri.path().to_string());
+    let forwarded_by = headers
+        .get("x-maxio-forwarded-by")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let auth_token = headers
+        .get("x-maxio-internal-auth-token")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let trusted_operation = headers
+        .get("x-maxio-internal-forwarded-write-operation")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let mut records = state.records.lock().await;
+    records.push(ReplicationReplayCapture {
+        path_and_query,
+        method: method.as_str().to_string(),
+        forwarded_by,
+        auth_token,
+        trusted_operation,
+    });
+    state.status
+}
+
+async fn start_replication_replay_capture_stub(
+    status: StatusCode,
+) -> (String, ReplicationReplayCaptureState) {
+    let state = ReplicationReplayCaptureState::new(status);
+    let app = axum::Router::new()
+        .route(
+            "/{bucket}/{*key}",
+            axum::routing::put(replication_replay_capture_handler)
+                .delete(replication_replay_capture_handler),
+        )
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("replication replay capture stub listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("replication replay capture stub should expose local address");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("replication replay capture stub should serve");
     });
     (addr.to_string(), state)
 }
@@ -1062,6 +1188,215 @@ async fn test_pending_rebalance_replay_worker_forwards_due_send_transfer_and_dra
     assert!(
         record.path_and_query.contains("X-Amz-Signature="),
         "rebalance transfer should use presigned query auth"
+    );
+}
+
+#[tokio::test]
+async fn test_pending_rebalance_replay_worker_drops_chunk_scope_without_forwarding() {
+    let (capture_peer, capture_state) = start_rebalance_transfer_capture_stub().await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let local_node_id = "node-a.internal:9000";
+    seed_object_in_data_dir(
+        data_dir.as_str(),
+        "rebalance-bucket",
+        "docs/replay-object.txt",
+        b"rebalance-payload",
+        false,
+    )
+    .await;
+
+    let queue_path = Path::new(data_dir.as_str())
+        .join(".maxio-runtime")
+        .join("pending-rebalance-queue.json");
+    let placement = PlacementViewState::from_membership(1, local_node_id, &[capture_peer.clone()]);
+    let operation = PendingRebalanceOperation::new(
+        "rebalance-replay-chunk-runtime-test",
+        "rebalance-bucket",
+        "docs/replay-object.txt",
+        RebalanceObjectScope::Chunk { chunk_index: 3 },
+        local_node_id,
+        &placement,
+        &[RebalanceTransfer {
+            from: Some(local_node_id.to_string()),
+            to: capture_peer.clone(),
+        }],
+        1,
+    )
+    .expect("pending rebalance operation should be valid");
+    let enqueue_outcome =
+        enqueue_pending_rebalance_operation_persisted(queue_path.as_path(), operation);
+    assert!(
+        enqueue_outcome.is_ok(),
+        "pending rebalance operation should enqueue: {enqueue_outcome:?}"
+    );
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = local_node_id.to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec![capture_peer.clone()];
+    let (_base_url, _tmp) = start_server_with_config_and_rebalance_replay_worker(config, tmp).await;
+
+    let mut queue_drained = false;
+    for _ in 0..130 {
+        let queue_is_empty = tokio::fs::read_to_string(queue_path.as_path())
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|value| {
+                value["operations"]
+                    .as_array()
+                    .map(|operations| operations.is_empty())
+            })
+            .unwrap_or(false);
+        if queue_is_empty {
+            queue_drained = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        queue_drained,
+        "pending rebalance replay worker should drain dropped chunk-scope operation"
+    );
+
+    let records = capture_state.records.lock().await;
+    assert!(
+        records.is_empty(),
+        "chunk-scope rebalance replay should not forward object transport requests"
+    );
+}
+
+#[tokio::test]
+async fn test_pending_replication_replay_worker_drops_terminal_replica_failure_without_retry() {
+    let (capture_peer, capture_state) =
+        start_replication_replay_capture_stub(StatusCode::FORBIDDEN).await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let local_node_id = "node-a.internal:9000";
+    seed_object_in_data_dir(
+        data_dir.as_str(),
+        "replay-bucket",
+        "docs/replay-object.txt",
+        b"replication-replay-payload",
+        false,
+    )
+    .await;
+
+    let queue_path = Path::new(data_dir.as_str())
+        .join(".maxio-runtime")
+        .join("pending-replication-queue.json");
+    let placement = PlacementViewState::from_membership(1, local_node_id, &[capture_peer.clone()]);
+    let operation = PendingReplicationOperation::new(
+        "pending-replication-terminal-status-test",
+        ReplicationMutationOperation::PutObject,
+        "replay-bucket",
+        "docs/replay-object.txt",
+        None,
+        local_node_id,
+        &placement,
+        std::slice::from_ref(&capture_peer),
+        1,
+    )
+    .expect("pending replication operation should be valid");
+    let enqueue_outcome =
+        enqueue_pending_replication_operation_persisted(queue_path.as_path(), operation);
+    assert!(
+        enqueue_outcome.is_ok(),
+        "pending replication operation should enqueue: {enqueue_outcome:?}"
+    );
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = local_node_id.to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec![capture_peer.clone()];
+    let (base_url, _tmp) = start_server_with_config_and_replay_worker(config, tmp).await;
+
+    let mut queue_drained = false;
+    for _ in 0..130 {
+        let queue_is_empty = tokio::fs::read_to_string(queue_path.as_path())
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|value| {
+                value["operations"]
+                    .as_array()
+                    .map(|operations| operations.is_empty())
+            })
+            .unwrap_or(false);
+        let has_capture = !capture_state.records.lock().await.is_empty();
+        if queue_is_empty && has_capture {
+            queue_drained = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    let final_queue_is_empty = tokio::fs::read_to_string(queue_path.as_path())
+        .await
+        .ok()
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .and_then(|value| {
+            value["operations"]
+                .as_array()
+                .map(|operations| operations.is_empty())
+        })
+        .unwrap_or(false);
+    let final_record_count = capture_state.records.lock().await.len();
+    assert!(
+        queue_drained,
+        "pending replication replay worker should drop terminal replica status and drain queue (final_queue_empty={final_queue_is_empty}, capture_count={final_record_count})"
+    );
+
+    // Wait longer than one replay interval to ensure no retry loop is scheduled.
+    tokio::time::sleep(Duration::from_millis(5500)).await;
+
+    let records = capture_state.records.lock().await;
+    assert_eq!(
+        records.len(),
+        1,
+        "terminal replay failure should be dropped instead of retried"
+    );
+    let record = records
+        .first()
+        .expect("replication replay capture should contain one request");
+    assert_eq!(record.method, "PUT");
+    assert_eq!(record.forwarded_by.as_deref(), Some(local_node_id));
+    assert_eq!(record.auth_token.as_deref(), Some("shared-secret"));
+    assert_eq!(
+        record.trusted_operation.as_deref(),
+        Some("replicate-put-object")
+    );
+    assert!(
+        record.path_and_query.contains("X-Amz-Signature="),
+        "replication replay should use presigned query auth"
+    );
+
+    let metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .expect("metrics request should succeed");
+    assert_eq!(metrics.status(), StatusCode::OK);
+    let metrics_body = metrics.text().await.expect("metrics payload should decode");
+    assert_eq!(
+        metric_value(
+            &metrics_body,
+            "maxio_pending_replication_replay_acknowledged_total",
+        ),
+        Some(1.0),
+        "terminal replay drop should acknowledge exactly one queued target"
+    );
+    assert_eq!(
+        metric_value(&metrics_body, "maxio_pending_replication_replay_skipped_total"),
+        Some(1.0),
+        "terminal replay drop should count one skipped replay candidate"
+    );
+    assert_eq!(
+        metric_value(&metrics_body, "maxio_pending_replication_replay_failed_total"),
+        Some(0.0),
+        "terminal replay drop should not be recorded as retryable failure"
     );
 }
 
@@ -2495,6 +2830,56 @@ async fn test_healthz_and_metrics_report_mtls_transport_pin_mismatch_as_unready(
     );
     assert!(metrics_body.contains(
         "maxio_cluster_peer_auth_transport_reason_info{reason=\"certificate_fingerprint_pin_mismatch\"} 1"
+    ));
+}
+
+#[tokio::test]
+async fn test_healthz_and_metrics_report_mtls_transport_revoked_certificate_as_unready() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let (cert_path, key_path, ca_path, cert_sha256_pin) = write_valid_mtls_identity_fixture(&tmp);
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_peers = vec!["127.0.0.1:1".to_string()];
+    config.membership_protocol = MembershipProtocol::Gossip;
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peer_tls_cert_path = Some(cert_path.to_string_lossy().to_string());
+    config.cluster_peer_tls_key_path = Some(key_path.to_string_lossy().to_string());
+    config.cluster_peer_tls_ca_path = Some(ca_path.to_string_lossy().to_string());
+    config.cluster_peer_tls_cert_sha256 = Some(cert_sha256_pin.clone());
+    config.cluster_peer_tls_cert_sha256_revocations = Some(cert_sha256_pin);
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    assert_eq!(health_body["clusterAuthTransportIdentity"], "mtls-path");
+    assert_eq!(
+        health_body["clusterAuthTransportReason"],
+        "certificate_fingerprint_revoked"
+    );
+    assert_eq!(
+        health_body["checks"]["clusterPeerAuthTransportReady"],
+        false
+    );
+
+    let metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), 200);
+    let metrics_body = metrics.text().await.unwrap();
+    assert_eq!(
+        metric_value(&metrics_body, "maxio_cluster_peer_auth_transport_ready"),
+        Some(0.0)
+    );
+    assert!(metrics_body.contains(
+        "maxio_cluster_peer_auth_transport_reason_info{reason=\"certificate_fingerprint_revoked\"} 1"
     ));
 }
 
@@ -5980,6 +6365,63 @@ async fn test_gossip_convergence_worker_persists_retryable_stale_peer_reconcilia
             .iter()
             .all(|status| *status == StatusCode::SERVICE_UNAVAILABLE.as_u16()),
         "expected retryable stale-peer reconciliation statuses, got {served_statuses:?}"
+    );
+}
+
+#[tokio::test]
+async fn test_gossip_convergence_worker_reconciles_same_view_peer_missing_local_node() {
+    let local_node_id = "node-a.internal:9000";
+    let peer_epoch = 21_u64;
+    let (peer, local_view_id, peer_state) =
+        start_gossip_stale_reconciliation_retry_stub_with_local_view(
+            local_node_id,
+            Vec::new(),
+            peer_epoch,
+            vec![StatusCode::OK],
+        )
+        .await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = local_node_id.to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec![peer.clone()];
+    config.membership_protocol = MembershipProtocol::Gossip;
+    let (_base_url, _tmp) = start_server_with_config_and_convergence_worker(config, tmp).await;
+
+    let mut propagated = None;
+    for _ in 0..60 {
+        {
+            let records = peer_state.records.lock().await;
+            if let Some(record) = records.first() {
+                propagated = Some(record.clone());
+            }
+        }
+        if propagated.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+
+    let propagated = propagated
+        .expect("expected same-view missing-local-node drift to trigger stale-peer reconciliation");
+    assert_eq!(
+        propagated.payload["expectedMembershipViewId"], local_view_id,
+        "same-view drift reconciliation should bind to observed peer view id"
+    );
+    assert_eq!(
+        propagated.payload["expectedPlacementEpoch"], peer_epoch,
+        "same-view drift reconciliation should bind to observed peer epoch"
+    );
+    assert_eq!(propagated.forwarded_by.as_deref(), Some(local_node_id));
+
+    let served_statuses = peer_state.served_statuses.lock().await.clone();
+    assert!(
+        served_statuses
+            .iter()
+            .any(|status| *status == StatusCode::OK.as_u16()),
+        "expected stale-peer reconciliation update dispatch, got {served_statuses:?}"
     );
 }
 

@@ -1331,6 +1331,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_tls_cert_sha256_revocations: None,
             cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
             erasure_coding: false,
             chunk_size: 10 * 1024 * 1024,

@@ -19,12 +19,18 @@ pub(super) fn health_payload(
     let persisted_metadata_state_probe = probe_persisted_metadata_state(&state.config.data_dir);
     let membership_status = topology.membership_status.clone();
     let cluster_peer_auth_status = probe_cluster_peer_auth_status(&state.config, topology);
-    let cluster_join_auth_status = probe_cluster_join_auth_status(state, topology);
-    let cluster_peer_auth_transport_required = cluster_peer_auth_transport_required(
+    let cluster_peer_transport_policy = cluster_peer_auth_transport_policy_assessment(
         state.config.as_ref(),
         topology,
         &cluster_peer_auth_status,
     );
+    let cluster_join_auth_status = probe_cluster_join_auth_status(state, topology);
+    let cluster_peer_auth_transport_required = cluster_peer_transport_policy.required;
+    let cluster_peer_auth_transport_ready = if cluster_peer_auth_transport_required {
+        cluster_peer_transport_policy.is_ready()
+    } else {
+        cluster_peer_auth_status.transport_ready
+    };
     let metadata_snapshot =
         metadata_snapshot_for_topology(topology, state.metadata_listing_strategy);
     let metadata_readiness =
@@ -86,10 +92,12 @@ pub(super) fn health_payload(
     if let Some(warning) = cluster_peer_auth_status.warning.clone() {
         warnings.push(warning);
     }
-    if cluster_peer_auth_transport_required && !cluster_peer_auth_status.transport_ready {
+    if cluster_peer_auth_transport_required && !cluster_peer_auth_transport_ready {
+        let reason = peer_transport_policy_reject_reason(&cluster_peer_transport_policy)
+            .unwrap_or(cluster_peer_transport_policy.enforcement.reason);
         warnings.push(format!(
             "Cluster peer auth requires mTLS transport identity readiness under current runtime policy (reason: {}).",
-            cluster_peer_auth_status.transport_reason
+            reason.as_str()
         ));
     }
     if let Some(warning) = cluster_join_auth_status.warning.clone() {
@@ -136,7 +144,7 @@ pub(super) fn health_payload(
         peer_connectivity_ready: peer_connectivity_probe.ready && !self_peer_misconfigured,
         cluster_peer_auth_configured: cluster_peer_auth_status.configured,
         cluster_peer_auth_identity_bound: cluster_peer_auth_status.identity_bound,
-        cluster_peer_auth_transport_ready: cluster_peer_auth_status.transport_ready,
+        cluster_peer_auth_transport_ready,
         cluster_peer_auth_transport_required,
         cluster_peer_auth_sender_allowlist_bound: cluster_peer_auth_status.sender_allowlist_bound,
         cluster_join_auth_ready: cluster_join_auth_status.ready,
@@ -190,8 +198,17 @@ pub(super) fn health_payload(
         membership_nodes: topology.membership_nodes.clone(),
         cluster_auth_mode: cluster_peer_auth_status.mode.to_string(),
         cluster_auth_trust_model: cluster_peer_auth_status.trust_model.to_string(),
-        cluster_auth_transport_identity: cluster_peer_auth_status.transport_identity.to_string(),
-        cluster_auth_transport_reason: cluster_peer_auth_status.transport_reason.to_string(),
+        cluster_auth_transport_identity: cluster_peer_auth_status
+            .transport_identity
+            .as_str()
+            .to_string(),
+        cluster_auth_transport_reason: if cluster_peer_transport_policy.required {
+            cluster_peer_transport_policy.enforcement.reason
+        } else {
+            cluster_peer_auth_status.transport_reason
+        }
+        .as_str()
+        .to_string(),
         cluster_auth_transport_required: cluster_peer_auth_transport_required,
         cluster_join_auth_mode: cluster_join_auth_status.mode.to_string(),
         cluster_join_auth_reason: cluster_join_auth_status.reason.to_string(),
@@ -371,12 +388,23 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
     let metadata_listing_unexpected_nodes = metadata_snapshot.coverage_assessment.unexpected_nodes;
     let membership_engine = topology.membership_status.engine.as_str();
     let cluster_peer_auth_status = probe_cluster_peer_auth_status(&state.config, &topology);
+    let cluster_peer_transport_policy = cluster_peer_auth_transport_policy_assessment(
+        state.config.as_ref(),
+        &topology,
+        &cluster_peer_auth_status,
+    );
     let cluster_join_auth_status = probe_cluster_join_auth_status(&state, &topology);
     let cluster_id = topology.cluster_id.as_str();
     let cluster_auth_mode = cluster_peer_auth_status.mode;
     let cluster_auth_trust_model = cluster_peer_auth_status.trust_model;
-    let cluster_auth_transport_identity = cluster_peer_auth_status.transport_identity;
-    let cluster_auth_transport_reason = cluster_peer_auth_status.transport_reason;
+    let cluster_auth_transport_identity = cluster_peer_auth_status.transport_identity.as_str();
+    let cluster_auth_transport_reason = if cluster_peer_transport_policy.required {
+        peer_transport_policy_reject_reason(&cluster_peer_transport_policy)
+            .unwrap_or(cluster_peer_transport_policy.enforcement.reason)
+            .as_str()
+    } else {
+        cluster_peer_auth_status.transport_reason.as_str()
+    };
     let cluster_join_auth_mode = cluster_join_auth_status.mode;
     let cluster_join_auth_ready = if cluster_join_auth_status.ready { 1 } else { 0 };
     let cluster_join_auth_reason = cluster_join_auth_status.reason;
@@ -396,16 +424,17 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
         } else {
             0
         };
-    let cluster_peer_auth_transport_ready = if cluster_peer_auth_status.transport_ready {
+    let cluster_peer_auth_transport_ready_value = if cluster_peer_transport_policy.required {
+        cluster_peer_transport_policy.is_ready()
+    } else {
+        cluster_peer_auth_status.transport_ready
+    };
+    let cluster_peer_auth_transport_ready = if cluster_peer_auth_transport_ready_value {
         1
     } else {
         0
     };
-    let cluster_peer_auth_transport_required = if cluster_peer_auth_transport_required(
-        state.config.as_ref(),
-        &topology,
-        &cluster_peer_auth_status,
-    ) {
+    let cluster_peer_auth_transport_required = if cluster_peer_transport_policy.required {
         1
     } else {
         0

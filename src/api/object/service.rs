@@ -407,6 +407,28 @@ enum PendingReplicationReplayOutcome {
     Dropped,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingReplicationReplayError {
+    message: String,
+    retryable: bool,
+}
+
+impl PendingReplicationReplayError {
+    fn retryable(message: String) -> Self {
+        Self {
+            message,
+            retryable: true,
+        }
+    }
+
+    fn terminal(message: String) -> Self {
+        Self {
+            message,
+            retryable: false,
+        }
+    }
+}
+
 pub(crate) async fn replay_pending_replication_backlog_once(
     state: &AppState,
     max_candidates: usize,
@@ -467,23 +489,50 @@ pub(crate) async fn replay_pending_replication_backlog_once(
                 }
             }
             Err(error) => {
-                summary.failed += 1;
-                let record_outcome = record_pending_replication_failure_with_backoff_persisted(
+                if error.retryable {
+                    summary.failed += 1;
+                    let record_outcome = record_pending_replication_failure_with_backoff_persisted(
+                        queue_path.as_path(),
+                        candidate.idempotency_key.as_str(),
+                        candidate.target_node.as_str(),
+                        Some(error.message.as_str()),
+                        unix_ms_now(),
+                        PendingReplicationRetryPolicy::default(),
+                    )?;
+                    tracing::warn!(
+                        operation = %candidate.operation.as_str(),
+                        bucket = %candidate.bucket,
+                        key = %candidate.key,
+                        target_node = %candidate.target_node,
+                        error = %error.message,
+                        failure_outcome = ?record_outcome,
+                        "Pending replication replay attempt failed"
+                    );
+                    continue;
+                }
+
+                let ack_outcome = acknowledge_pending_replication_target_persisted(
                     queue_path.as_path(),
                     candidate.idempotency_key.as_str(),
                     candidate.target_node.as_str(),
-                    Some(error.as_str()),
-                    unix_ms_now(),
-                    PendingReplicationRetryPolicy::default(),
                 )?;
+                match ack_outcome {
+                    PendingReplicationAcknowledgeOutcome::Updated { .. }
+                    | PendingReplicationAcknowledgeOutcome::AlreadyAcked => {
+                        summary.acknowledged += 1;
+                    }
+                    PendingReplicationAcknowledgeOutcome::NotFound
+                    | PendingReplicationAcknowledgeOutcome::TargetNotTracked => {}
+                }
+                summary.skipped += 1;
                 tracing::warn!(
                     operation = %candidate.operation.as_str(),
                     bucket = %candidate.bucket,
                     key = %candidate.key,
                     target_node = %candidate.target_node,
-                    error = %error,
-                    failure_outcome = ?record_outcome,
-                    "Pending replication replay attempt failed"
+                    error = %error.message,
+                    ack_outcome = ?ack_outcome,
+                    "Dropping pending replication replay target after terminal failure"
                 );
             }
         }
@@ -495,7 +544,7 @@ pub(crate) async fn replay_pending_replication_backlog_once(
 async fn replay_pending_replication_candidate(
     state: &AppState,
     candidate: &PendingReplicationReplayCandidate,
-) -> Result<PendingReplicationReplayOutcome, String> {
+) -> Result<PendingReplicationReplayOutcome, PendingReplicationReplayError> {
     if !pending_replication_target_is_current_owner(state, candidate) {
         tracing::debug!(
             operation = %candidate.operation.as_str(),
@@ -553,7 +602,7 @@ fn pending_replication_target_is_current_owner(
 async fn replay_pending_replication_put(
     state: &AppState,
     candidate: &PendingReplicationReplayCandidate,
-) -> Result<PendingReplicationReplayOutcome, String> {
+) -> Result<PendingReplicationReplayOutcome, PendingReplicationReplayError> {
     let read_result = if let Some(version_id) = candidate.version_id.as_deref() {
         state
             .storage
@@ -584,18 +633,19 @@ async fn replay_pending_replication_put(
             return Ok(PendingReplicationReplayOutcome::Dropped);
         }
         Err(error) => {
-            return Err(format!(
+            return Err(PendingReplicationReplayError::retryable(format!(
                 "{}: failed to read source object for replay: {error}",
                 PENDING_REPLICATION_REPLAY_FAILURE_REASON_SOURCE_UNAVAILABLE
-            ));
+            )));
         }
     };
 
     let mut body = Vec::new();
-    reader
-        .read_to_end(&mut body)
-        .await
-        .map_err(|error| format!("failed to read source object payload for replay: {error}"))?;
+    reader.read_to_end(&mut body).await.map_err(|error| {
+        PendingReplicationReplayError::retryable(format!(
+            "failed to read source object payload for replay: {error}"
+        ))
+    })?;
 
     let path_and_query = presigned_replica_path_and_query(
         state,
@@ -605,7 +655,11 @@ async fn replay_pending_replication_put(
         candidate.key.as_str(),
         &[],
     )
-    .ok_or_else(|| "failed to build presigned replay path for replica PUT".to_string())?;
+    .ok_or_else(|| {
+        PendingReplicationReplayError::terminal(
+            "failed to build presigned replay path for replica PUT".to_string(),
+        )
+    })?;
 
     let mut headers = HeaderMap::new();
     if let Ok(value) = HeaderValue::from_str(meta.content_type.as_str()) {
@@ -630,7 +684,7 @@ async fn replay_pending_replication_put(
         candidate,
         ForwardedWriteOperation::ReplicatePutObject,
     );
-    let response = forward_replica_put_to_target(
+    let response = forward_replica_put_to_target_for_replay(
         state,
         candidate.target_node.as_str(),
         path_and_query.as_str(),
@@ -640,21 +694,31 @@ async fn replay_pending_replication_put(
         &envelope,
     )
     .await
-    .map_err(|error| format!("{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: {error:?}"))?;
+    .map_err(|error| {
+        PendingReplicationReplayError::retryable(format!(
+            "{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: {error:?}"
+        ))
+    })?;
     if response.status().is_success() {
         return Ok(PendingReplicationReplayOutcome::Applied);
     }
 
-    Err(format!(
+    let status = response.status();
+    let message = format!(
         "{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: replica PUT replay returned status {}",
-        response.status().as_u16()
-    ))
+        status.as_u16()
+    );
+    if pending_replication_replay_status_is_retryable(status) {
+        Err(PendingReplicationReplayError::retryable(message))
+    } else {
+        Err(PendingReplicationReplayError::terminal(message))
+    }
 }
 
 async fn replay_pending_replication_delete(
     state: &AppState,
     candidate: &PendingReplicationReplayCandidate,
-) -> Result<PendingReplicationReplayOutcome, String> {
+) -> Result<PendingReplicationReplayOutcome, PendingReplicationReplayError> {
     if should_drop_non_version_delete_replay(state, candidate).await {
         tracing::debug!(
             operation = %candidate.operation.as_str(),
@@ -679,14 +743,18 @@ async fn replay_pending_replication_delete(
         candidate.key.as_str(),
         extra_query.as_slice(),
     )
-    .ok_or_else(|| "failed to build presigned replay path for replica DELETE".to_string())?;
+    .ok_or_else(|| {
+        PendingReplicationReplayError::terminal(
+            "failed to build presigned replay path for replica DELETE".to_string(),
+        )
+    })?;
     let headers = HeaderMap::new();
     let envelope = replay_forwarded_write_envelope(
         state,
         candidate,
         ForwardedWriteOperation::ReplicateDeleteObject,
     );
-    let response = forward_replica_delete_to_target(
+    let response = forward_replica_delete_to_target_for_replay(
         state,
         candidate.target_node.as_str(),
         path_and_query.as_str(),
@@ -694,15 +762,31 @@ async fn replay_pending_replication_delete(
         &envelope,
     )
     .await
-    .map_err(|error| format!("{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: {error:?}"))?;
+    .map_err(|error| {
+        PendingReplicationReplayError::retryable(format!(
+            "{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: {error:?}"
+        ))
+    })?;
     if response.status().is_success() {
         return Ok(PendingReplicationReplayOutcome::Applied);
     }
 
-    Err(format!(
+    let status = response.status();
+    let message = format!(
         "{PENDING_REPLICATION_REPLAY_FAILURE_REASON_RETRY}: replica DELETE replay returned status {}",
-        response.status().as_u16()
-    ))
+        status.as_u16()
+    );
+    if pending_replication_replay_status_is_retryable(status) {
+        Err(PendingReplicationReplayError::retryable(message))
+    } else {
+        Err(PendingReplicationReplayError::terminal(message))
+    }
+}
+
+fn pending_replication_replay_status_is_retryable(status: StatusCode) -> bool {
+    status == StatusCode::REQUEST_TIMEOUT
+        || status == StatusCode::TOO_MANY_REQUESTS
+        || status.is_server_error()
 }
 
 async fn should_drop_non_version_delete_replay(
@@ -862,6 +946,7 @@ fn canonical_query_string(params: &HashMap<String, String>) -> String {
         .join("&")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn forward_write_to_target(
     state: &AppState,
     method: Method,
@@ -869,6 +954,7 @@ pub(crate) async fn forward_write_to_target(
     path_and_query: &str,
     headers: &HeaderMap,
     body: Vec<u8>,
+    treat_auth_reject_as_transport_error: bool,
     envelope: &ForwardedWriteEnvelope,
 ) -> Result<Response<Body>, S3Error> {
     let transport =
@@ -951,7 +1037,9 @@ pub(crate) async fn forward_write_to_target(
         ))
     })?;
     let status = forwarded.status();
-    if is_internal_forwarding_transport_reject_status(status) {
+    if treat_auth_reject_as_transport_error
+        && is_internal_forwarding_transport_reject_status(status)
+    {
         return Err(S3Error::service_unavailable(&format!(
             "Write forwarding to primary owner failed ({target}): upstream peer rejected internal forwarding request with status {}",
             status.as_u16()
@@ -1004,6 +1092,7 @@ pub(crate) async fn forward_replica_put_to_target(
         path_and_query,
         &replica_headers,
         body,
+        true,
         envelope,
     )
     .await
@@ -1028,6 +1117,7 @@ pub(crate) async fn forward_replica_delete_to_target(
         path_and_query,
         &replica_headers,
         Vec::new(),
+        true,
         envelope,
     )
     .await
@@ -1052,6 +1142,67 @@ pub(crate) async fn forward_replica_head_to_target(
         path_and_query,
         &replica_headers,
         Vec::new(),
+        true,
+        envelope,
+    )
+    .await
+}
+
+async fn forward_replica_put_to_target_for_replay(
+    state: &AppState,
+    target: &str,
+    path_and_query: &str,
+    headers: &HeaderMap,
+    body: Vec<u8>,
+    replica_version_id: Option<&str>,
+    envelope: &ForwardedWriteEnvelope,
+) -> Result<Response<Body>, S3Error> {
+    let mut replica_headers = headers.clone();
+    replica_headers.insert(
+        header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_HEADER),
+        HeaderValue::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_PUT),
+    );
+    if let Some(version_id) = replica_version_id {
+        if let Ok(value) = HeaderValue::from_str(version_id) {
+            replica_headers.insert(
+                header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_VERSION_ID_HEADER),
+                value,
+            );
+        }
+    }
+    forward_write_to_target(
+        state,
+        Method::PUT,
+        target,
+        path_and_query,
+        &replica_headers,
+        body,
+        false,
+        envelope,
+    )
+    .await
+}
+
+async fn forward_replica_delete_to_target_for_replay(
+    state: &AppState,
+    target: &str,
+    path_and_query: &str,
+    headers: &HeaderMap,
+    envelope: &ForwardedWriteEnvelope,
+) -> Result<Response<Body>, S3Error> {
+    let mut replica_headers = headers.clone();
+    replica_headers.insert(
+        header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_HEADER),
+        HeaderValue::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_DELETE),
+    );
+    forward_write_to_target(
+        state,
+        Method::DELETE,
+        target,
+        path_and_query,
+        &replica_headers,
+        Vec::new(),
+        false,
         envelope,
     )
     .await
@@ -2856,6 +3007,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_tls_cert_sha256_revocations: None,
             cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
             erasure_coding: false,
             chunk_size: 10 * 1024 * 1024,
@@ -3121,5 +3273,24 @@ mod tests {
         let queue =
             load_pending_replication_queue(queue_path.as_path()).expect("queue should load");
         assert!(queue.operations.is_empty());
+    }
+
+    #[test]
+    fn pending_replication_replay_status_retry_policy_matches_contract() {
+        assert!(pending_replication_replay_status_is_retryable(
+            StatusCode::REQUEST_TIMEOUT
+        ));
+        assert!(pending_replication_replay_status_is_retryable(
+            StatusCode::TOO_MANY_REQUESTS
+        ));
+        assert!(pending_replication_replay_status_is_retryable(
+            StatusCode::SERVICE_UNAVAILABLE
+        ));
+        assert!(!pending_replication_replay_status_is_retryable(
+            StatusCode::FORBIDDEN
+        ));
+        assert!(!pending_replication_replay_status_is_retryable(
+            StatusCode::NOT_FOUND
+        ));
     }
 }

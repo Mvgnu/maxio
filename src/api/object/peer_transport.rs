@@ -2,8 +2,9 @@ use std::fs;
 use std::time::Duration;
 
 use crate::cluster::transport_identity::{
-    PeerTransportIdentityMode, attest_peer_transport_identity_with_mtls,
-    probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding,
+    PeerCertificatePolicy, PeerTransportIdentityMode,
+    attest_peer_transport_identity_with_mtls_with_policy,
+    probe_peer_transport_identity_with_certificate_policy_and_node_id_binding,
 };
 use crate::config::Config;
 use crate::error::S3Error;
@@ -31,11 +32,14 @@ fn resolve_internal_peer_transport(
         && config.cluster_auth_token().is_some()
         && has_configured_cluster_peers;
     let expected_node_id = config.cluster_auth_token().map(|_| config.node_id.as_str());
-    let status = probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
+    let status = probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
         config.cluster_peer_tls_cert_path(),
         config.cluster_peer_tls_key_path(),
         config.cluster_peer_tls_ca_path(),
-        config.cluster_peer_tls_cert_sha256(),
+        PeerCertificatePolicy {
+            sha256_pin: config.cluster_peer_tls_cert_sha256(),
+            sha256_revocations: config.cluster_peer_tls_cert_sha256_revocations(),
+        },
         expected_node_id,
     );
 
@@ -141,12 +145,16 @@ pub(crate) fn attest_internal_peer_target(
         )
     })?;
 
-    attest_peer_transport_identity_with_mtls(
+    attest_peer_transport_identity_with_mtls_with_policy(
         target,
         target,
         cert_path,
         key_path,
         trust_store_path,
+        PeerCertificatePolicy {
+            sha256_pin: None,
+            sha256_revocations: state.config.cluster_peer_tls_cert_sha256_revocations(),
+        },
         timeout,
     )
     .map_err(|error| {
@@ -220,6 +228,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_tls_cert_sha256_revocations: None,
             cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
         }
     }

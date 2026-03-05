@@ -218,6 +218,11 @@ pub struct Config {
     #[arg(long, env = "MAXIO_CLUSTER_PEER_TLS_CERT_SHA256")]
     pub cluster_peer_tls_cert_sha256: Option<String>,
 
+    /// Optional comma-separated SHA-256 fingerprint revocation set for peer mTLS certificates.
+    /// Accepts the same fingerprint format as `MAXIO_CLUSTER_PEER_TLS_CERT_SHA256`.
+    #[arg(long, env = "MAXIO_CLUSTER_PEER_TLS_CERT_SHA256_REVOCATIONS")]
+    pub cluster_peer_tls_cert_sha256_revocations: Option<String>,
+
     /// Peer transport enforcement policy for internal node-to-node requests.
     /// - compatibility: require mTLS transport only when mTLS paths are configured.
     /// - required: fail closed in distributed shared-token mode when peer mTLS transport is not ready.
@@ -295,6 +300,13 @@ impl Config {
 
     pub fn cluster_peer_tls_cert_sha256(&self) -> Option<&str> {
         self.cluster_peer_tls_cert_sha256
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+    }
+
+    pub fn cluster_peer_tls_cert_sha256_revocations(&self) -> Option<&str> {
+        self.cluster_peer_tls_cert_sha256_revocations
             .as_deref()
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -410,6 +422,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_tls_cert_sha256_revocations: None,
             cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
             erasure_coding: false,
             chunk_size: 10 * 1024 * 1024,

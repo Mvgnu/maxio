@@ -2,8 +2,12 @@ use super::*;
 
 fn cluster_peer_transport_not_ready(state: &AppState, topology: &RuntimeTopologySnapshot) -> bool {
     let auth_status = probe_cluster_peer_auth_status(state.config.as_ref(), topology);
-    cluster_peer_auth_transport_required(state.config.as_ref(), topology, &auth_status)
-        && !auth_status.transport_ready
+    let transport_policy = cluster_peer_auth_transport_policy_assessment(
+        state.config.as_ref(),
+        topology,
+        &auth_status,
+    );
+    !transport_policy.is_ready()
 }
 
 fn membership_update_preconditions_missing(

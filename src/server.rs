@@ -55,22 +55,24 @@ use crate::cluster::join_authorization::{
 };
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::cluster::transport_identity::{
-    attest_peer_transport_identity_with_mtls,
-    probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding,
+    PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityMode,
+    PeerTransportIdentityReadinessReason, PeerTransportIdentityStatus,
+    PeerTransportPolicyAssessment, assess_peer_transport_policy,
+    attest_peer_transport_identity_with_mtls_with_policy, peer_transport_policy_reject_reason,
+    probe_peer_transport_identity_with_certificate_policy_and_node_id_binding,
 };
 use crate::config::{Config, MembershipProtocol, WriteDurabilityMode};
 use crate::embedded::ui_handler;
 use crate::membership::{MembershipEngine, MembershipEngineStatus, unix_ms_now};
+use crate::metadata::reconciliation::replay_pending_metadata_repairs_once_with_persisted_state_apply;
 use crate::metadata::{
     ClusterMetadataListingStrategy, ClusterMetadataSnapshotAssessment,
-    PendingMetadataRepairQueueSummary,
-    assess_cluster_metadata_snapshot_for_topology_responders,
+    PendingMetadataRepairQueueSummary, assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
     build_queryable_metadata_index_from_persisted_state, load_persisted_metadata_state,
     pending_metadata_repair_candidates_from_disk,
     summarize_pending_metadata_repair_queue_from_disk,
 };
-use crate::metadata::reconciliation::replay_pending_metadata_repairs_once_with_persisted_state_apply;
 use crate::storage::StorageError;
 use crate::storage::filesystem::FilesystemStorage;
 use crate::storage::placement::{
@@ -84,8 +86,8 @@ use crate::storage::placement::{
     local_rebalance_actions, membership_view_id_with_self, membership_with_self,
     object_rebalance_plan, pending_rebalance_candidates_from_disk,
     pending_replication_replay_candidates, record_pending_rebalance_failure_with_backoff_persisted,
-    select_object_owners_with_self, summarize_pending_rebalance_queue_from_disk,
-    summarize_pending_replication_queue,
+    select_chunk_owners_with_self, select_object_owners_with_self,
+    summarize_pending_rebalance_queue_from_disk, summarize_pending_replication_queue,
 };
 
 const CORS_ALLOW_HEADERS_BASELINE: &str = "authorization,content-type,x-amz-date,x-amz-content-sha256,x-amz-security-token,x-amz-user-agent,x-amz-checksum-algorithm,x-amz-checksum-crc32,x-amz-checksum-crc32c,x-amz-checksum-sha1,x-amz-checksum-sha256,range";
@@ -1676,8 +1678,8 @@ struct ClusterPeerAuthStatus {
     configured: bool,
     mode: &'static str,
     trust_model: &'static str,
-    transport_identity: &'static str,
-    transport_reason: &'static str,
+    transport_identity: PeerTransportIdentityMode,
+    transport_reason: PeerTransportIdentityReadinessReason,
     transport_ready: bool,
     identity_bound: bool,
     sender_allowlist_bound: bool,
@@ -1943,11 +1945,14 @@ fn build_peer_http_transport(
     if let Some(config) = config {
         let expected_node_id = config.cluster_auth_token().map(|_| config.node_id.as_str());
         let identity_status =
-            probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
+            probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
                 config.cluster_peer_tls_cert_path(),
                 config.cluster_peer_tls_key_path(),
                 config.cluster_peer_tls_ca_path(),
-                config.cluster_peer_tls_cert_sha256(),
+                PeerCertificatePolicy {
+                    sha256_pin: config.cluster_peer_tls_cert_sha256(),
+                    sha256_revocations: config.cluster_peer_tls_cert_sha256_revocations(),
+                },
                 expected_node_id,
             );
         if identity_status.mode.as_str() == "mtls-path" {
@@ -2021,11 +2026,14 @@ fn attest_peer_http_target(
     };
 
     let expected_node_id = config.cluster_auth_token().map(|_| config.node_id.as_str());
-    let identity_status = probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
+    let identity_status = probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
         config.cluster_peer_tls_cert_path(),
         config.cluster_peer_tls_key_path(),
         config.cluster_peer_tls_ca_path(),
-        config.cluster_peer_tls_cert_sha256(),
+        PeerCertificatePolicy {
+            sha256_pin: config.cluster_peer_tls_cert_sha256(),
+            sha256_revocations: config.cluster_peer_tls_cert_sha256_revocations(),
+        },
         expected_node_id,
     );
     if identity_status.mode.as_str() != "mtls-path" {
@@ -2053,12 +2061,16 @@ fn attest_peer_http_target(
         "mTLS peer transport requires cluster peer CA trust-store path".to_string()
     })?;
 
-    attest_peer_transport_identity_with_mtls(
+    attest_peer_transport_identity_with_mtls_with_policy(
         peer,
         peer,
         cert_path,
         key_path,
         trust_store_path,
+        PeerCertificatePolicy {
+            sha256_pin: None,
+            sha256_revocations: config.cluster_peer_tls_cert_sha256_revocations(),
+        },
         timeout,
     )
     .map_err(|error| {
@@ -2923,6 +2935,9 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::cluster::join_authorization::InMemoryJoinNonceReplayGuard;
+    use crate::cluster::transport_identity::{
+        PeerTransportIdentityMode, PeerTransportIdentityReadinessReason,
+    };
     use crate::config::{
         ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode,
     };
@@ -2957,6 +2972,7 @@ mod tests {
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
             cluster_peer_tls_cert_sha256: None,
+            cluster_peer_tls_cert_sha256_revocations: None,
             cluster_peer_transport_mode: ClusterPeerTransportMode::Compatibility,
         }
     }
@@ -3002,6 +3018,99 @@ mod tests {
                 .get(header::CONTENT_TYPE)
                 .and_then(|v| v.to_str().ok()),
             Some("application/json")
+        );
+    }
+
+    fn distributed_topology_fixture() -> RuntimeTopologySnapshot {
+        RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b:9000".to_string()],
+            membership_nodes: vec!["node-a:9000".to_string(), "node-b:9000".to_string()],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: MembershipProtocol::StaticBootstrap.as_str().to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 0,
+                warning: None,
+            },
+            membership_view_id: "view-a".to_string(),
+            placement_epoch: 1,
+        }
+    }
+
+    fn configured_cluster_auth_status(
+        transport_identity: PeerTransportIdentityMode,
+        transport_ready: bool,
+        reason: PeerTransportIdentityReadinessReason,
+    ) -> ClusterPeerAuthStatus {
+        ClusterPeerAuthStatus {
+            configured: true,
+            mode: "shared-token",
+            trust_model: "forwarded-by-marker+shared-token",
+            transport_identity,
+            transport_reason: reason,
+            transport_ready,
+            identity_bound: false,
+            sender_allowlist_bound: true,
+            warning: None,
+        }
+    }
+
+    #[test]
+    fn cluster_peer_auth_transport_required_compatibility_none_identity_is_not_required() {
+        let mut config = test_config();
+        config.cluster_auth_token = Some("shared-secret".to_string());
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Compatibility;
+        let topology = distributed_topology_fixture();
+        let auth_status = configured_cluster_auth_status(
+            PeerTransportIdentityMode::None,
+            false,
+            PeerTransportIdentityReadinessReason::NotConfigured,
+        );
+
+        assert!(
+            !cluster_peer_auth_transport_policy_assessment(&config, &topology, &auth_status)
+                .required
+        );
+    }
+
+    #[test]
+    fn cluster_peer_auth_transport_required_compatibility_mtls_is_required() {
+        let mut config = test_config();
+        config.cluster_auth_token = Some("shared-secret".to_string());
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Compatibility;
+        let topology = distributed_topology_fixture();
+        let auth_status = configured_cluster_auth_status(
+            PeerTransportIdentityMode::MtlsPath,
+            true,
+            PeerTransportIdentityReadinessReason::Ready,
+        );
+
+        assert!(
+            cluster_peer_auth_transport_policy_assessment(&config, &topology, &auth_status)
+                .required
+        );
+    }
+
+    #[test]
+    fn cluster_peer_auth_transport_required_required_mode_always_requires_transport() {
+        let mut config = test_config();
+        config.cluster_auth_token = Some("shared-secret".to_string());
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+        let topology = distributed_topology_fixture();
+        let auth_status = configured_cluster_auth_status(
+            PeerTransportIdentityMode::None,
+            false,
+            PeerTransportIdentityReadinessReason::NotConfigured,
+        );
+
+        assert!(
+            cluster_peer_auth_transport_policy_assessment(&config, &topology, &auth_status)
+                .required
         );
     }
 
@@ -3200,10 +3309,40 @@ mod tests {
         let mut config = test_config();
         config.data_dir = data_dir;
         config.node_id = "node-a.internal:9000".to_string();
-        config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+        config.cluster_peers = vec![
+            "node-b.internal:9000".to_string(),
+            "node-c.internal:9000".to_string(),
+        ];
         let state = AppState::from_config(config)
             .await
             .expect("state bootstrap should succeed");
+        let peers = state.active_cluster_peers();
+
+        let object_owners = select_object_owners_with_self(
+            "docs/report.txt",
+            state.node_id.as_ref(),
+            peers.as_slice(),
+            2,
+        );
+        let object_owner_target = object_owners
+            .iter()
+            .find(|owner| !peer_identity_eq(owner.as_str(), state.node_id.as_ref()))
+            .cloned()
+            .unwrap_or_else(|| {
+                object_owners
+                    .first()
+                    .cloned()
+                    .expect("object owner set should include at least one node")
+            });
+        let object_non_owner_target =
+            membership_with_self(state.node_id.as_ref(), peers.as_slice())
+                .into_iter()
+                .find(|node| {
+                    !object_owners
+                        .iter()
+                        .any(|owner| peer_identity_eq(owner, node))
+                })
+                .expect("object owner projection should exclude at least one node");
 
         let owner_candidate = PendingRebalanceCandidate {
             rebalance_id: "rebalance-owner".to_string(),
@@ -3215,7 +3354,7 @@ mod tests {
             placement_view_id: "view-a".to_string(),
             created_at_unix_ms: 1,
             from: Some("node-a.internal:9000".to_string()),
-            to: "node-b.internal:9000".to_string(),
+            to: object_owner_target,
             attempts: 0,
             next_retry_at_unix_ms: None,
         };
@@ -3225,10 +3364,49 @@ mod tests {
         ));
 
         let mut non_owner_candidate = owner_candidate.clone();
-        non_owner_candidate.to = "node-c.internal:9000".to_string();
+        non_owner_candidate.to = object_non_owner_target;
         assert!(!pending_rebalance_target_is_current_owner(
             &state,
             &non_owner_candidate
+        ));
+
+        let chunk_owners = select_chunk_owners_with_self(
+            "docs/report.txt",
+            3,
+            state.node_id.as_ref(),
+            peers.as_slice(),
+            2,
+        );
+        let chunk_owner_target = chunk_owners
+            .iter()
+            .find(|owner| !peer_identity_eq(owner.as_str(), state.node_id.as_ref()))
+            .cloned()
+            .unwrap_or_else(|| {
+                chunk_owners
+                    .first()
+                    .cloned()
+                    .expect("chunk owner set should include at least one node")
+            });
+        let chunk_non_owner_target = membership_with_self(state.node_id.as_ref(), peers.as_slice())
+            .into_iter()
+            .find(|node| {
+                !chunk_owners
+                    .iter()
+                    .any(|owner| peer_identity_eq(owner, node))
+            })
+            .expect("chunk owner projection should exclude at least one node");
+        let mut chunk_owner_candidate = owner_candidate.clone();
+        chunk_owner_candidate.scope = RebalanceObjectScope::Chunk { chunk_index: 3 };
+        chunk_owner_candidate.to = chunk_owner_target;
+        assert!(pending_rebalance_target_is_current_owner(
+            &state,
+            &chunk_owner_candidate
+        ));
+
+        chunk_owner_candidate.to = chunk_non_owner_target;
+        assert!(!pending_rebalance_target_is_current_owner(
+            &state,
+            &chunk_owner_candidate
         ));
     }
 
@@ -4336,7 +4514,7 @@ mod tests {
                     membership_view_id: Some("view-local".to_string()),
                     placement_epoch: Some(7),
                     cluster_id: Some("cluster-a".to_string()),
-                    cluster_peers: Vec::new(),
+                    cluster_peers: vec!["node-a:9000".to_string()],
                 },
                 PeerViewObservation {
                     peer: "node-c:9000".to_string(),
@@ -4358,6 +4536,44 @@ mod tests {
 
         let targets = derive_gossip_stale_peer_reconciliation_targets(&topology, &peer_probe);
         assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn derive_gossip_stale_peer_reconciliation_targets_returns_peer_missing_local_node() {
+        let membership_status = MembershipEngine::for_protocol(MembershipProtocol::Gossip).status();
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a:9000".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b:9000".to_string()],
+            membership_nodes: vec!["node-a:9000".to_string(), "node-b:9000".to_string()],
+            membership_protocol: MembershipProtocol::Gossip,
+            membership_status,
+            membership_view_id: "view-local".to_string(),
+            placement_epoch: 11,
+        };
+        let peer_probe = PeerConnectivityProbeResult {
+            ready: true,
+            warning: None,
+            peer_views: vec![PeerViewObservation {
+                peer: "node-b:9000".to_string(),
+                membership_view_id: Some("view-local".to_string()),
+                placement_epoch: Some(11),
+                cluster_id: Some("cluster-a".to_string()),
+                cluster_peers: Vec::new(),
+            }],
+            failed_peers: Vec::new(),
+        };
+
+        let targets = derive_gossip_stale_peer_reconciliation_targets(&topology, &peer_probe);
+        assert_eq!(
+            targets,
+            vec![GossipStalePeerReconciliationTarget {
+                peer: "node-b:9000".to_string(),
+                expected_membership_view_id: "view-local".to_string(),
+                expected_placement_epoch: 11,
+            }]
+        );
     }
 
     #[test]

@@ -41,6 +41,8 @@ run_domain() {
         runtime_tests::test_metrics_pending_membership_propagation_replay_counters_increment_in_distributed_mode \
         runtime_tests::test_metrics_pending_rebalance_replay_counters_increment_in_distributed_mode \
         runtime_tests::test_pending_rebalance_replay_worker_forwards_due_send_transfer_and_drains_queue \
+        runtime_tests::test_pending_rebalance_replay_worker_drops_chunk_scope_without_forwarding \
+        runtime_tests::test_pending_replication_replay_worker_drops_terminal_replica_failure_without_retry \
         runtime_tests::test_metrics_membership_converged_reflects_peer_probe_for_static_bootstrap \
         runtime_tests::test_healthz_endpoint_reports_runtime_status \
         runtime_tests::test_healthz_reports_distributed_mode_when_cluster_peers_configured \
@@ -50,6 +52,7 @@ run_domain() {
         runtime_tests::test_healthz_and_metrics_report_mtls_transport_ready_when_pin_matches \
         runtime_tests::test_healthz_and_metrics_report_mtls_transport_unready_when_node_identity_mismatches_certificate \
         runtime_tests::test_healthz_and_metrics_report_mtls_transport_pin_mismatch_as_unready \
+        runtime_tests::test_healthz_and_metrics_report_mtls_transport_revoked_certificate_as_unready \
         runtime_tests::test_healthz_and_metrics_report_strict_quorum_write_durability_mode_when_configured \
         runtime_tests::test_healthz_and_metrics_report_consensus_index_metadata_listing_strategy_when_configured \
         runtime_tests::test_healthz_and_metrics_report_consensus_index_metadata_listing_strategy_as_unready_when_shared_token_missing \
@@ -101,6 +104,7 @@ run_domain() {
         runtime_tests::test_static_bootstrap_convergence_worker_applies_discovered_peers_from_peer_healthz \
         runtime_tests::test_static_bootstrap_convergence_worker_propagates_discovered_peers_to_control_plane \
         runtime_tests::test_gossip_convergence_worker_persists_retryable_stale_peer_reconciliation_failure \
+        runtime_tests::test_gossip_convergence_worker_reconciles_same_view_peer_missing_local_node \
         runtime_tests::test_static_bootstrap_convergence_worker_rejects_discovered_peers_on_cluster_id_mismatch \
         runtime_tests::test_static_bootstrap_convergence_worker_rejects_discovered_peers_when_cluster_id_missing \
         runtime_tests::test_static_bootstrap_convergence_worker_rejects_discovered_peers_when_membership_view_id_missing \
@@ -177,6 +181,7 @@ run_domain() {
       cargo test --test integration runtime_tests::test_cluster_join_authorize_endpoint_rejects_invalid_peer_node_identity -- --exact
       cargo test --test integration runtime_tests::test_cluster_join_authorize_endpoint_returns_service_unavailable_for_invalid_local_node_identity_configuration -- --exact
       cargo test --test integration runtime_tests::test_healthz_and_metrics_report_mtls_transport_unready_when_node_identity_mismatches_certificate -- --exact
+      cargo test --test integration runtime_tests::test_healthz_and_metrics_report_mtls_transport_revoked_certificate_as_unready -- --exact
       cargo test --test integration runtime_tests::test_cluster_join_authorize_endpoint_returns_service_unavailable_when_cluster_auth_token_not_configured_in_distributed_mode -- --exact
       cargo test --test integration runtime_tests::test_cluster_join_endpoint_rejects_forwarded_sender_not_in_allowlist -- --exact
       cargo test --test integration runtime_tests::test_cluster_join_endpoint_rejects_forwarded_sender_node_id_mismatch -- --exact

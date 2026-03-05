@@ -3,15 +3,14 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::S3Error;
 use crate::metadata::{
-    CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
-    ClusterMetadataListingStrategy, MetadataNodeObjectsPage, MetadataNodeVersionsPage,
-    MetadataQuery, MetadataVersionsQuery, ObjectMetadataState, ObjectVersionMetadataState,
-    cluster_metadata_fan_in_auth_token_reject_reason,
+    CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON, ClusterMetadataListingStrategy,
+    MetadataNodeObjectsPage, MetadataNodeVersionsPage, MetadataQuery, MetadataVersionsQuery,
+    ObjectMetadataState, ObjectVersionMetadataState,
     assess_cluster_metadata_fan_in_snapshot_for_topology_responders,
     assess_cluster_metadata_fan_in_snapshot_for_topology_single_responder,
-    cluster_metadata_readiness_reject_reason, list_object_versions_page_from_persisted_state,
-    list_objects_page_from_persisted_state, load_persisted_metadata_state,
-    merge_cluster_list_object_versions_page_with_topology_snapshot,
+    cluster_metadata_fan_in_auth_token_reject_reason, cluster_metadata_readiness_reject_reason,
+    list_object_versions_page_from_persisted_state, list_objects_page_from_persisted_state,
+    load_persisted_metadata_state, merge_cluster_list_object_versions_page_with_topology_snapshot,
     merge_cluster_list_objects_page_with_topology_snapshot,
     merge_cluster_list_objects_page_with_topology_snapshot_and_marker,
 };
@@ -188,9 +187,9 @@ pub(super) fn ensure_consensus_index_peer_fan_in_transport_ready(
         reason,
         CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON
     );
-    Err(S3Error::service_unavailable(
-        &format!("Distributed metadata listing strategy is not ready for this request ({reason})"),
-    ))
+    Err(S3Error::service_unavailable(&format!(
+        "Distributed metadata listing strategy is not ready for this request ({reason})"
+    )))
 }
 
 pub(super) fn should_use_consensus_index_persisted_object_listing_state(

@@ -782,7 +782,11 @@ pub(super) fn derive_gossip_stale_peer_reconciliation_targets(
         else {
             continue;
         };
-        if peer_view_id == local_view_id {
+        let peer_missing_local_node = !peer_view
+            .cluster_peers
+            .iter()
+            .any(|peer| peer_identity_eq(peer.as_str(), topology.node_id.as_str()));
+        if peer_view_id == local_view_id && !peer_missing_local_node {
             continue;
         }
 
@@ -927,16 +931,19 @@ pub(super) fn probe_cluster_peer_auth_status(
         .cluster_auth_token()
         .map(|_| topology.node_id.as_str());
     let transport_identity_status =
-        probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
+        probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
             config.cluster_peer_tls_cert_path(),
             config.cluster_peer_tls_key_path(),
             config.cluster_peer_tls_ca_path(),
-            config.cluster_peer_tls_cert_sha256(),
+            PeerCertificatePolicy {
+                sha256_pin: config.cluster_peer_tls_cert_sha256(),
+                sha256_revocations: config.cluster_peer_tls_cert_sha256_revocations(),
+            },
             expected_node_id,
         );
     let transport_warning = transport_identity_status.warning.clone();
-    let transport_identity = transport_identity_status.mode.as_str();
-    let transport_reason = transport_identity_status.reason.as_str();
+    let transport_identity = transport_identity_status.mode;
+    let transport_reason = transport_identity_status.reason;
     let transport_ready = transport_identity_status.transport_ready;
     let cluster_auth_token = config.cluster_auth_token();
 
@@ -957,7 +964,7 @@ pub(super) fn probe_cluster_peer_auth_status(
                     } else {
                         Some(format!(
                             "Cluster peer auth uses shared-token header trust with sender allowlist binding ({trusted_peer_count} trusted peer(s)); per-node cryptographic transport identity is not configured/ready (reason: {}).",
-                            transport_reason
+                            transport_reason.as_str()
                         ))
                     }
                 }
@@ -1019,18 +1026,30 @@ pub(super) fn probe_cluster_peer_auth_status(
     }
 }
 
-pub(super) fn cluster_peer_auth_transport_required(
+pub(super) fn cluster_peer_auth_transport_policy_assessment(
     config: &Config,
     topology: &RuntimeTopologySnapshot,
     auth_status: &ClusterPeerAuthStatus,
-) -> bool {
+) -> PeerTransportPolicyAssessment {
+    let enforcement_mode = if config.cluster_peer_transport_required() {
+        PeerTransportEnforcementMode::StrictMtlsIdentityBound
+    } else {
+        PeerTransportEnforcementMode::Compatibility
+    };
+    let mut assessment = assess_peer_transport_policy(
+        &PeerTransportIdentityStatus {
+            mode: auth_status.transport_identity,
+            transport_ready: auth_status.transport_ready,
+            identity_bound: auth_status.identity_bound,
+            reason: auth_status.transport_reason,
+            warning: None,
+        },
+        enforcement_mode,
+    );
     if !topology.is_distributed() || !auth_status.configured {
-        return false;
+        assessment.required = false;
     }
-    if config.cluster_peer_transport_required() {
-        return true;
-    }
-    auth_status.transport_identity == "mtls-path"
+    assessment
 }
 
 pub(super) fn probe_cluster_join_auth_status(
@@ -1066,19 +1085,21 @@ pub(super) fn probe_cluster_join_auth_status(
     }
 
     let cluster_peer_auth_status = probe_cluster_peer_auth_status(state.config.as_ref(), topology);
-    if cluster_peer_auth_transport_required(
+    let transport_policy = cluster_peer_auth_transport_policy_assessment(
         state.config.as_ref(),
         topology,
         &cluster_peer_auth_status,
-    ) && !cluster_peer_auth_status.transport_ready
-    {
+    );
+    if !transport_policy.is_ready() {
+        let reason = peer_transport_policy_reject_reason(&transport_policy)
+            .unwrap_or(transport_policy.enforcement.reason);
         return ClusterJoinAuthStatus {
             mode,
             ready: false,
             reason: JOIN_AUTHORIZE_REASON_CLUSTER_PEER_TRANSPORT_NOT_READY,
             warning: Some(format!(
                 "Cluster join authorization requires ready peer transport identity in current mode (reason: {}).",
-                cluster_peer_auth_status.transport_reason
+                reason.as_str()
             )),
         };
     }
