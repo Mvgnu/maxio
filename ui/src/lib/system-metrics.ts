@@ -19,12 +19,15 @@ export interface SystemMetricsSnapshot {
   clusterPeerCount: number | null
   placementEpoch: number | null
   membershipViewId: string | null
+  membershipLastUpdateAgeMs: number | null
   membershipProtocol: string | null
   coordinatorNodeId: string | null
   leaderNodeId: string | null
   membershipNodeCount: number | null
   healthOk: boolean | null
   healthStatus: string | null
+  clusterPeerAuthProductionReady: boolean | null
+  clusterAuthProductionReason: string | null
   healthWarnings: string[]
   healthChecks: RuntimeHealth['checks']
   raw: string
@@ -39,12 +42,13 @@ interface SystemMetricsLoaders {
 
 function checksWithFallback(
   checks: RuntimeHealth['checks'],
-  metricsProtocolReady: boolean | null
+  metricsProtocolReady: boolean | null,
+  metricsClusterPeerAuthProductionReady: boolean | null
 ): RuntimeHealth['checks'] {
   if (checks !== null) {
     return checks
   }
-  if (metricsProtocolReady === null) {
+  if (metricsProtocolReady === null && metricsClusterPeerAuthProductionReady === null) {
     return null
   }
   return {
@@ -54,6 +58,7 @@ function checksWithFallback(
     diskHeadroomSufficient: null,
     peerConnectivityReady: null,
     membershipProtocolReady: metricsProtocolReady,
+    clusterPeerAuthProductionReady: metricsClusterPeerAuthProductionReady,
   }
 }
 
@@ -95,6 +100,9 @@ export async function loadSystemMetricsSnapshot(
         membershipViewId:
           membership?.viewId ??
           summaryResult.data.health.membershipViewId,
+        membershipLastUpdateAgeMs:
+          summaryResult.data.metrics.membershipLastUpdateAgeMs ??
+          summaryResult.data.health.membershipLastUpdateAgeMs,
         membershipProtocol:
           membership?.protocol ??
           summaryResult.data.health.membershipProtocol ??
@@ -111,10 +119,17 @@ export async function loadSystemMetricsSnapshot(
         membershipNodeCount: membership?.nodes.length ?? null,
         healthOk: summaryResult.data.health.ok,
         healthStatus: summaryResult.data.health.status,
+        clusterPeerAuthProductionReady:
+          summaryResult.data.health.checks?.clusterPeerAuthProductionReady ??
+          summaryResult.data.metrics.clusterPeerAuthProductionReady,
+        clusterAuthProductionReason:
+          summaryResult.data.health.clusterAuthProductionReason ??
+          summaryResult.data.metrics.clusterAuthProductionReason,
         healthWarnings: summaryResult.data.health.warnings,
         healthChecks: checksWithFallback(
           summaryResult.data.health.checks,
-          summaryResult.data.metrics.membershipProtocolReady
+          summaryResult.data.metrics.membershipProtocolReady,
+          summaryResult.data.metrics.clusterPeerAuthProductionReady
         ),
         raw: JSON.stringify(
           {
@@ -168,6 +183,9 @@ export async function loadSystemMetricsSnapshot(
       membershipViewId:
         (fallbackMembershipResult.ok ? fallbackMembershipResult.data.viewId : null) ??
         (healthResult.ok ? healthResult.data.membershipViewId : null),
+      membershipLastUpdateAgeMs:
+        (healthResult.ok ? healthResult.data.membershipLastUpdateAgeMs : null) ??
+        metricsResult.data.membershipLastUpdateAgeMs,
       membershipProtocol: fallbackMembershipResult.ok
         ? fallbackMembershipResult.data.protocol
         : (healthResult.ok
@@ -189,10 +207,18 @@ export async function loadSystemMetricsSnapshot(
         : null,
       healthOk: healthResult.ok ? healthResult.data.ok : null,
       healthStatus: healthResult.ok ? healthResult.data.status : null,
+      clusterPeerAuthProductionReady:
+        (healthResult.ok
+          ? healthResult.data.checks?.clusterPeerAuthProductionReady ?? null
+          : null) ?? metricsResult.data.clusterPeerAuthProductionReady,
+      clusterAuthProductionReason:
+        (healthResult.ok ? healthResult.data.clusterAuthProductionReason : null) ??
+        metricsResult.data.clusterAuthProductionReason,
       healthWarnings: healthResult.ok ? healthResult.data.warnings : [],
       healthChecks: checksWithFallback(
         healthResult.ok ? healthResult.data.checks : null,
-        metricsResult.data.membershipProtocolReady
+        metricsResult.data.membershipProtocolReady,
+        metricsResult.data.clusterPeerAuthProductionReady
       ),
       raw: metricsResult.data.raw,
     },

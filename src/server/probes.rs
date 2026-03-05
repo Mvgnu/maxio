@@ -60,6 +60,20 @@ pub fn membership_protocol_readiness(protocol: MembershipProtocol) -> (bool, Opt
     (status.ready, status.warning)
 }
 
+pub(super) fn membership_protocol_readiness_reason(
+    membership_status: &MembershipEngineStatus,
+) -> &'static str {
+    if membership_status.ready {
+        return "ready";
+    }
+
+    if membership_status.engine == "unimplemented-placeholder" {
+        return "engine-unimplemented";
+    }
+
+    "engine-not-ready"
+}
+
 pub(super) fn membership_protocol_uses_probe_convergence(
     membership_protocol: MembershipProtocol,
     membership_engine_ready: bool,
@@ -853,39 +867,62 @@ pub(super) fn probe_membership_convergence(
         };
     }
 
-    let mut mismatches = Vec::new();
+    let mut view_mismatches = Vec::new();
+    let mut epoch_mismatches = Vec::new();
     for observation in &peer_connectivity_probe.peer_views {
         match observation.membership_view_id.as_deref() {
-            Some(peer_view_id) if peer_view_id == topology.membership_view_id => {}
-            Some(peer_view_id) => mismatches.push(format!(
+            Some(peer_view_id) if peer_view_id == topology.membership_view_id => {
+                if let Some(peer_epoch) = observation.placement_epoch {
+                    if peer_epoch != topology.placement_epoch {
+                        epoch_mismatches.push(format!(
+                            "{} (peer epoch {}, local {})",
+                            observation.peer, peer_epoch, topology.placement_epoch
+                        ));
+                    }
+                }
+            }
+            Some(peer_view_id) => view_mismatches.push(format!(
                 "{} (peer view '{}', local '{}')",
                 observation.peer, peer_view_id, topology.membership_view_id
             )),
-            None => mismatches.push(format!(
+            None => view_mismatches.push(format!(
                 "{} (missing membershipViewId in /healthz payload)",
                 observation.peer
             )),
         }
     }
 
-    if mismatches.is_empty() {
-        MembershipConvergenceProbeResult {
-            converged: true,
-            reason: "converged",
-            warning: None,
-            observed_at_unix_ms,
-        }
-    } else {
-        MembershipConvergenceProbeResult {
+    if !view_mismatches.is_empty() {
+        return MembershipConvergenceProbeResult {
             converged: false,
             reason: "membership-view-mismatch",
             warning: Some(format!(
                 "Membership view mismatch detected for {} peer(s): {}",
-                mismatches.len(),
-                mismatches.join(", ")
+                view_mismatches.len(),
+                view_mismatches.join(", ")
             )),
             observed_at_unix_ms,
-        }
+        };
+    }
+
+    if !epoch_mismatches.is_empty() {
+        return MembershipConvergenceProbeResult {
+            converged: false,
+            reason: "placement-epoch-mismatch",
+            warning: Some(format!(
+                "Placement epoch mismatch detected for {} peer(s): {}",
+                epoch_mismatches.len(),
+                epoch_mismatches.join(", ")
+            )),
+            observed_at_unix_ms,
+        };
+    }
+
+    MembershipConvergenceProbeResult {
+        converged: true,
+        reason: "converged",
+        warning: None,
+        observed_at_unix_ms,
     }
 }
 
@@ -896,6 +933,13 @@ pub(super) fn effective_membership_last_update_unix_ms(
     membership_status
         .last_update_unix_ms
         .max(membership_convergence_probe.observed_at_unix_ms)
+}
+
+pub(super) const fn membership_last_update_age_ms(
+    observed_at_unix_ms: u64,
+    membership_last_update_unix_ms: u64,
+) -> u64 {
+    observed_at_unix_ms.saturating_sub(membership_last_update_unix_ms)
 }
 
 pub(super) fn record_membership_last_update(state: &AppState, observed_last_update_unix_ms: u64) {
@@ -1091,8 +1135,7 @@ pub(super) fn probe_cluster_join_auth_status(
         &cluster_peer_auth_status,
     );
     if !transport_policy.is_ready() {
-        let reason = peer_transport_policy_reject_reason(&transport_policy)
-            .unwrap_or(transport_policy.enforcement.reason);
+        let reason = peer_transport_policy_effective_reason(&transport_policy);
         return ClusterJoinAuthStatus {
             mode,
             ready: false,

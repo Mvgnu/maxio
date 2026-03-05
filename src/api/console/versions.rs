@@ -12,13 +12,12 @@ use crate::api::console::objects::sanitize_filename;
 use crate::api::console::response;
 use crate::api::console::storage;
 use crate::metadata::{
-    ClusterBucketMetadataMutationPreconditionFailureDisposition,
-    BucketMetadataOperation, ClusterBucketMetadataMutationPreconditionGap,
-    ClusterBucketMetadataResponderState, ClusterMetadataListingStrategy,
-    ClusterResponderMembershipView, ObjectVersionMetadataState,
-    cluster_bucket_metadata_mutation_precondition_failure_disposition,
+    BucketMetadataOperation, ClusterBucketMetadataMutationPreconditionFailureDisposition,
+    ClusterBucketMetadataMutationPreconditionGap, ClusterBucketMetadataResponderState,
+    ClusterMetadataListingStrategy, ClusterResponderMembershipView, ObjectVersionMetadataState,
     cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values,
     cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready,
+    cluster_bucket_metadata_mutation_precondition_reject_details,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::{ObjectMeta, StorageError};
@@ -129,12 +128,22 @@ pub(super) async fn get_versioning(
         &topology,
         internal_local_only,
     );
-
-    let enabled = if storage::should_attempt_cluster_bucket_metadata_fan_in(
+    let should_fan_in = storage::should_attempt_cluster_bucket_metadata_fan_in(
         &state,
         &topology,
         internal_local_only,
-    ) {
+    );
+    if should_fan_in {
+        if let Some(resp) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+            &state,
+            &topology,
+            internal_local_only,
+        ) {
+            return resp;
+        }
+    }
+
+    let enabled = if should_fan_in {
         let fan_in = match fetch_cluster_bucket_versioning_fan_in(&state, &topology, &bucket).await
         {
             Ok(fan_in) => fan_in,
@@ -286,29 +295,37 @@ fn resolve_cluster_bucket_versioning_state(
         );
     }
 
-    match cluster_bucket_metadata_mutation_precondition_failure_disposition(assessment.gap) {
-        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket) => Err(
-            format!(
-                "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
-                bucket
-            ),
-        ),
-        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable) => {
-            if assessment.gap
-                == Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues)
-            {
-                Err(format!(
-                    "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
-                    bucket
-                ))
-            } else {
-                let gap_reason = assessment.gap.map(|gap| gap.as_str()).unwrap_or("unknown-gap");
-                Err(format!(
-                    "Distributed bucket metadata fan-in for '{}' is not ready ({})",
-                    operation, gap_reason
-                ))
-            }
+    match cluster_bucket_metadata_mutation_precondition_reject_details(assessment.gap) {
+        Some(details)
+            if details.failure_disposition
+                == ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket =>
+        {
+            Err(format!(
+                "Distributed bucket metadata is inconsistent for '{}' ({}; class={})",
+                bucket,
+                details.reason,
+                details.failure_class.as_str()
+            ))
         }
+        Some(details)
+            if assessment.gap
+                == Some(
+                    ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues,
+                ) =>
+        {
+            Err(format!(
+                "Distributed bucket versioning state is inconsistent across responder nodes for '{}' ({}; class={})",
+                bucket,
+                details.reason,
+                details.failure_class.as_str()
+            ))
+        }
+        Some(details) => Err(format!(
+            "Distributed bucket metadata fan-in for '{}' is not ready ({}; class={})",
+            operation,
+            details.reason,
+            details.failure_class.as_str()
+        )),
         None => assessment.current_value.ok_or_else(|| {
             "Distributed bucket metadata fan-in did not include any versioning responders"
                 .to_string()
@@ -430,6 +447,15 @@ pub(super) async fn set_versioning(
         &topology,
         internal_local_only,
     );
+    if should_fan_in {
+        if let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+            &state,
+            &topology,
+            internal_local_only,
+        ) {
+            return err;
+        }
+    }
     if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
         if let Some(err) =
             storage::reject_unready_bucket_metadata_operation(&state, "SetBucketVersioning")
@@ -437,7 +463,16 @@ pub(super) async fn set_versioning(
             return err;
         }
     }
-    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+    if use_consensus_bucket_metadata {
+        if let Err(resp) = storage::ensure_consensus_index_versioning_mutation_preconditions(
+            &state,
+            &topology,
+            &bucket,
+            "SetBucketVersioning",
+        ) {
+            return *resp;
+        }
+    } else if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
     }
 
@@ -546,7 +581,7 @@ pub(super) async fn list_versions(
         &headers,
         &strategy_params,
     );
-    if let Some(resp) = storage::reject_consensus_index_peer_fan_in_transport_unready(
+    if let Some(resp) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
         &state,
         &topology,
         internal_local_only,
@@ -576,6 +611,10 @@ pub(super) async fn list_versions(
             state.metadata_listing_strategy,
             "ListConsoleObjectVersions",
             fan_in.responder_membership_views.as_slice(),
+            state
+                .config
+                .cluster_auth_token()
+                .is_some_and(|value| !value.trim().is_empty()),
         ) {
             return resp;
         }
@@ -891,6 +930,18 @@ pub(super) async fn delete_version(
     Path((bucket, version_id, key)): Path<(String, String, String)>,
 ) -> impl IntoResponse {
     let topology = runtime_topology_snapshot(&state);
+    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+        return resp;
+    }
+    if let Err(err) = storage::ensure_consensus_index_object_mutation_preconditions(
+        &state,
+        &topology,
+        &bucket,
+        "DeleteConsoleObjectVersion",
+    ) {
+        return *err;
+    }
+
     match state
         .storage
         .delete_object_version(&bucket, &key, &version_id)
@@ -920,6 +971,17 @@ pub(super) async fn download_version(
 ) -> Response {
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
+    }
+    let topology = runtime_topology_snapshot(&state);
+    if let Err(err) = storage::ensure_consensus_index_object_read_authority(
+        &state,
+        &topology,
+        &bucket,
+        &key,
+        Some(version_id.as_str()),
+        "DownloadConsoleObjectVersion",
+    ) {
+        return *err;
     }
 
     let (reader, meta) = match state

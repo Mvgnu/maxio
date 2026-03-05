@@ -14,9 +14,9 @@ use crate::metadata::{
     BucketLifecycleConfigurationOperation, BucketMetadataOperation,
     ClusterBucketMetadataMutationPreconditionFailureDisposition,
     ClusterBucketMetadataMutationPreconditionGap, ClusterBucketMetadataResponderState,
-    cluster_bucket_metadata_mutation_precondition_failure_disposition,
     cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values,
     cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready,
+    cluster_bucket_metadata_mutation_precondition_reject_details,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::{StorageError, lifecycle::LifecycleRule};
@@ -97,12 +97,22 @@ pub(super) async fn get_lifecycle(
         &topology,
         internal_local_only,
     );
-
-    let rules = if storage::should_attempt_cluster_bucket_metadata_fan_in(
+    let should_fan_in = storage::should_attempt_cluster_bucket_metadata_fan_in(
         &state,
         &topology,
         internal_local_only,
-    ) {
+    );
+    if should_fan_in {
+        if let Some(resp) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+            &state,
+            &topology,
+            internal_local_only,
+        ) {
+            return resp;
+        }
+    }
+
+    let rules = if should_fan_in {
         let fan_in = match fetch_cluster_bucket_lifecycle_fan_in(&state, &topology, &bucket).await {
             Ok(fan_in) => fan_in,
             Err(err) => return storage::map_bucket_storage_err(err),
@@ -215,6 +225,15 @@ pub(super) async fn set_lifecycle(
         &topology,
         internal_local_only,
     );
+    if should_fan_in {
+        if let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+            &state,
+            &topology,
+            internal_local_only,
+        ) {
+            return err;
+        }
+    }
     if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
         if let Some(err) =
             storage::reject_unready_bucket_metadata_operation(&state, "SetBucketLifecycle")
@@ -222,7 +241,16 @@ pub(super) async fn set_lifecycle(
             return err;
         }
     }
-    if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
+    if use_consensus_bucket_metadata {
+        if let Err(resp) = storage::ensure_consensus_index_lifecycle_mutation_preconditions(
+            &state,
+            &topology,
+            &bucket,
+            "SetBucketLifecycle",
+        ) {
+            return *resp;
+        }
+    } else if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
     }
 
@@ -531,29 +559,37 @@ fn resolve_cluster_bucket_lifecycle_state(
         );
     }
 
-    match cluster_bucket_metadata_mutation_precondition_failure_disposition(assessment.gap) {
-        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket) => Err(
-            format!(
-                "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
-                bucket
-            ),
-        ),
-        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable) => {
-            if assessment.gap
-                == Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues)
-            {
-                Err(format!(
-                    "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}'",
-                    bucket
-                ))
-            } else {
-                let gap_reason = assessment.gap.map(|gap| gap.as_str()).unwrap_or("unknown-gap");
-                Err(format!(
-                    "Distributed bucket metadata fan-in for '{}' is not ready ({})",
-                    operation, gap_reason
-                ))
-            }
+    match cluster_bucket_metadata_mutation_precondition_reject_details(assessment.gap) {
+        Some(details)
+            if details.failure_disposition
+                == ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket =>
+        {
+            Err(format!(
+                "Distributed bucket metadata is inconsistent for '{}' ({}; class={})",
+                bucket,
+                details.reason,
+                details.failure_class.as_str()
+            ))
         }
+        Some(details)
+            if assessment.gap
+                == Some(
+                    ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues,
+                ) =>
+        {
+            Err(format!(
+                "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}' ({}; class={})",
+                bucket,
+                details.reason,
+                details.failure_class.as_str()
+            ))
+        }
+        Some(details) => Err(format!(
+            "Distributed bucket metadata fan-in for '{}' is not ready ({}; class={})",
+            operation,
+            details.reason,
+            details.failure_class.as_str()
+        )),
         None => match assessment.current_value {
             Some(BucketLifecycleResponderValue::NoLifecycleConfiguration) => Ok(Vec::new()),
             Some(BucketLifecycleResponderValue::Rules(rules)) => Ok(rules),

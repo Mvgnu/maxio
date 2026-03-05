@@ -30,8 +30,10 @@ describe('system metrics loader', () => {
         clusterPeerCount: 2,
         clusterPeers: ['node-b:9000', 'node-c:9000'],
         membershipProtocol: 'raft',
+        clusterAuthProductionReason: null,
         placementEpoch: 4,
         membershipViewId: null,
+        membershipLastUpdateAgeMs: 1250,
         checks: null,
         warnings: [],
         raw: { ok: true },
@@ -42,12 +44,15 @@ describe('system metrics loader', () => {
         version: '0.1.0',
         mode: 'distributed',
         nodeId: 'node-a',
-      clusterPeerCount: 2,
-      clusterPeers: ['node-b:9000', 'node-c:9000'],
-      membershipProtocol: 'raft',
-      membershipProtocolReady: null,
-      placementEpoch: 4,
-      raw: '{"requestsTotal":12}',
+        clusterPeerCount: 2,
+        clusterPeers: ['node-b:9000', 'node-c:9000'],
+        membershipProtocol: 'raft',
+        membershipProtocolReady: null,
+        clusterPeerAuthProductionReady: null,
+        clusterAuthProductionReason: null,
+        membershipLastUpdateAgeMs: 3333,
+        placementEpoch: 4,
+        raw: '{"requestsTotal":12}',
       },
       topology: {
         mode: 'distributed',
@@ -93,12 +98,15 @@ describe('system metrics loader', () => {
       expect(result.data.clusterPeerCount).toBe(2)
       expect(result.data.placementEpoch).toBe(4)
       expect(result.data.membershipViewId).toBe('view-abc')
+      expect(result.data.membershipLastUpdateAgeMs).toBe(3333)
       expect(result.data.membershipProtocol).toBe('static-bootstrap')
       expect(result.data.coordinatorNodeId).toBe('node-a')
       expect(result.data.leaderNodeId).toBeNull()
       expect(result.data.membershipNodeCount).toBe(2)
       expect(result.data.healthOk).toBe(true)
       expect(result.data.healthStatus).toBe('ok')
+      expect(result.data.clusterPeerAuthProductionReady).toBeNull()
+      expect(result.data.clusterAuthProductionReason).toBeNull()
       expect(result.data.healthWarnings).toEqual([])
       expect(result.data.healthChecks).toBeNull()
       expect(result.data.raw).toContain('"health"')
@@ -120,8 +128,10 @@ describe('system metrics loader', () => {
         clusterPeerCount: 2,
         clusterPeers: ['node-b:9000', 'node-c:9000'],
         membershipProtocol: 'gossip',
+        clusterAuthProductionReason: null,
         placementEpoch: 6,
         membershipViewId: null,
+        membershipLastUpdateAgeMs: 2500,
         checks: null,
         warnings: [],
         raw: { ok: true },
@@ -136,6 +146,9 @@ describe('system metrics loader', () => {
         clusterPeers: ['node-b:9000', 'node-c:9000'],
         membershipProtocol: 'gossip',
         membershipProtocolReady: null,
+        clusterPeerAuthProductionReady: null,
+        clusterAuthProductionReason: null,
+        membershipLastUpdateAgeMs: null,
         placementEpoch: 6,
         raw: '{"requestsTotal":12}',
       },
@@ -177,6 +190,7 @@ describe('system metrics loader', () => {
     if (result.ok) {
       expect(result.data.membershipViewId).toBe('view-fallback')
       expect(result.data.placementEpoch).toBe(6)
+      expect(result.data.membershipLastUpdateAgeMs).toBe(2500)
       expect(result.data.membershipProtocol).toBe('static-bootstrap')
       expect(result.data.membershipNodeCount).toBe(2)
     }
@@ -195,8 +209,10 @@ describe('system metrics loader', () => {
         clusterPeerCount: 2,
         clusterPeers: ['node-b:9000', 'node-c:9000'],
         membershipProtocol: 'gossip',
+        clusterAuthProductionReason: null,
         placementEpoch: 8,
         membershipViewId: 'view-summary',
+        membershipLastUpdateAgeMs: 4000,
         checks: null,
         warnings: [],
         raw: { ok: true },
@@ -211,6 +227,9 @@ describe('system metrics loader', () => {
         clusterPeers: ['node-b:9000', 'node-c:9000'],
         membershipProtocol: 'gossip',
         membershipProtocolReady: null,
+        clusterPeerAuthProductionReady: null,
+        clusterAuthProductionReason: null,
+        membershipLastUpdateAgeMs: 4100,
         placementEpoch: 8,
         raw: '{"requestsTotal":12}',
       },
@@ -238,6 +257,7 @@ describe('system metrics loader', () => {
       expect(result.data.membershipProtocol).toBe('gossip')
       expect(result.data.placementEpoch).toBe(8)
       expect(result.data.membershipViewId).toBe('view-summary')
+      expect(result.data.membershipLastUpdateAgeMs).toBe(4100)
       expect(result.data.membershipNodeCount).toBeNull()
     }
   })
@@ -253,6 +273,9 @@ describe('system metrics loader', () => {
       clusterPeers: [],
       membershipProtocol: null,
       membershipProtocolReady: false,
+      clusterPeerAuthProductionReady: true,
+      clusterAuthProductionReason: 'ready',
+      membershipLastUpdateAgeMs: 9100,
       placementEpoch: 10,
       raw: 'raw metrics payload',
     }
@@ -266,8 +289,10 @@ describe('system metrics loader', () => {
       clusterPeerCount: 3,
       clusterPeers: ['a', 'b', 'c'],
       membershipProtocol: 'raft',
+      clusterAuthProductionReason: null,
       placementEpoch: 10,
       membershipViewId: 'view-z',
+      membershipLastUpdateAgeMs: 8000,
       checks: null,
       warnings: [],
       raw: { ok: true },
@@ -303,12 +328,15 @@ describe('system metrics loader', () => {
       expect(result.data.clusterPeerCount).toBe(3)
       expect(result.data.placementEpoch).toBe(10)
       expect(result.data.membershipViewId).toBe('view-z')
+      expect(result.data.membershipLastUpdateAgeMs).toBe(8000)
       expect(result.data.membershipProtocol).toBe('static-bootstrap')
       expect(result.data.coordinatorNodeId).toBe('node-z')
       expect(result.data.leaderNodeId).toBeNull()
       expect(result.data.membershipNodeCount).toBe(3)
       expect(result.data.healthOk).toBe(true)
       expect(result.data.healthStatus).toBe('ok')
+      expect(result.data.clusterPeerAuthProductionReady).toBe(true)
+      expect(result.data.clusterAuthProductionReason).toBe('ready')
       expect(result.data.healthWarnings).toEqual([])
       expect(result.data.healthChecks).toEqual({
         dataDirAccessible: null,
@@ -317,6 +345,7 @@ describe('system metrics loader', () => {
         diskHeadroomSufficient: null,
         peerConnectivityReady: null,
         membershipProtocolReady: false,
+        clusterPeerAuthProductionReady: true,
       })
       expect(result.data.raw).toBe('raw metrics payload')
     }

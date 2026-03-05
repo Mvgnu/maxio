@@ -1,4 +1,4 @@
-use crate::cluster::peer_identity::is_valid_peer_identity;
+use crate::cluster::peer_identity::canonical_peer_identity;
 use std::collections::HashSet;
 
 pub const MAX_FORWARDED_BY_HOPS: usize = 8;
@@ -15,15 +15,12 @@ pub fn parse_forwarded_by_chain(header_value: &str) -> Result<Vec<String>, Forwa
     let mut seen = HashSet::new();
 
     for segment in header_value.split(',') {
-        let normalized = segment.trim();
-        let normalized_key = normalized.to_ascii_lowercase();
-        if !is_valid_peer_identity(normalized) {
-            return Err(ForwardedByParseError::InvalidPeerIdentity);
-        }
-        if !seen.insert(normalized_key) {
+        let canonical =
+            canonical_peer_identity(segment).ok_or(ForwardedByParseError::InvalidPeerIdentity)?;
+        if !seen.insert(canonical.clone()) {
             return Err(ForwardedByParseError::DuplicatePeerHop);
         }
-        parsed.push(normalized.to_string());
+        parsed.push(canonical);
         if parsed.len() > MAX_FORWARDED_BY_HOPS {
             return Err(ForwardedByParseError::HopLimitExceeded);
         }
@@ -79,6 +76,12 @@ mod tests {
         );
         assert_eq!(
             parse_forwarded_by_chain("Node-A.internal:9000,node-a.internal:9000"),
+            Err(ForwardedByParseError::DuplicatePeerHop)
+        );
+        assert_eq!(
+            parse_forwarded_by_chain(
+                "[2001:db8::1]:9000,[2001:0db8:0000:0000:0000:0000:0000:0001]:9000"
+            ),
             Err(ForwardedByParseError::DuplicatePeerHop)
         );
     }

@@ -113,12 +113,22 @@ pub(super) async fn list_buckets(
         &topology,
         internal_local_only,
     );
-
-    if storage::should_attempt_cluster_bucket_metadata_fan_in(
+    let should_fan_in = storage::should_attempt_cluster_bucket_metadata_fan_in(
         &state,
         &topology,
         internal_local_only,
-    ) {
+    );
+
+    if should_fan_in {
+        if let Some(error_response) =
+            storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+                &state,
+                &topology,
+                internal_local_only,
+            )
+        {
+            return error_response;
+        }
         match fetch_cluster_bucket_listing_fan_in(&state, &topology).await {
             Ok(fan_in) => {
                 if let Some(error_response) =
@@ -127,6 +137,10 @@ pub(super) async fn list_buckets(
                         state.metadata_listing_strategy,
                         "ListConsoleBuckets",
                         fan_in.responder_membership_views.as_slice(),
+                        state
+                            .config
+                            .cluster_auth_token()
+                            .is_some_and(|value| !value.trim().is_empty()),
                     )
                 {
                     return error_response;
@@ -492,6 +506,15 @@ pub(super) async fn create_bucket(
         &topology,
         internal_local_only,
     );
+    if should_fan_in {
+        if let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+            &state,
+            &topology,
+            internal_local_only,
+        ) {
+            return err;
+        }
+    }
     if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
         if let Some(err) = storage::reject_unready_bucket_metadata_operation(&state, "CreateBucket")
         {
@@ -597,6 +620,15 @@ pub(super) async fn delete_bucket_api(
         &topology,
         internal_local_only,
     );
+    if should_fan_in {
+        if let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+            &state,
+            &topology,
+            internal_local_only,
+        ) {
+            return err;
+        }
+    }
     if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
         if let Some(err) = storage::reject_unready_bucket_metadata_operation(&state, "DeleteBucket")
         {

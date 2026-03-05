@@ -1,7 +1,7 @@
 use super::*;
 use base64::Engine;
 use hmac::Mac;
-use maxio::config::WriteDurabilityMode;
+use maxio::config::{ClusterPeerTransportMode, WriteDurabilityMode};
 use maxio::metadata::{
     BucketLifecycleConfigurationState, BucketMetadataState, BucketMetadataTombstoneState,
     ClusterMetadataListingStrategy, ObjectMetadataState, PersistedMetadataState,
@@ -4808,6 +4808,678 @@ async fn test_get_bucket_lifecycle_consensus_index_persists_local_mutation_state
 }
 
 #[tokio::test]
+async fn test_put_bucket_versioning_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "versioning-consensus-put-missing";
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let put = s3_request(
+        "PUT",
+        &format!("{}/{}?versioning", base_url, bucket),
+        br#"<?xml version="1.0" encoding="UTF-8"?><VersioningConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Status>Enabled</Status></VersioningConfiguration>"#.to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 404);
+    let body = put.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let enabled = storage.is_versioned(bucket).await.unwrap();
+    assert!(
+        !enabled,
+        "versioning should remain unchanged when consensus preflight rejects put"
+    );
+}
+
+#[tokio::test]
+async fn test_put_object_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "put-object-consensus-put-missing";
+    let key = distributed_local_owner_key("put-object-consensus-missing");
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let put = s3_request(
+        "PUT",
+        &format!("{}/{}/{}", base_url, bucket, key.as_str()),
+        b"consensus-payload".to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 404);
+    let body = put.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let head = storage.head_object(bucket, key.as_str()).await;
+    assert!(
+        head.is_err(),
+        "object should not be written when consensus preflight rejects put"
+    );
+}
+
+#[tokio::test]
+async fn test_copy_object_consensus_index_rejects_missing_persisted_destination_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let source_bucket = "copy-object-consensus-source";
+    let destination_bucket = "copy-object-consensus-destination";
+    let source_key = "source.txt";
+    let destination_key = distributed_local_owner_key("copy-object-consensus-missing");
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, destination_bucket).await;
+    seed_object_in_data_dir(
+        &data_dir,
+        source_bucket,
+        source_key,
+        b"copy-source-consensus-payload",
+    )
+    .await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let copy_source = format!("/{source_bucket}/{source_key}");
+    let copy = s3_request_with_headers(
+        "PUT",
+        &format!(
+            "{}/{}/{}",
+            base_url,
+            destination_bucket,
+            destination_key.as_str()
+        ),
+        vec![],
+        vec![("x-amz-copy-source", copy_source.as_str())],
+    )
+    .await;
+    assert_eq!(copy.status(), 404);
+    let body = copy.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let head = storage
+        .head_object(destination_bucket, destination_key.as_str())
+        .await;
+    assert!(
+        head.is_err(),
+        "destination object should not be written when consensus preflight rejects copy"
+    );
+}
+
+#[tokio::test]
+async fn test_copy_object_consensus_index_rejects_missing_persisted_source_object_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let source_bucket = "copy-object-consensus-source-metadata-missing";
+    let destination_bucket = "copy-object-consensus-destination-metadata-present";
+    let source_key = "source.txt";
+    let destination_key = distributed_local_owner_key("copy-object-consensus-source-missing");
+
+    seed_consensus_metadata_buckets(
+        &data_dir,
+        view_id.as_str(),
+        &[
+            BucketMetadataState {
+                bucket: source_bucket.to_string(),
+                versioning_enabled: false,
+                lifecycle_enabled: false,
+            },
+            BucketMetadataState {
+                bucket: destination_bucket.to_string(),
+                versioning_enabled: false,
+                lifecycle_enabled: false,
+            },
+        ],
+    );
+    seed_object_in_data_dir(
+        &data_dir,
+        source_bucket,
+        source_key,
+        b"copy-source-consensus-payload",
+    )
+    .await;
+    seed_bucket_in_data_dir(&data_dir, destination_bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let copy_source = format!("/{source_bucket}/{source_key}");
+    let copy = s3_request_with_headers(
+        "PUT",
+        &format!(
+            "{}/{}/{}",
+            base_url,
+            destination_bucket,
+            destination_key.as_str()
+        ),
+        vec![],
+        vec![("x-amz-copy-source", copy_source.as_str())],
+    )
+    .await;
+    assert_eq!(copy.status(), 404);
+    let body = copy.text().await.unwrap();
+    assert_eq!(extract_xml_tag(&body, "Code").as_deref(), Some("NoSuchKey"));
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let destination_head = storage
+        .head_object(destination_bucket, destination_key.as_str())
+        .await;
+    assert!(
+        destination_head.is_err(),
+        "destination object should not be written when source consensus metadata is missing"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_object_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "delete-object-consensus-delete-missing";
+    let key = distributed_local_owner_key("delete-object-consensus-missing");
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_object_in_data_dir(&data_dir, bucket, key.as_str(), b"delete-consensus-payload").await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let delete = s3_request(
+        "DELETE",
+        &format!("{}/{}/{}", base_url, bucket, key.as_str()),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 404);
+    let body = delete.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let head = storage.head_object(bucket, key.as_str()).await;
+    assert!(
+        head.is_ok(),
+        "object should remain present when consensus preflight rejects delete"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_object_version_consensus_index_rejects_missing_persisted_version_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "delete-object-version-consensus-version-missing";
+    let key = distributed_local_owner_key("delete-object-version-consensus-missing");
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    storage
+        .create_bucket(&BucketMeta {
+            name: bucket.to_string(),
+            created_at: chrono::Utc::now()
+                .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+                .to_string(),
+            region: REGION.to_string(),
+            versioning: false,
+        })
+        .await
+        .unwrap();
+    storage.set_versioning(bucket, true).await.unwrap();
+    let put = storage
+        .put_object(
+            bucket,
+            key.as_str(),
+            "application/octet-stream",
+            Box::pin(std::io::Cursor::new(
+                b"delete-version-consensus-payload".to_vec(),
+            )),
+            None,
+        )
+        .await
+        .unwrap();
+    let version_id = put
+        .version_id
+        .expect("versioned put should produce a version id");
+
+    seed_consensus_metadata_buckets(
+        &data_dir,
+        view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: true,
+            lifecycle_enabled: false,
+        }],
+    );
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let delete = s3_request(
+        "DELETE",
+        &format!(
+            "{}/{}/{}?versionId={}",
+            base_url,
+            bucket,
+            key.as_str(),
+            version_id
+        ),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 404);
+    let body = delete.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchVersion")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let head = storage
+        .head_object_version(bucket, key.as_str(), version_id.as_str())
+        .await;
+    assert!(
+        head.is_ok(),
+        "object version should remain present when consensus preflight rejects version delete"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_objects_batch_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "delete-objects-consensus-delete-missing";
+    let key = distributed_local_owner_key("delete-objects-consensus-missing");
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_object_in_data_dir(
+        &data_dir,
+        bucket,
+        key.as_str(),
+        b"delete-objects-consensus-payload",
+    )
+    .await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let delete_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<Delete>
+  <Object><Key>{}</Key></Object>
+</Delete>"#,
+        key.as_str()
+    );
+    let delete = s3_request(
+        "POST",
+        &format!("{}/{}?delete", base_url, bucket),
+        delete_xml.into_bytes(),
+    )
+    .await;
+    assert_eq!(delete.status(), 404);
+    let body = delete.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let head = storage.head_object(bucket, key.as_str()).await;
+    assert!(
+        head.is_ok(),
+        "objects should remain present when consensus preflight rejects batch delete"
+    );
+}
+
+#[tokio::test]
+async fn test_create_multipart_upload_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "multipart-create-consensus-missing";
+    let key = distributed_local_owner_key("multipart-create-consensus-key");
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let create = s3_request(
+        "POST",
+        &format!("{}/{}/{}?uploads=", base_url, bucket, key.as_str()),
+        vec![],
+    )
+    .await;
+    assert_eq!(create.status(), 404);
+    let body = create.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let uploads = storage.list_multipart_uploads(bucket).await.unwrap();
+    assert!(
+        uploads.is_empty(),
+        "multipart upload should not be created when consensus preflight rejects create"
+    );
+}
+
+#[tokio::test]
+async fn test_multipart_upload_part_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "multipart-upload-part-consensus-missing";
+    let key = distributed_local_owner_key("multipart-upload-part-consensus-key");
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let upload = storage
+        .create_multipart_upload(bucket, key.as_str(), "application/octet-stream", None)
+        .await
+        .unwrap();
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let part = s3_request(
+        "PUT",
+        &format!(
+            "{}/{}/{}?uploadId={}&partNumber=1",
+            base_url,
+            bucket,
+            key.as_str(),
+            upload.upload_id
+        ),
+        b"part-consensus-payload".to_vec(),
+    )
+    .await;
+    assert_eq!(part.status(), 404);
+    let body = part.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let (_, parts) = storage
+        .list_parts(bucket, upload.upload_id.as_str())
+        .await
+        .unwrap();
+    assert!(
+        parts.is_empty(),
+        "multipart part should not be written when consensus preflight rejects upload-part"
+    );
+}
+
+#[tokio::test]
+async fn test_multipart_complete_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "multipart-complete-consensus-missing";
+    let key = distributed_local_owner_key("multipart-complete-consensus-key");
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let upload = storage
+        .create_multipart_upload(bucket, key.as_str(), "application/octet-stream", None)
+        .await
+        .unwrap();
+    let uploaded_part = storage
+        .upload_part(
+            bucket,
+            upload.upload_id.as_str(),
+            1,
+            Box::pin(std::io::Cursor::new(b"complete-consensus-part".to_vec())),
+            None,
+        )
+        .await
+        .unwrap();
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let complete_xml = format!(
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{}</ETag></Part></CompleteMultipartUpload>",
+        uploaded_part.etag
+    );
+    let complete = s3_request(
+        "POST",
+        &format!(
+            "{}/{}/{}?uploadId={}",
+            base_url,
+            bucket,
+            key.as_str(),
+            upload.upload_id
+        ),
+        complete_xml.into_bytes(),
+    )
+    .await;
+    assert_eq!(complete.status(), 404);
+    let body = complete.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let object_head = storage.head_object(bucket, key.as_str()).await;
+    assert!(
+        object_head.is_err(),
+        "object should not be materialized when consensus preflight rejects multipart complete"
+    );
+    let (_, parts) = storage
+        .list_parts(bucket, upload.upload_id.as_str())
+        .await
+        .unwrap();
+    assert_eq!(
+        parts.len(),
+        1,
+        "multipart upload should remain pending when consensus preflight rejects complete"
+    );
+}
+
+#[tokio::test]
+async fn test_put_bucket_lifecycle_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "lifecycle-consensus-put-missing";
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let put = s3_request(
+        "PUT",
+        &format!("{}/{}?lifecycle", base_url, bucket),
+        br#"
+<LifecycleConfiguration>
+  <Rule>
+    <ID>missing-persisted</ID>
+    <Status>Enabled</Status>
+    <Filter><Prefix>logs/</Prefix></Filter>
+    <Expiration><Days>3</Days></Expiration>
+  </Rule>
+</LifecycleConfiguration>
+"#
+        .to_vec(),
+    )
+    .await;
+    assert_eq!(put.status(), 404);
+    let body = put.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let rules = storage.get_lifecycle_rules(bucket).await.unwrap();
+    assert!(
+        rules.is_empty(),
+        "lifecycle rules should remain unchanged when consensus preflight rejects put"
+    );
+}
+
+#[tokio::test]
+async fn test_delete_bucket_lifecycle_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "lifecycle-consensus-delete-missing";
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    storage
+        .set_lifecycle_rules(
+            bucket,
+            &[maxio::storage::lifecycle::LifecycleRule {
+                id: "existing-rule".to_string(),
+                prefix: "logs/".to_string(),
+                expiration_days: 7,
+                enabled: true,
+            }],
+        )
+        .await
+        .unwrap();
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let delete = s3_request(
+        "DELETE",
+        &format!("{}/{}?lifecycle", base_url, bucket),
+        vec![],
+    )
+    .await;
+    assert_eq!(delete.status(), 404);
+    let body = delete.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+
+    let storage = FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+        .await
+        .unwrap();
+    let rules = storage.get_lifecycle_rules(bucket).await.unwrap();
+    assert_eq!(
+        rules,
+        vec![maxio::storage::lifecycle::LifecycleRule {
+            id: "existing-rule".to_string(),
+            prefix: "logs/".to_string(),
+            expiration_days: 7,
+            enabled: true,
+        }],
+        "lifecycle rules should remain unchanged when consensus preflight rejects delete",
+    );
+}
+
+#[tokio::test]
 async fn test_get_bucket_lifecycle_consensus_index_returns_service_unavailable_when_token_missing_for_enabled_rules()
  {
     let tmp = TempDir::new().unwrap();
@@ -5494,6 +6166,414 @@ async fn test_list_objects_distributed_consensus_index_does_not_fallback_to_loca
         !body.contains("<Key>coordinator-local-only.txt</Key>"),
         "unexpected body: {body}"
     );
+}
+
+#[tokio::test]
+async fn test_get_object_distributed_consensus_index_does_not_fallback_to_local_object_storage() {
+    let token = "get-object-consensus-authoritative-token";
+    let bucket = "get-object-consensus-authoritative";
+    let pair = start_bucket_listing_consensus_pair_with_token(
+        token,
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+    )
+    .await;
+
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
+    )
+    .await;
+    assert_eq!(create.status(), 200);
+
+    let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
+    let owner_create_status = owner_create.status().as_u16();
+    assert!(
+        owner_create_status == 200 || owner_create_status == 409,
+        "unexpected owner create status: {}",
+        owner_create_status
+    );
+
+    let coordinator_dir = pair._coordinator_tmp.path().to_string_lossy().to_string();
+    let key = distributed_local_owner_key_for(
+        "get-object-consensus-authoritative",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    seed_object_in_data_dir(
+        coordinator_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"local-object-without-consensus-row",
+    )
+    .await;
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/{}/{}", pair.coordinator_url, bucket, key.as_str()),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert_eq!(extract_xml_tag(&body, "Code").as_deref(), Some("NoSuchKey"));
+}
+
+#[tokio::test]
+async fn test_get_object_distributed_consensus_index_rejects_missing_persisted_bucket() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "get-object-consensus-missing-bucket";
+    let key = distributed_local_owner_key("get-object-consensus-missing-bucket");
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_object_in_data_dir(
+        data_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"local-object-without-persisted-bucket-row",
+    )
+    .await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/{}/{}", base_url, bucket, key.as_str()),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("NoSuchBucket")
+    );
+}
+
+#[tokio::test]
+async fn test_get_object_distributed_consensus_index_uses_persisted_object_metadata_state() {
+    let token = "get-object-consensus-uses-persisted-state-token";
+    let bucket = "get-object-consensus-persisted-state";
+    let pair = start_bucket_listing_consensus_pair_with_token(
+        token,
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+    )
+    .await;
+
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
+    )
+    .await;
+    assert_eq!(create.status(), 200);
+
+    let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
+    let owner_create_status = owner_create.status().as_u16();
+    assert!(
+        owner_create_status == 200 || owner_create_status == 409,
+        "unexpected owner create status: {}",
+        owner_create_status
+    );
+
+    let coordinator_dir = pair._coordinator_tmp.path().to_string_lossy().to_string();
+    let owner_dir = pair._owner_tmp.path().to_string_lossy().to_string();
+    let key = distributed_local_owner_key_for(
+        "get-object-consensus-persisted-state",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    seed_object_in_data_dir(
+        coordinator_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"consensus-object-payload",
+    )
+    .await;
+    seed_object_in_data_dir(
+        owner_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"consensus-object-payload",
+    )
+    .await;
+
+    let canonical_keys = [key.as_str()];
+    seed_consensus_metadata_object_rows(
+        coordinator_dir.as_str(),
+        pair.coordinator_membership_view_id.as_str(),
+        bucket,
+        &canonical_keys,
+    );
+    seed_consensus_metadata_object_rows(
+        owner_dir.as_str(),
+        pair.coordinator_membership_view_id.as_str(),
+        bucket,
+        &canonical_keys,
+    );
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/{}/{}", pair.coordinator_url, bucket, key.as_str()),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = resp.bytes().await.unwrap();
+    assert_eq!(body.as_ref(), b"consensus-object-payload");
+}
+
+#[tokio::test]
+async fn test_get_object_distributed_consensus_index_rejects_persisted_view_mismatch() {
+    let token = "get-object-consensus-view-mismatch-token";
+    let bucket = "get-object-consensus-view-mismatch";
+    let pair = start_bucket_listing_consensus_pair_with_token(
+        token,
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+    )
+    .await;
+
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
+    )
+    .await;
+    assert_eq!(create.status(), 200);
+
+    let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
+    let owner_create_status = owner_create.status().as_u16();
+    assert!(
+        owner_create_status == 200 || owner_create_status == 409,
+        "unexpected owner create status: {}",
+        owner_create_status
+    );
+
+    let coordinator_dir = pair._coordinator_tmp.path().to_string_lossy().to_string();
+    let owner_dir = pair._owner_tmp.path().to_string_lossy().to_string();
+    let key = distributed_local_owner_key_for(
+        "get-object-consensus-view-mismatch",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    seed_object_in_data_dir(
+        coordinator_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"consensus-object-payload",
+    )
+    .await;
+    seed_object_in_data_dir(
+        owner_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"consensus-object-payload",
+    )
+    .await;
+
+    let stale_view_id = "stale-object-view-id";
+    let canonical_keys = [key.as_str()];
+    seed_consensus_metadata_object_rows(
+        coordinator_dir.as_str(),
+        stale_view_id,
+        bucket,
+        &canonical_keys,
+    );
+    seed_consensus_metadata_object_rows(owner_dir.as_str(), stale_view_id, bucket, &canonical_keys);
+
+    let resp = s3_request(
+        "GET",
+        &format!("{}/{}/{}", pair.coordinator_url, bucket, key.as_str()),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 503);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("ServiceUnavailable")
+    );
+    assert!(
+        body.contains("persisted metadata view mismatch"),
+        "unexpected body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_head_object_distributed_consensus_index_rejects_missing_persisted_bucket() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "head-object-consensus-missing-bucket";
+    let key = distributed_local_owner_key("head-object-consensus-missing-bucket");
+    seed_consensus_metadata_buckets(&data_dir, view_id.as_str(), &[]);
+    seed_object_in_data_dir(
+        data_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"local-object-without-persisted-bucket-row",
+    )
+    .await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let resp = s3_request(
+        "HEAD",
+        &format!("{}/{}/{}", base_url, bucket, key.as_str()),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn test_head_object_distributed_consensus_index_does_not_fallback_to_local_object_storage() {
+    let token = "head-object-consensus-authoritative-token";
+    let bucket = "head-object-consensus-authoritative";
+    let pair = start_bucket_listing_consensus_pair_with_token(
+        token,
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+    )
+    .await;
+
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
+    )
+    .await;
+    assert_eq!(create.status(), 200);
+
+    let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
+    let owner_create_status = owner_create.status().as_u16();
+    assert!(
+        owner_create_status == 200 || owner_create_status == 409,
+        "unexpected owner create status: {}",
+        owner_create_status
+    );
+
+    let coordinator_dir = pair._coordinator_tmp.path().to_string_lossy().to_string();
+    let key = distributed_local_owner_key_for(
+        "head-object-consensus-authoritative",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    seed_object_in_data_dir(
+        coordinator_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"local-object-without-consensus-row",
+    )
+    .await;
+
+    let resp = s3_request(
+        "HEAD",
+        &format!("{}/{}/{}", pair.coordinator_url, bucket, key.as_str()),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 404);
+}
+
+#[tokio::test]
+async fn test_head_object_distributed_consensus_index_rejects_persisted_view_mismatch() {
+    let token = "head-object-consensus-view-mismatch-token";
+    let bucket = "head-object-consensus-view-mismatch";
+    let pair = start_bucket_listing_consensus_pair_with_token(
+        token,
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+    )
+    .await;
+
+    let create = create_bucket_local_only_on_coordinator(
+        &pair.coordinator_url,
+        bucket,
+        token,
+        pair.owner_peer.as_str(),
+    )
+    .await;
+    assert_eq!(create.status(), 200);
+
+    let owner_create = create_bucket_local_only_on_peer(&pair.owner_url, bucket, token).await;
+    let owner_create_status = owner_create.status().as_u16();
+    assert!(
+        owner_create_status == 200 || owner_create_status == 409,
+        "unexpected owner create status: {}",
+        owner_create_status
+    );
+
+    let coordinator_dir = pair._coordinator_tmp.path().to_string_lossy().to_string();
+    let owner_dir = pair._owner_tmp.path().to_string_lossy().to_string();
+    let key = distributed_local_owner_key_for(
+        "head-object-consensus-view-mismatch",
+        DISTRIBUTED_LOCAL_NODE,
+        std::slice::from_ref(&pair.owner_peer),
+    );
+    seed_object_in_data_dir(
+        coordinator_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"consensus-object-payload",
+    )
+    .await;
+    seed_object_in_data_dir(
+        owner_dir.as_str(),
+        bucket,
+        key.as_str(),
+        b"consensus-object-payload",
+    )
+    .await;
+
+    let stale_view_id = "stale-head-object-view-id";
+    let canonical_keys = [key.as_str()];
+    seed_consensus_metadata_object_rows(
+        coordinator_dir.as_str(),
+        stale_view_id,
+        bucket,
+        &canonical_keys,
+    );
+    seed_consensus_metadata_object_rows(owner_dir.as_str(), stale_view_id, bucket, &canonical_keys);
+
+    let resp = s3_request(
+        "HEAD",
+        &format!("{}/{}/{}", pair.coordinator_url, bucket, key.as_str()),
+        vec![],
+    )
+    .await;
+    assert_eq!(resp.status(), 503);
 }
 
 #[tokio::test]
@@ -6947,7 +8027,7 @@ async fn test_list_objects_distributed_consensus_index_returns_service_unavailab
         Some("ServiceUnavailable")
     );
     assert!(
-        body.contains("consensus-index-peer-fan-in-auth-token-missing"),
+        body.contains("cluster-peer-fan-in-auth-token-missing"),
         "unexpected body: {body}"
     );
 }
@@ -7018,7 +8098,7 @@ async fn test_list_object_versions_distributed_consensus_index_returns_service_u
         Some("ServiceUnavailable")
     );
     assert!(
-        body.contains("consensus-index-peer-fan-in-auth-token-missing"),
+        body.contains("cluster-peer-fan-in-auth-token-missing"),
         "unexpected body: {body}"
     );
 }
@@ -7083,6 +8163,67 @@ async fn test_list_objects_distributed_request_aggregation_returns_service_unava
         body.contains("Distributed metadata listing strategy is not ready"),
         "unexpected body: {body}"
     );
+    assert!(
+        body.contains("cluster-peer-fan-in-auth-token-missing"),
+        "unexpected body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_list_objects_distributed_request_aggregation_returns_service_unavailable_when_internal_peer_transport_mtls_not_ready()
+ {
+    let (owner_url, owner_tmp) = start_server().await;
+    let owner_peer = host_port_from_base_url(&owner_url);
+
+    let coordinator_tmp = TempDir::new().unwrap();
+    let data_dir = coordinator_tmp.path().to_string_lossy().to_string();
+    seed_bucket_in_data_dir(&data_dir, "mybucket").await;
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![owner_peer];
+    config.cluster_auth_token = Some("request-aggregation-auth-token".to_string());
+    config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+    config.cluster_peer_tls_cert_path = Some(
+        coordinator_tmp
+            .path()
+            .join("missing-peer.crt")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_key_path = Some(
+        coordinator_tmp
+            .path()
+            .join("missing-peer.key")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_ca_path = Some(
+        coordinator_tmp
+            .path()
+            .join("missing-ca.pem")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::RequestTimeAggregation;
+
+    let (base_url, _coordinator_tmp) = start_server_with_config(config, coordinator_tmp).await;
+
+    s3_request("PUT", &format!("{}/mybucket", owner_url), vec![]).await;
+    s3_request("PUT", &format!("{}/mybucket", base_url), vec![]).await;
+
+    let resp = s3_request("GET", &format!("{}/mybucket?list-type=2", base_url), vec![]).await;
+    assert_eq!(resp.status(), 503);
+    let body = resp.text().await.unwrap();
+    assert_eq!(
+        extract_xml_tag(&body, "Code").as_deref(),
+        Some("ServiceUnavailable")
+    );
+    assert!(
+        body.contains("Internal peer transport"),
+        "unexpected body: {body}"
+    );
+
+    drop(owner_tmp);
 }
 
 #[tokio::test]

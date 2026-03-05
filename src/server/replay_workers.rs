@@ -203,16 +203,6 @@ async fn replay_pending_rebalance_candidate(
     state: &AppState,
     candidate: &PendingRebalanceCandidate,
 ) -> Result<PendingRebalanceApplyOutcome, String> {
-    if matches!(candidate.scope, RebalanceObjectScope::Chunk { .. }) {
-        tracing::debug!(
-            rebalance_id = candidate.rebalance_id.as_str(),
-            bucket = candidate.bucket.as_str(),
-            key = candidate.key.as_str(),
-            "Skipping pending rebalance replay because chunk transfer execution is not implemented"
-        );
-        return Ok(PendingRebalanceApplyOutcome::Dropped);
-    }
-
     if !pending_rebalance_target_is_current_owner(state, candidate) {
         tracing::debug!(
             rebalance_id = candidate.rebalance_id.as_str(),
@@ -226,6 +216,15 @@ async fn replay_pending_rebalance_candidate(
 
     let local_node_id = state.node_id.as_ref();
     if peer_identity_eq(candidate.to.as_str(), local_node_id) {
+        if !local_rebalance_bucket_exists(state, candidate).await? {
+            tracing::debug!(
+                rebalance_id = candidate.rebalance_id.as_str(),
+                bucket = candidate.bucket.as_str(),
+                key = candidate.key.as_str(),
+                "Skipping pending rebalance replay because local target bucket is missing"
+            );
+            return Ok(PendingRebalanceApplyOutcome::Dropped);
+        }
         return replay_pending_rebalance_receive(state, candidate).await;
     }
     if candidate
@@ -233,10 +232,76 @@ async fn replay_pending_rebalance_candidate(
         .as_deref()
         .is_some_and(|from| peer_identity_eq(from, local_node_id))
     {
+        if !remote_rebalance_target_bucket_exists(state, candidate).await? {
+            tracing::debug!(
+                rebalance_id = candidate.rebalance_id.as_str(),
+                bucket = candidate.bucket.as_str(),
+                key = candidate.key.as_str(),
+                to_node = candidate.to.as_str(),
+                "Skipping pending rebalance replay because remote target bucket is missing"
+            );
+            return Ok(PendingRebalanceApplyOutcome::Dropped);
+        }
         return replay_pending_rebalance_send(state, candidate).await;
     }
 
     Ok(PendingRebalanceApplyOutcome::Dropped)
+}
+
+async fn local_rebalance_bucket_exists(
+    state: &AppState,
+    candidate: &PendingRebalanceCandidate,
+) -> Result<bool, String> {
+    state
+        .storage
+        .head_bucket(candidate.bucket.as_str())
+        .await
+        .map_err(|error| format!("failed to verify local rebalance target bucket: {error}"))
+}
+
+async fn remote_rebalance_target_bucket_exists(
+    state: &AppState,
+    candidate: &PendingRebalanceCandidate,
+) -> Result<bool, String> {
+    let path_and_query = presigned_rebalance_bucket_path_and_query(
+        state,
+        "HEAD",
+        candidate.to.as_str(),
+        candidate.bucket.as_str(),
+    )
+    .ok_or_else(|| "failed to build presigned rebalance target bucket HEAD path".to_string())?;
+    let transport = build_peer_http_transport(Some(state.config.as_ref()), Duration::from_secs(10))
+        .map_err(|error| format!("failed to initialize rebalance target client: {error}"))?;
+    attest_peer_http_target(
+        Some(state.config.as_ref()),
+        candidate.to.as_str(),
+        Duration::from_secs(10),
+    )
+    .map_err(|error| format!("rebalance target peer attestation failed: {error}"))?;
+    let target_url = format!(
+        "{}://{}{}",
+        transport.scheme,
+        candidate.to.as_str(),
+        path_and_query
+    );
+    let response = transport
+        .client
+        .head(target_url.as_str())
+        .send()
+        .await
+        .map_err(|error| format!("rebalance target bucket HEAD failed: {error}"))?;
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        return Ok(false);
+    }
+    if status.is_success() {
+        return Ok(true);
+    }
+
+    Err(format!(
+        "rebalance target bucket HEAD returned non-success status {}",
+        status.as_u16()
+    ))
 }
 
 pub(super) fn pending_rebalance_target_is_current_owner(
@@ -276,6 +341,16 @@ async fn replay_pending_rebalance_send(
     state: &AppState,
     candidate: &PendingRebalanceCandidate,
 ) -> Result<PendingRebalanceApplyOutcome, String> {
+    if let RebalanceObjectScope::Chunk { chunk_index } = candidate.scope {
+        tracing::debug!(
+            rebalance_id = candidate.rebalance_id.as_str(),
+            bucket = candidate.bucket.as_str(),
+            key = candidate.key.as_str(),
+            chunk_index,
+            "Applying chunk-scope rebalance transfer through object payload transport"
+        );
+    }
+
     let read_result = state
         .storage
         .get_object(candidate.bucket.as_str(), candidate.key.as_str())
@@ -336,6 +411,16 @@ async fn replay_pending_rebalance_receive(
     state: &AppState,
     candidate: &PendingRebalanceCandidate,
 ) -> Result<PendingRebalanceApplyOutcome, String> {
+    if let RebalanceObjectScope::Chunk { chunk_index } = candidate.scope {
+        tracing::debug!(
+            rebalance_id = candidate.rebalance_id.as_str(),
+            bucket = candidate.bucket.as_str(),
+            key = candidate.key.as_str(),
+            chunk_index,
+            "Applying chunk-scope rebalance receive through object payload transport"
+        );
+    }
+
     let Some(source_node) = candidate.from.as_deref() else {
         return Ok(PendingRebalanceApplyOutcome::Dropped);
     };
@@ -452,6 +537,34 @@ pub(super) fn presigned_rebalance_path_and_query(
     Some(path)
 }
 
+fn presigned_rebalance_bucket_path_and_query(
+    state: &AppState,
+    method: &'static str,
+    target_node: &str,
+    bucket: &str,
+) -> Option<String> {
+    let url = generate_presigned_url(PresignRequest {
+        method,
+        scheme: "http",
+        host: target_node,
+        path: &format!("/{bucket}"),
+        extra_query_params: &[],
+        access_key: state.config.access_key.as_str(),
+        secret_key: state.config.secret_key.as_str(),
+        region: state.config.region.as_str(),
+        now: chrono::Utc::now(),
+        expires_secs: 60,
+    })
+    .ok()?;
+    let parsed = reqwest::Url::parse(&url).ok()?;
+    let mut path = parsed.path().to_string();
+    if let Some(query) = parsed.query() {
+        path.push('?');
+        path.push_str(query);
+    }
+    Some(path)
+}
+
 pub fn spawn_pending_metadata_repair_replay_worker(state: AppState) {
     if state.active_cluster_peers().is_empty() {
         return;
@@ -468,17 +581,23 @@ pub fn spawn_pending_metadata_repair_replay_worker(state: AppState) {
         loop {
             interval.tick().await;
             let now_unix_ms = unix_ms_now();
-            match replay_pending_metadata_repairs_once_with_persisted_state_apply(
+            match replay_pending_metadata_repairs_once_with_persisted_state_apply_and_observer(
                 queue_path.as_path(),
                 metadata_state_path.as_path(),
-                now_unix_ms,
-                PENDING_METADATA_REPAIR_REPLAY_BATCH_SIZE,
-                PENDING_METADATA_REPAIR_REPLAY_LEASE_MS,
-                PENDING_METADATA_REPAIR_REPLAY_BACKOFF_BASE_MS,
-                PENDING_METADATA_REPAIR_REPLAY_BACKOFF_MAX_MS,
+                PendingMetadataRepairReplayExecutionConfig {
+                    now_unix_ms,
+                    max_candidates: PENDING_METADATA_REPAIR_REPLAY_BATCH_SIZE,
+                    lease_ms: PENDING_METADATA_REPAIR_REPLAY_LEASE_MS,
+                    backoff_base_ms: PENDING_METADATA_REPAIR_REPLAY_BACKOFF_BASE_MS,
+                    backoff_max_ms: PENDING_METADATA_REPAIR_REPLAY_BACKOFF_MAX_MS,
+                },
+                |failure| {
+                    state
+                        .pending_metadata_repair_replay_counters
+                        .record_terminal_failure_reason(failure.canonical_reason());
+                },
             ) {
                 Ok(outcome) => {
-                    let skipped_plans = outcome.skipped_plans.saturating_add(outcome.dropped_plans);
                     state
                         .pending_metadata_repair_replay_counters
                         .record_success(
@@ -486,7 +605,8 @@ pub fn spawn_pending_metadata_repair_replay_worker(state: AppState) {
                             outcome.leased_plans,
                             outcome.acknowledged_plans,
                             outcome.failed_plans,
-                            skipped_plans,
+                            outcome.dropped_plans,
+                            outcome.skipped_plans,
                         );
                     if outcome.scanned_plans > 0 {
                         tracing::info!(
@@ -495,7 +615,7 @@ pub fn spawn_pending_metadata_repair_replay_worker(state: AppState) {
                             acknowledged_plans = outcome.acknowledged_plans,
                             failed_plans = outcome.failed_plans,
                             dropped_plans = outcome.dropped_plans,
-                            skipped_plans = skipped_plans,
+                            skipped_plans = outcome.skipped_plans,
                             "Pending metadata repair replay cycle completed"
                         );
                     }
@@ -554,6 +674,15 @@ pub fn spawn_membership_convergence_probe_worker(state: AppState) {
             .await;
             match derive_membership_discovery_cluster_peers(&topology, &peer_connectivity_probe) {
                 Ok(Some(next_cluster_peers)) => {
+                    let next_cluster_peers = preflight_discovered_membership_peers(
+                        &state,
+                        &topology,
+                        next_cluster_peers,
+                    )
+                    .await;
+                    if next_cluster_peers == topology.cluster_peers {
+                        continue;
+                    }
                     let previous_topology = topology.clone();
                     match state.apply_membership_peers(next_cluster_peers).await {
                         Ok(outcome) if outcome.changed => {
@@ -620,6 +749,169 @@ pub fn spawn_membership_convergence_probe_worker(state: AppState) {
     });
 }
 
+async fn preflight_discovered_membership_peers(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    next_cluster_peers: Vec<String>,
+) -> Vec<String> {
+    if topology.membership_protocol != MembershipProtocol::Gossip {
+        return next_cluster_peers;
+    }
+
+    let discovered_peers = next_cluster_peers
+        .iter()
+        .filter(|peer| {
+            !topology
+                .cluster_peers
+                .iter()
+                .any(|existing| peer_identity_eq(existing.as_str(), peer.as_str()))
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let Some(cluster_auth_token) = state.config.cluster_auth_token() else {
+        if !discovered_peers.is_empty() {
+            tracing::warn!(
+                discovered_peers = discovered_peers.len(),
+                "Dropping discovered peers because join-authorization preflight requires shared-token auth"
+            );
+        }
+        return next_cluster_peers
+            .into_iter()
+            .filter(|peer| {
+                topology
+                    .cluster_peers
+                    .iter()
+                    .any(|existing| peer_identity_eq(existing.as_str(), peer.as_str()))
+            })
+            .collect();
+    };
+
+    if discovered_peers.is_empty() {
+        return next_cluster_peers;
+    }
+
+    let transport = match build_peer_http_transport(
+        Some(state.config.as_ref()),
+        Duration::from_secs(MEMBERSHIP_UPDATE_PROPAGATION_TIMEOUT_SECS),
+    ) {
+        Ok(transport) => transport,
+        Err(error) => {
+            tracing::warn!(
+                error = error.as_str(),
+                discovered_peers = discovered_peers.len(),
+                "Dropping discovered peers because join-authorization preflight transport is unavailable"
+            );
+            return next_cluster_peers
+                .into_iter()
+                .filter(|peer| {
+                    topology
+                        .cluster_peers
+                        .iter()
+                        .any(|existing| peer_identity_eq(existing.as_str(), peer.as_str()))
+                })
+                .collect();
+        }
+    };
+
+    let mut filtered = Vec::with_capacity(next_cluster_peers.len());
+    for peer in next_cluster_peers {
+        let already_known = topology
+            .cluster_peers
+            .iter()
+            .any(|existing| peer_identity_eq(existing.as_str(), peer.as_str()));
+        if already_known {
+            filtered.push(peer);
+            continue;
+        }
+
+        match preflight_discovered_peer_join_authorization(
+            state.config.as_ref(),
+            &transport,
+            state.node_id.as_ref(),
+            topology.cluster_id.as_str(),
+            cluster_auth_token,
+            peer.as_str(),
+        )
+        .await
+        {
+            Ok(()) => filtered.push(peer),
+            Err(error) => {
+                tracing::warn!(
+                    peer = peer.as_str(),
+                    error = error.as_str(),
+                    "Dropping discovered peer because join-authorization preflight failed"
+                );
+            }
+        }
+    }
+
+    match normalize_cluster_peers_for_membership_update(topology.node_id.as_str(), &filtered) {
+        Ok(normalized) => normalized,
+        Err(error) => {
+            tracing::warn!(
+                error = error.as_str(),
+                "Discovered-peer preflight normalization failed; retaining previous topology peers"
+            );
+            topology.cluster_peers.clone()
+        }
+    }
+}
+
+async fn preflight_discovered_peer_join_authorization(
+    config: &Config,
+    transport: &PeerHttpTransport,
+    local_node_id: &str,
+    cluster_id: &str,
+    cluster_auth_token: &str,
+    peer: &str,
+) -> Result<(), String> {
+    attest_peer_http_target(
+        Some(config),
+        peer,
+        Duration::from_secs(MEMBERSHIP_UPDATE_PROPAGATION_TIMEOUT_SECS),
+    )
+    .map_err(|error| {
+        format!(
+            "join-authorization preflight attestation failed for '{}': {}",
+            peer, error
+        )
+    })?;
+
+    let url = format!(
+        "{}://{peer}/internal/cluster/join/authorize",
+        transport.scheme
+    );
+    let timestamp = unix_ms_now().to_string();
+    let nonce = uuid::Uuid::new_v4().to_string();
+    let response = transport
+        .client
+        .post(url.as_str())
+        .header(FORWARDED_BY_HEADER, local_node_id)
+        .header(INTERNAL_AUTH_TOKEN_HEADER, cluster_auth_token)
+        .header(JOIN_CLUSTER_ID_HEADER, cluster_id)
+        .header(JOIN_NODE_ID_HEADER, local_node_id)
+        .header(JOIN_TIMESTAMP_HEADER, timestamp.as_str())
+        .header(JOIN_NONCE_HEADER, nonce.as_str())
+        .send()
+        .await
+        .map_err(|error| {
+            format!(
+                "join-authorization preflight request failed for '{}': {}",
+                peer, error
+            )
+        })?;
+    if response.status().is_success() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "join-authorization preflight returned status {} for '{}'",
+        response.status().as_u16(),
+        peer
+    ))
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HealthChecksPayload {
@@ -638,6 +930,7 @@ pub(crate) struct HealthChecksPayload {
     pub(crate) cluster_peer_auth_transport_ready: bool,
     pub(crate) cluster_peer_auth_transport_required: bool,
     pub(crate) cluster_peer_auth_sender_allowlist_bound: bool,
+    pub(crate) cluster_peer_auth_production_ready: bool,
     pub(crate) cluster_join_auth_ready: bool,
     pub(crate) metadata_list_cluster_authoritative: bool,
     pub(crate) metadata_list_ready: bool,
@@ -664,9 +957,11 @@ pub(crate) struct HealthPayload {
     pub(crate) cluster_auth_transport_identity: String,
     pub(crate) cluster_auth_transport_reason: String,
     pub(crate) cluster_auth_transport_required: bool,
+    pub(crate) cluster_auth_production_reason: String,
     pub(crate) cluster_join_auth_mode: String,
     pub(crate) cluster_join_auth_reason: String,
     pub(crate) membership_protocol: String,
+    pub(crate) membership_protocol_reason: String,
     pub(crate) write_durability_mode: String,
     pub(crate) metadata_listing_strategy: String,
     pub(crate) metadata_listing_gap: Option<String>,
@@ -678,6 +973,7 @@ pub(crate) struct HealthPayload {
     pub(crate) membership_engine: String,
     pub(crate) membership_convergence_reason: String,
     pub(crate) membership_last_update_unix_ms: u64,
+    pub(crate) membership_last_update_age_ms: u64,
     pub(crate) membership_view_id: String,
     pub(crate) placement_epoch: u64,
     pub(crate) pending_replication_backlog_operations: usize,

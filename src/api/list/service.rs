@@ -1,12 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Component, Path, PathBuf};
 
+use crate::api::object::peer_transport::internal_peer_transport_scheme;
 use crate::error::S3Error;
 use crate::metadata::{
-    CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON, ClusterMetadataListingStrategy,
-    MetadataNodeObjectsPage, MetadataNodeVersionsPage, MetadataQuery, MetadataVersionsQuery,
-    ObjectMetadataState, ObjectVersionMetadataState, PersistedMetadataQueryError,
-    assess_cluster_metadata_fan_in_snapshot_for_topology_responders,
+    ClusterMetadataListingStrategy, MetadataNodeObjectsPage, MetadataNodeVersionsPage,
+    MetadataQuery, MetadataVersionsQuery, ObjectMetadataState, ObjectVersionMetadataState,
+    PersistedMetadataQueryError, assess_cluster_metadata_fan_in_snapshot_for_topology_responders,
     assess_cluster_metadata_fan_in_snapshot_for_topology_single_responder,
     cluster_metadata_fan_in_auth_token_reject_reason, cluster_metadata_readiness_reject_reason,
     list_object_versions_page_from_persisted_state, list_objects_page_from_persisted_state,
@@ -157,14 +157,14 @@ pub(super) fn ensure_distributed_listing_strategy_ready(
     Ok(())
 }
 
-pub(super) fn ensure_consensus_index_peer_fan_in_transport_ready(
+pub(super) fn ensure_cluster_authoritative_peer_fan_in_transport_ready(
     state: &AppState,
     topology: &RuntimeTopologySnapshot,
     internal_local_only: bool,
 ) -> Result<(), S3Error> {
     if internal_local_only
         || !topology.is_distributed()
-        || state.metadata_listing_strategy != ClusterMetadataListingStrategy::ConsensusIndex
+        || !state.metadata_listing_strategy.is_cluster_authoritative()
     {
         return Ok(());
     }
@@ -181,12 +181,10 @@ pub(super) fn ensure_consensus_index_peer_fan_in_transport_ready(
         state.metadata_listing_strategy,
         has_cluster_auth_token,
     ) else {
-        return Ok(());
+        // Token trust precondition is satisfied for cluster-authoritative fan-in.
+        // Validate peer transport policy/readiness before dispatching peer calls.
+        return internal_peer_transport_scheme(state).map(|_| ());
     };
-    debug_assert_eq!(
-        reason,
-        CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON
-    );
     Err(S3Error::service_unavailable(&format!(
         "Distributed metadata listing strategy is not ready for this request ({reason})"
     )))
@@ -313,13 +311,9 @@ fn hydrate_objects_from_consensus_states(
         let hydrated = by_key_and_version
             .get(&(key.clone(), version_id))
             .cloned()
-            .or_else(|| {
-                if state.latest_version_id.is_none() {
-                    by_key.get(&key).cloned()
-                } else {
-                    None
-                }
-            })
+            // Peer ListObjects payloads can omit version ids while canonical metadata rows
+            // remain version-aware; fall back to key-only hydration for current-object pages.
+            .or_else(|| by_key.get(&key).cloned())
             .ok_or_else(|| {
                 S3Error::service_unavailable(&format!(
                     "Distributed metadata listing operation '{}' cannot hydrate canonical metadata row for key '{}'",
@@ -1304,6 +1298,27 @@ mod tests {
             "unexpected message: {}",
             err.message
         );
+    }
+
+    #[test]
+    fn hydrate_objects_from_consensus_states_falls_back_to_key_when_version_id_missing() {
+        let objects = vec![object_meta("docs/a.txt", None, false)];
+        let states = vec![ObjectMetadataState {
+            bucket: "photos".to_string(),
+            key: "docs/a.txt".to_string(),
+            latest_version_id: Some("v2".to_string()),
+            is_delete_marker: false,
+        }];
+
+        let hydrated = hydrate_objects_from_consensus_states(
+            "ListObjectsV2",
+            objects.as_slice(),
+            states.as_slice(),
+        )
+        .expect("hydration should fall back to key-only row");
+
+        assert_eq!(hydrated.len(), 1);
+        assert_eq!(hydrated[0].key, "docs/a.txt");
     }
 
     #[test]

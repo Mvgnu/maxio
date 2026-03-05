@@ -254,9 +254,47 @@ pub struct Config {
         default_value = "268435456"
     )]
     pub min_disk_headroom_bytes: u64,
+
+    /// Optional warning threshold for due pending-replication targets reported in `/healthz`.
+    /// When unset, defaults to the runtime replay batch size.
+    /// Set to `0` to disable this warning class.
+    #[arg(long, env = "MAXIO_PENDING_REPLICATION_DUE_WARNING_THRESHOLD")]
+    pub pending_replication_due_warning_threshold: Option<usize>,
+
+    /// Optional warning threshold for due pending-rebalance transfers reported in `/healthz`.
+    /// When unset, defaults to the runtime replay batch size.
+    /// Set to `0` to disable this warning class.
+    #[arg(long, env = "MAXIO_PENDING_REBALANCE_DUE_WARNING_THRESHOLD")]
+    pub pending_rebalance_due_warning_threshold: Option<usize>,
+
+    /// Optional warning threshold for due pending-membership propagation operations in `/healthz`.
+    /// When unset, defaults to the runtime replay batch size.
+    /// Set to `0` to disable this warning class.
+    #[arg(
+        long,
+        env = "MAXIO_PENDING_MEMBERSHIP_PROPAGATION_DUE_WARNING_THRESHOLD"
+    )]
+    pub pending_membership_propagation_due_warning_threshold: Option<usize>,
+
+    /// Optional warning threshold for due pending-metadata repair plans in `/healthz`.
+    /// When unset, defaults to the runtime replay batch size.
+    /// Set to `0` to disable this warning class.
+    #[arg(long, env = "MAXIO_PENDING_METADATA_REPAIR_DUE_WARNING_THRESHOLD")]
+    pub pending_metadata_repair_due_warning_threshold: Option<usize>,
 }
 
 impl Config {
+    fn normalized_due_warning_threshold(
+        threshold_override: Option<usize>,
+        default_threshold: usize,
+    ) -> Option<usize> {
+        match threshold_override {
+            Some(0) => None,
+            Some(threshold) => Some(threshold),
+            None => Some(default_threshold),
+        }
+    }
+
     pub fn configured_cluster_id(&self) -> Result<Option<String>, String> {
         first_env_value(&["MAXIO_CLUSTER_ID"])
             .map(|value| parse_cluster_id(value.as_str()))
@@ -314,6 +352,46 @@ impl Config {
 
     pub fn cluster_peer_transport_required(&self) -> bool {
         self.cluster_peer_transport_mode.is_required()
+    }
+
+    pub fn pending_replication_due_warning_threshold(
+        &self,
+        default_threshold: usize,
+    ) -> Option<usize> {
+        Self::normalized_due_warning_threshold(
+            self.pending_replication_due_warning_threshold,
+            default_threshold,
+        )
+    }
+
+    pub fn pending_rebalance_due_warning_threshold(
+        &self,
+        default_threshold: usize,
+    ) -> Option<usize> {
+        Self::normalized_due_warning_threshold(
+            self.pending_rebalance_due_warning_threshold,
+            default_threshold,
+        )
+    }
+
+    pub fn pending_membership_propagation_due_warning_threshold(
+        &self,
+        default_threshold: usize,
+    ) -> Option<usize> {
+        Self::normalized_due_warning_threshold(
+            self.pending_membership_propagation_due_warning_threshold,
+            default_threshold,
+        )
+    }
+
+    pub fn pending_metadata_repair_due_warning_threshold(
+        &self,
+        default_threshold: usize,
+    ) -> Option<usize> {
+        Self::normalized_due_warning_threshold(
+            self.pending_metadata_repair_due_warning_threshold,
+            default_threshold,
+        )
     }
 
     pub fn credential_map(&self) -> Result<HashMap<String, String>, String> {
@@ -428,6 +506,10 @@ mod tests {
             chunk_size: 10 * 1024 * 1024,
             parity_shards: 0,
             min_disk_headroom_bytes: 268_435_456,
+            pending_replication_due_warning_threshold: None,
+            pending_rebalance_due_warning_threshold: None,
+            pending_membership_propagation_due_warning_threshold: None,
+            pending_metadata_repair_due_warning_threshold: None,
         }
     }
 
@@ -585,6 +667,47 @@ mod tests {
         config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
         assert_eq!(config.cluster_peer_transport_mode.as_str(), "required");
         assert!(config.cluster_peer_transport_required());
+    }
+
+    #[test]
+    fn pending_due_warning_thresholds_default_to_batch_size_and_allow_disable() {
+        let mut config = base_config();
+
+        assert_eq!(
+            config.pending_replication_due_warning_threshold(128),
+            Some(128)
+        );
+        assert_eq!(
+            config.pending_rebalance_due_warning_threshold(256),
+            Some(256)
+        );
+        assert_eq!(
+            config.pending_membership_propagation_due_warning_threshold(64),
+            Some(64)
+        );
+        assert_eq!(
+            config.pending_metadata_repair_due_warning_threshold(32),
+            Some(32)
+        );
+
+        config.pending_replication_due_warning_threshold = Some(0);
+        config.pending_rebalance_due_warning_threshold = Some(1024);
+        config.pending_membership_propagation_due_warning_threshold = Some(512);
+        config.pending_metadata_repair_due_warning_threshold = Some(0);
+
+        assert_eq!(config.pending_replication_due_warning_threshold(128), None);
+        assert_eq!(
+            config.pending_rebalance_due_warning_threshold(256),
+            Some(1024)
+        );
+        assert_eq!(
+            config.pending_membership_propagation_due_warning_threshold(64),
+            Some(512)
+        );
+        assert_eq!(
+            config.pending_metadata_repair_due_warning_threshold(32),
+            None
+        );
     }
 
     #[test]

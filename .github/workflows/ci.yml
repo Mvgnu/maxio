@@ -38,6 +38,9 @@ jobs:
       - name: Cargo test
         run: cargo test
 
+      - name: Domain harness (all)
+        run: ./scripts/domain_check.sh all
+
   frontend:
     name: Frontend Checks
     runs-on: ubuntu-latest

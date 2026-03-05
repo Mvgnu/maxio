@@ -16,7 +16,7 @@ use quick_xml::de::from_str;
 use serde::Deserialize;
 
 use crate::api::object::peer_transport::{
-    attest_internal_peer_target, build_internal_peer_http_client,
+    attest_internal_peer_target, build_internal_peer_http_client, internal_peer_transport_scheme,
 };
 use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
 use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_request};
@@ -25,31 +25,32 @@ use crate::error::{S3Error, S3ErrorCode};
 use crate::metadata::{
     BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
     BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
-    ClusterBucketMetadataMutationPreconditionFailureDisposition,
     ClusterBucketMetadataMutationPreconditionAssessment,
-    ClusterBucketMetadataMutationPreconditionGap, ClusterBucketMetadataResponderSnapshot,
-    ClusterBucketMetadataResponderState, ClusterBucketPresenceConvergenceExpectation,
-    ClusterBucketPresenceReadResolution, ClusterMetadataListingStrategy,
-    ClusterResponderMembershipView, MetadataNodeBucketsPage,
+    ClusterBucketMetadataMutationPreconditionFailureDisposition,
+    ClusterBucketMetadataMutationPreconditionGap, ClusterBucketMetadataResponderState,
+    ClusterBucketPresenceConvergenceExpectation, ClusterBucketPresenceReadResolution,
+    ClusterMetadataListingStrategy, ClusterResponderMembershipView, MetadataNodeBucketsPage,
     PersistedBucketLifecycleConfigurationOperationError,
-    PersistedBucketLifecycleConfigurationReadResolution, PersistedBucketMetadataOperationError,
+    PersistedBucketLifecycleConfigurationReadResolution,
+    PersistedBucketLifecycleMutationPreconditionResolution, PersistedBucketMetadataOperationError,
     PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError,
     apply_bucket_lifecycle_configuration_operation_to_persisted_state,
     apply_bucket_metadata_operation_to_persisted_state,
-    assess_cluster_bucket_metadata_mutation_preconditions,
+    assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states,
     assess_cluster_bucket_presence_convergence,
-    assess_cluster_metadata_fan_in_preflight_for_topology_responders,
-    assess_cluster_metadata_fan_in_preflight_for_topology_single_responder,
+    assess_cluster_metadata_fan_in_gate_for_topology_responders,
+    assess_cluster_metadata_fan_in_gate_for_topology_single_responder,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
     assess_cluster_responder_membership_views,
-    cluster_bucket_metadata_mutation_precondition_failure_disposition,
     cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values,
     cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready,
-    cluster_metadata_fan_in_preflight_reject_reason, cluster_metadata_readiness_reject_reason,
-    list_buckets_from_persisted_state_with_view_id, load_persisted_metadata_state,
-    merge_cluster_list_buckets_page_with_topology_snapshot,
+    cluster_bucket_metadata_mutation_precondition_reject_details,
+    cluster_metadata_fan_in_auth_token_reject_reason, cluster_metadata_fan_in_gate_reject_details,
+    cluster_metadata_readiness_reject_reason, list_buckets_from_persisted_state_with_view_id,
+    load_persisted_metadata_state, merge_cluster_list_buckets_page_with_topology_snapshot,
     resolve_bucket_lifecycle_configuration_from_persisted_state,
+    resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state,
     resolve_bucket_metadata_from_persisted_state,
     resolve_bucket_mutation_preconditions_from_persisted_state,
     resolve_cluster_bucket_presence_for_read,
@@ -222,6 +223,18 @@ fn ensure_distributed_bucket_listing_strategy_ready_for_responders(
     if !topology.is_distributed() {
         return Ok(());
     }
+    if state.metadata_listing_strategy.is_cluster_authoritative() {
+        let has_cluster_auth_token = cluster_auth_token_configured(state);
+        if let Some(reason) = cluster_metadata_fan_in_auth_token_reject_reason(
+            state.metadata_listing_strategy,
+            has_cluster_auth_token,
+        ) {
+            return Err(S3Error::service_unavailable(&format!(
+                "Distributed metadata listing strategy is not ready for this request ({reason})"
+            )));
+        }
+        internal_peer_transport_scheme(state)?;
+    }
     let snapshot_assessment = assess_cluster_metadata_snapshot_for_topology_responders(
         state.metadata_listing_strategy,
         Some(topology.membership_view_id.as_str()),
@@ -258,6 +271,19 @@ fn ensure_distributed_bucket_metadata_operation_strategy_ready_for_responders(
 ) -> Result<(), S3Error> {
     if !topology.is_distributed() {
         return Ok(());
+    }
+    if state.metadata_listing_strategy.is_cluster_authoritative() {
+        let has_cluster_auth_token = cluster_auth_token_configured(state);
+        if let Some(reason) = cluster_metadata_fan_in_auth_token_reject_reason(
+            state.metadata_listing_strategy,
+            has_cluster_auth_token,
+        ) {
+            return Err(S3Error::service_unavailable(&format!(
+                "Distributed metadata strategy is not ready for bucket metadata operation '{}' ({reason})",
+                operation
+            )));
+        }
+        internal_peer_transport_scheme(state)?;
     }
     let snapshot_assessment = assess_cluster_metadata_snapshot_for_topology_responders(
         state.metadata_listing_strategy,
@@ -297,6 +323,9 @@ fn should_attempt_cluster_bucket_metadata_fan_in(
         return false;
     }
     if !cluster_auth_token_configured(state) {
+        return false;
+    }
+    if internal_peer_transport_scheme(state).is_err() {
         return false;
     }
     matches!(
@@ -476,7 +505,10 @@ fn load_persisted_bucket_metadata_state(
     .map_err(|err| map_persisted_metadata_query_error(operation, err))
 }
 
-fn map_persisted_metadata_query_error(operation: &str, err: PersistedMetadataQueryError) -> S3Error {
+fn map_persisted_metadata_query_error(
+    operation: &str,
+    err: PersistedMetadataQueryError,
+) -> S3Error {
     match err {
         PersistedMetadataQueryError::ViewIdMismatch {
             expected_view_id,
@@ -630,6 +662,64 @@ fn ensure_consensus_index_delete_bucket_preconditions(
     }
 }
 
+fn ensure_consensus_index_bucket_lifecycle_mutation_preconditions(
+    state: &AppState,
+    topology: &crate::server::RuntimeTopologySnapshot,
+    bucket: &str,
+    operation: &str,
+) -> Result<(), S3Error> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+            operation, err
+        ))
+    })?;
+
+    match resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+        current_unix_ms_u64(),
+    ) {
+        Ok(PersistedBucketLifecycleMutationPreconditionResolution::Present { .. }) => Ok(()),
+        Ok(PersistedBucketLifecycleMutationPreconditionResolution::Tombstoned { .. })
+        | Ok(PersistedBucketLifecycleMutationPreconditionResolution::Missing) => {
+            Err(S3Error::no_such_bucket(bucket))
+        }
+        Err(err) => Err(map_persisted_metadata_query_error(operation, err)),
+    }
+}
+
+fn ensure_consensus_index_bucket_versioning_mutation_preconditions(
+    state: &AppState,
+    topology: &crate::server::RuntimeTopologySnapshot,
+    bucket: &str,
+    operation: &str,
+) -> Result<(), S3Error> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+            operation, err
+        ))
+    })?;
+
+    match resolve_bucket_mutation_preconditions_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+        current_unix_ms_u64(),
+    ) {
+        Ok(PersistedBucketMutationPreconditionResolution::Present(_)) => Ok(()),
+        Ok(PersistedBucketMutationPreconditionResolution::Tombstoned { .. })
+        | Ok(PersistedBucketMutationPreconditionResolution::Missing) => {
+            Err(S3Error::no_such_bucket(bucket))
+        }
+        Err(err) => Err(map_persisted_metadata_query_error(operation, err)),
+    }
+}
+
 fn is_trusted_internal_local_metadata_scope_request(
     state: &AppState,
     headers: &HeaderMap,
@@ -703,6 +793,7 @@ async fn fetch_cluster_bucket_listing_fan_in(
         topology,
         "ListBuckets",
         responder_views.as_slice(),
+        state.config.cluster_auth_token().is_some(),
     )?;
 
     Ok(ClusterBucketListingFanIn {
@@ -980,32 +1071,37 @@ fn resolve_cluster_bucket_versioning_state(
         ));
     }
 
-    match cluster_bucket_metadata_mutation_precondition_failure_disposition(assessment.gap) {
-        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket) => Err(
-            S3Error::service_unavailable(&format!(
-                "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
-                bucket
-            )),
-        ),
-        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable) => {
-            match assessment.gap {
-                Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
-                    Err(S3Error::service_unavailable(&format!(
-                        "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
-                        bucket
-                    )))
-                }
-                Some(gap) => Err(S3Error::service_unavailable(&format!(
-                    "Distributed bucket metadata fan-in for '{}' is not ready ({})",
-                    operation,
-                    gap.as_str()
-                ))),
-                None => Err(S3Error::service_unavailable(&format!(
-                    "Distributed bucket metadata fan-in for '{}' is not ready",
-                    operation
-                ))),
-            }
+    match cluster_bucket_metadata_mutation_precondition_reject_details(assessment.gap) {
+        Some(details)
+            if details.failure_disposition
+                == ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket =>
+        {
+            Err(S3Error::service_unavailable(&format!(
+                "Distributed bucket metadata is inconsistent for '{}' ({}; class={})",
+                bucket,
+                details.reason,
+                details.failure_class.as_str()
+            )))
         }
+        Some(details)
+            if assessment.gap
+                == Some(
+                    ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues,
+                ) =>
+        {
+            Err(S3Error::service_unavailable(&format!(
+                "Distributed bucket versioning state is inconsistent across responder nodes for '{}' ({}; class={})",
+                bucket,
+                details.reason,
+                details.failure_class.as_str()
+            )))
+        }
+        Some(details) => Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata fan-in for '{}' is not ready ({}; class={})",
+            operation,
+            details.reason,
+            details.failure_class.as_str()
+        ))),
         None => assessment.current_value.ok_or_else(|| {
             S3Error::service_unavailable(
                 "Distributed bucket metadata fan-in did not include any versioning responders",
@@ -1021,31 +1117,19 @@ fn assess_cluster_bucket_metadata_operation_preconditions<T: Clone + Eq>(
     responded_nodes: &[String],
     states: &[ClusterBucketMetadataResponderState<T>],
 ) -> Result<ClusterBucketMetadataMutationPreconditionAssessment<T>, S3Error> {
-    if responded_nodes.len() != states.len() {
-        return Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' responder/state fan-in cardinality mismatch",
-            operation
-        )));
-    }
-    let responder_states = responded_nodes
-        .iter()
-        .cloned()
-        .zip(states.iter().cloned())
-        .map(|(node_id, state)| ClusterBucketMetadataResponderSnapshot { node_id, state })
-        .collect::<Vec<_>>();
-
-    assess_cluster_bucket_metadata_mutation_preconditions(
+    assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states(
         state.metadata_listing_strategy,
         Some(topology.membership_view_id.as_str()),
         topology.node_id.as_str(),
         topology.membership_nodes.as_slice(),
-        responder_states.as_slice(),
+        responded_nodes,
+        states,
     )
     .map_err(|error| {
         S3Error::service_unavailable(&format!(
             "Failed to assess distributed bucket metadata convergence for operation '{}' ({})",
             operation,
-            error.canonical_reason()
+            error.as_str()
         ))
     })
 }
@@ -1212,32 +1296,37 @@ fn resolve_cluster_bucket_lifecycle_state(
         ));
     }
 
-    match cluster_bucket_metadata_mutation_precondition_failure_disposition(assessment.gap) {
-        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket) => Err(
-            S3Error::service_unavailable(&format!(
-                "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
-                bucket
-            )),
-        ),
-        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable) => {
-            match assessment.gap {
-                Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
-                    Err(S3Error::service_unavailable(&format!(
-                        "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}'",
-                        bucket
-                    )))
-                }
-                Some(gap) => Err(S3Error::service_unavailable(&format!(
-                    "Distributed bucket metadata fan-in for '{}' is not ready ({})",
-                    operation,
-                    gap.as_str()
-                ))),
-                None => Err(S3Error::service_unavailable(&format!(
-                    "Distributed bucket metadata fan-in for '{}' is not ready",
-                    operation
-                ))),
-            }
+    match cluster_bucket_metadata_mutation_precondition_reject_details(assessment.gap) {
+        Some(details)
+            if details.failure_disposition
+                == ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket =>
+        {
+            Err(S3Error::service_unavailable(&format!(
+                "Distributed bucket metadata is inconsistent for '{}' ({}; class={})",
+                bucket,
+                details.reason,
+                details.failure_class.as_str()
+            )))
         }
+        Some(details)
+            if assessment.gap
+                == Some(
+                    ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues,
+                ) =>
+        {
+            Err(S3Error::service_unavailable(&format!(
+                "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}' ({}; class={})",
+                bucket,
+                details.reason,
+                details.failure_class.as_str()
+            )))
+        }
+        Some(details) => Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata fan-in for '{}' is not ready ({}; class={})",
+            operation,
+            details.reason,
+            details.failure_class.as_str()
+        ))),
         None => match assessment.current_value {
             Some(BucketLifecycleResponderValue::NoLifecycleConfiguration) => {
                 Err(S3Error::no_such_lifecycle_configuration(bucket))
@@ -1832,7 +1921,16 @@ async fn put_bucket_versioning(
     if !internal_local_only && !should_fan_in && !use_consensus_persisted_metadata {
         ensure_distributed_bucket_metadata_operation_strategy_ready(&state, "PutBucketVersioning")?;
     }
-    ensure_bucket_exists(&state.storage, &bucket).await?;
+    if use_consensus_persisted_metadata {
+        ensure_consensus_index_bucket_versioning_mutation_preconditions(
+            &state,
+            &topology,
+            &bucket,
+            "PutBucketVersioning",
+        )?;
+    } else {
+        ensure_bucket_exists(&state.storage, &bucket).await?;
+    }
 
     let body_bytes = axum::body::to_bytes(body, 1024 * 64)
         .await
@@ -1916,7 +2014,16 @@ async fn put_bucket_lifecycle(
     if !internal_local_only && !should_fan_in && !use_consensus_persisted_metadata {
         ensure_distributed_bucket_metadata_operation_strategy_ready(&state, "PutBucketLifecycle")?;
     }
-    ensure_bucket_exists(&state.storage, &bucket).await?;
+    if use_consensus_persisted_metadata {
+        ensure_consensus_index_bucket_lifecycle_mutation_preconditions(
+            &state,
+            &topology,
+            &bucket,
+            "PutBucketLifecycle",
+        )?;
+    } else {
+        ensure_bucket_exists(&state.storage, &bucket).await?;
+    }
 
     let body_bytes = axum::body::to_bytes(body, 1024 * 256)
         .await
@@ -2005,13 +2112,24 @@ async fn delete_bucket_lifecycle(
         is_trusted_internal_local_metadata_scope_request(&state, &headers, &params);
     let should_fan_in =
         should_attempt_cluster_bucket_metadata_fan_in(&state, &topology, internal_local_only);
-    if !internal_local_only && !should_fan_in {
+    let use_consensus_persisted_metadata =
+        should_use_consensus_index_persisted_metadata_state(&state, &topology, internal_local_only);
+    if !internal_local_only && !should_fan_in && !use_consensus_persisted_metadata {
         ensure_distributed_bucket_metadata_operation_strategy_ready(
             &state,
             "DeleteBucketLifecycle",
         )?;
     }
-    ensure_bucket_exists(&state.storage, &bucket).await?;
+    if use_consensus_persisted_metadata {
+        ensure_consensus_index_bucket_lifecycle_mutation_preconditions(
+            &state,
+            &topology,
+            &bucket,
+            "DeleteBucketLifecycle",
+        )?;
+    } else {
+        ensure_bucket_exists(&state.storage, &bucket).await?;
+    }
 
     state
         .storage
@@ -2254,33 +2372,40 @@ fn ensure_bucket_metadata_fan_in_preflight_ready(
     topology: &crate::server::RuntimeTopologySnapshot,
     operation: &str,
     responders: &[ClusterResponderMembershipView],
+    has_cluster_auth_token: bool,
 ) -> Result<(), S3Error> {
-    let preflight = assess_cluster_metadata_fan_in_preflight_for_topology_responders(
+    let gate = assess_cluster_metadata_fan_in_gate_for_topology_responders(
         strategy,
         None,
         topology.node_id.as_str(),
         topology.membership_nodes.as_slice(),
         responders,
+        has_cluster_auth_token,
     )
     .unwrap_or_else(|_| {
-        assess_cluster_metadata_fan_in_preflight_for_topology_single_responder(
+        assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
             strategy,
             None,
             topology.node_id.as_str(),
             topology.membership_nodes.as_slice(),
             topology.node_id.as_str(),
             None,
+            has_cluster_auth_token,
         )
     });
-    if preflight.ready {
+    if gate.ready {
         return Ok(());
     }
 
-    let reason = cluster_metadata_fan_in_preflight_reject_reason(&preflight)
-        .map(|gap| gap.as_str())
-        .unwrap_or("unknown-fan-in-preflight-gap");
+    let reject_details = cluster_metadata_fan_in_gate_reject_details(&gate);
+    let reason = reject_details
+        .map(|details| details.reason)
+        .unwrap_or("unknown-fan-in-gate-gap");
+    let failure_class = reject_details
+        .map(|details| details.failure_class.as_str())
+        .unwrap_or("unknown-fan-in-gate-failure-class");
     Err(S3Error::service_unavailable(&format!(
-        "Distributed bucket metadata fan-in for '{operation}' is not ready ({reason})",
+        "Distributed bucket metadata fan-in for '{operation}' is not ready ({reason}; class={failure_class})",
     )))
 }
 
@@ -2344,6 +2469,105 @@ mod tests {
             err.message
                 .contains("inconsistent peer membership view ids")
         );
+    }
+
+    #[test]
+    fn ensure_bucket_metadata_fan_in_preflight_ready_rejects_missing_auth_token_for_consensus_index()
+     {
+        let topology = crate::server::RuntimeTopologySnapshot {
+            mode: crate::server::RuntimeMode::Distributed,
+            node_id: "node-a:9000".to_string(),
+            cluster_id: "cluster".to_string(),
+            cluster_peers: vec!["node-b:9000".to_string()],
+            membership_nodes: vec!["node-a:9000".to_string(), "node-b:9000".to_string()],
+            membership_protocol: crate::config::MembershipProtocol::StaticBootstrap,
+            membership_status: crate::membership::MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 1,
+                warning: None,
+            },
+            membership_view_id: "view-a".to_string(),
+            placement_epoch: 1,
+        };
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-a:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+        ];
+
+        let err = ensure_bucket_metadata_fan_in_preflight_ready(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            &topology,
+            "ListBuckets",
+            responders.as_slice(),
+            false,
+        )
+        .expect_err("consensus fan-in must fail closed without auth token");
+        assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
+        assert!(
+            err.message
+                .contains("cluster-peer-fan-in-auth-token-missing")
+        );
+        assert!(err.message.contains("class=auth-configuration"));
+    }
+
+    #[test]
+    fn ensure_bucket_metadata_fan_in_preflight_ready_rejects_inconsistent_views() {
+        let topology = crate::server::RuntimeTopologySnapshot {
+            mode: crate::server::RuntimeMode::Distributed,
+            node_id: "node-a:9000".to_string(),
+            cluster_id: "cluster".to_string(),
+            cluster_peers: vec!["node-b:9000".to_string(), "node-c:9000".to_string()],
+            membership_nodes: vec![
+                "node-a:9000".to_string(),
+                "node-b:9000".to_string(),
+                "node-c:9000".to_string(),
+            ],
+            membership_protocol: crate::config::MembershipProtocol::StaticBootstrap,
+            membership_status: crate::membership::MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 1,
+                warning: None,
+            },
+            membership_view_id: "view-a".to_string(),
+            placement_epoch: 1,
+        };
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-c:9000".to_string(),
+                membership_view_id: Some("view-b".to_string()),
+            },
+        ];
+
+        let err = ensure_bucket_metadata_fan_in_preflight_ready(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            &topology,
+            "ListBuckets",
+            responders.as_slice(),
+            true,
+        )
+        .expect_err("inconsistent responder views must fail");
+        assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
+        assert!(
+            err.message
+                .contains("inconsistent-responder-membership-view-id")
+        );
+        assert!(err.message.contains("class=membership-view-readiness"));
     }
 
     #[test]

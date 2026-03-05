@@ -76,6 +76,9 @@ struct MetricsPayload {
     membership_protocol_ready: bool,
     membership_converged: bool,
     membership_convergence_reason: String,
+    membership_last_update_age_ms: u64,
+    cluster_peer_auth_production_ready: bool,
+    cluster_auth_production_reason: String,
     write_durability_mode: String,
     metadata_listing_strategy: String,
     metadata_listing_ready: bool,
@@ -88,6 +91,7 @@ struct MetricsPayload {
     pending_membership_propagation_replay_cycles_total: u64,
     pending_metadata_repair_backlog_plans: usize,
     pending_metadata_repair_replay_cycles_total: u64,
+    pending_due_warning_threshold_overrides: PendingDueWarningThresholdOverridesPayload,
     #[serde(flatten)]
     topology: TopologyPayload,
 }
@@ -112,9 +116,25 @@ struct PlacementPayload {
     mixed_owner_batch_mutation_policy: String,
     replica_fanout_operations: Vec<String>,
     pending_replica_fanout_operations: Vec<String>,
+    replica_fanout_execution: ReplicaFanoutExecutionPayload,
     #[serde(flatten)]
     topology: TopologyPayload,
     membership_view_id: String,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReplicaFanoutExecutionPayload {
+    write_durability_mode: String,
+    pending_replication_queue_readable: bool,
+    pending_replication_backlog_operations: usize,
+    pending_replication_backlog_pending_targets: usize,
+    pending_replication_backlog_due_targets: usize,
+    pending_replication_backlog_failed_targets: usize,
+    pending_replication_replay_cycles_total: u64,
+    pending_replication_replay_cycles_succeeded: u64,
+    pending_replication_replay_cycles_failed: u64,
+    pending_replication_replay_last_success_unix_ms: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -181,6 +201,9 @@ struct SummaryMetricsPayload {
     membership_protocol_ready: bool,
     membership_converged: bool,
     membership_convergence_reason: String,
+    membership_last_update_age_ms: u64,
+    cluster_peer_auth_production_ready: bool,
+    cluster_auth_production_reason: String,
     write_durability_mode: String,
     metadata_listing_strategy: String,
     metadata_listing_ready: bool,
@@ -193,6 +216,16 @@ struct SummaryMetricsPayload {
     pending_membership_propagation_replay_cycles_total: u64,
     pending_metadata_repair_backlog_plans: usize,
     pending_metadata_repair_replay_cycles_total: u64,
+    pending_due_warning_threshold_overrides: PendingDueWarningThresholdOverridesPayload,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PendingDueWarningThresholdOverridesPayload {
+    replication_due_targets: Option<usize>,
+    rebalance_due_transfers: Option<usize>,
+    membership_propagation_due_operations: Option<usize>,
+    metadata_repair_due_plans: Option<usize>,
 }
 
 #[derive(Debug, Serialize)]
@@ -261,6 +294,7 @@ fn metrics_payload(
     requests_total: u64,
     uptime_seconds: f64,
     health: &RuntimeHealthPayload,
+    pending_due_warning_threshold_overrides: PendingDueWarningThresholdOverridesPayload,
 ) -> MetricsPayload {
     MetricsPayload {
         requests_total,
@@ -269,6 +303,9 @@ fn metrics_payload(
         membership_protocol_ready: health.membership_protocol_ready(),
         membership_converged: health.membership_converged(),
         membership_convergence_reason: health.membership_convergence_reason().to_string(),
+        membership_last_update_age_ms: health.membership_last_update_age_ms,
+        cluster_peer_auth_production_ready: health.checks.cluster_peer_auth_production_ready,
+        cluster_auth_production_reason: health.cluster_auth_production_reason.clone(),
         write_durability_mode: health.write_durability_mode.clone(),
         metadata_listing_strategy: health.metadata_listing_strategy.clone(),
         metadata_listing_ready: health.checks.metadata_list_ready,
@@ -284,7 +321,21 @@ fn metrics_payload(
         pending_metadata_repair_backlog_plans: health.pending_metadata_repair_backlog_plans,
         pending_metadata_repair_replay_cycles_total: health
             .pending_metadata_repair_replay_cycles_total,
+        pending_due_warning_threshold_overrides,
         topology: topology_payload(topology),
+    }
+}
+
+fn pending_due_warning_threshold_overrides_payload(
+    state: &AppState,
+) -> PendingDueWarningThresholdOverridesPayload {
+    PendingDueWarningThresholdOverridesPayload {
+        replication_due_targets: state.config.pending_replication_due_warning_threshold,
+        rebalance_due_transfers: state.config.pending_rebalance_due_warning_threshold,
+        membership_propagation_due_operations: state
+            .config
+            .pending_membership_propagation_due_warning_threshold,
+        metadata_repair_due_plans: state.config.pending_metadata_repair_due_warning_threshold,
     }
 }
 
@@ -312,10 +363,18 @@ pub(super) async fn get_metrics(State(state): State<AppState>) -> impl IntoRespo
     let uptime_seconds = state.started_at.elapsed().as_secs_f64();
     let topology = runtime_topology_snapshot(&state);
     let health = runtime_health_payload(&state).await;
+    let pending_due_warning_threshold_overrides =
+        pending_due_warning_threshold_overrides_payload(&state);
 
     response::json(
         StatusCode::OK,
-        metrics_payload(&topology, requests_total, uptime_seconds, &health),
+        metrics_payload(
+            &topology,
+            requests_total,
+            uptime_seconds,
+            &health,
+            pending_due_warning_threshold_overrides,
+        ),
     )
 }
 
@@ -338,6 +397,7 @@ pub(super) async fn get_placement(
         Err(message) => return response::error(StatusCode::BAD_REQUEST, message),
     };
     let topology = runtime_topology_snapshot(&state);
+    let health = runtime_health_payload(&state).await;
     let local_node = topology.node_id.as_str();
     let peers = topology.cluster_peers.as_slice();
 
@@ -400,6 +460,23 @@ pub(super) async fn get_placement(
         mixed_owner_batch_mutation_policy: mixed_owner_batch_mutation_policy.to_string(),
         replica_fanout_operations: replica_fanout_operations(),
         pending_replica_fanout_operations: pending_replica_fanout_operations(),
+        replica_fanout_execution: ReplicaFanoutExecutionPayload {
+            write_durability_mode: health.write_durability_mode.clone(),
+            pending_replication_queue_readable: health.checks.pending_replication_queue_readable,
+            pending_replication_backlog_operations: health.pending_replication_backlog_operations,
+            pending_replication_backlog_pending_targets: health
+                .pending_replication_backlog_pending_targets,
+            pending_replication_backlog_due_targets: health.pending_replication_backlog_due_targets,
+            pending_replication_backlog_failed_targets: health
+                .pending_replication_backlog_failed_targets,
+            pending_replication_replay_cycles_total: health.pending_replication_replay_cycles_total,
+            pending_replication_replay_cycles_succeeded: health
+                .pending_replication_replay_cycles_succeeded,
+            pending_replication_replay_cycles_failed: health
+                .pending_replication_replay_cycles_failed,
+            pending_replication_replay_last_success_unix_ms: health
+                .pending_replication_replay_last_success_unix_ms,
+        },
         topology: topology_payload(&topology),
         membership_view_id: topology.membership_view_id.clone(),
     };
@@ -523,6 +600,8 @@ pub(super) async fn get_summary(State(state): State<AppState>) -> impl IntoRespo
     let uptime_seconds = state.started_at.elapsed().as_secs_f64();
     let topology = runtime_topology_snapshot(&state);
     let health = runtime_health_payload(&state).await;
+    let pending_due_warning_threshold_overrides =
+        pending_due_warning_threshold_overrides_payload(&state);
     let membership_protocol_ready = health.membership_protocol_ready();
     let membership_converged = health.membership_converged();
     let membership_convergence_reason = health.membership_convergence_reason().to_string();
@@ -533,6 +612,9 @@ pub(super) async fn get_summary(State(state): State<AppState>) -> impl IntoRespo
         membership_protocol_ready,
         membership_converged,
         membership_convergence_reason,
+        membership_last_update_age_ms: health.membership_last_update_age_ms,
+        cluster_peer_auth_production_ready: health.checks.cluster_peer_auth_production_ready,
+        cluster_auth_production_reason: health.cluster_auth_production_reason.clone(),
         write_durability_mode: health.write_durability_mode.clone(),
         metadata_listing_strategy: health.metadata_listing_strategy.clone(),
         metadata_listing_ready: health.checks.metadata_list_ready,
@@ -548,6 +630,7 @@ pub(super) async fn get_summary(State(state): State<AppState>) -> impl IntoRespo
         pending_metadata_repair_backlog_plans: health.pending_metadata_repair_backlog_plans,
         pending_metadata_repair_replay_cycles_total: health
             .pending_metadata_repair_replay_cycles_total,
+        pending_due_warning_threshold_overrides,
     };
 
     let payload = SummaryPayload {
@@ -960,6 +1043,18 @@ mod tests {
             mixed_owner_batch_mutation_policy: "execute-local".to_string(),
             replica_fanout_operations: super::replica_fanout_operations(),
             pending_replica_fanout_operations: super::pending_replica_fanout_operations(),
+            replica_fanout_execution: super::ReplicaFanoutExecutionPayload {
+                write_durability_mode: "degraded-success".to_string(),
+                pending_replication_queue_readable: true,
+                pending_replication_backlog_operations: 0,
+                pending_replication_backlog_pending_targets: 0,
+                pending_replication_backlog_due_targets: 0,
+                pending_replication_backlog_failed_targets: 0,
+                pending_replication_replay_cycles_total: 0,
+                pending_replication_replay_cycles_succeeded: 0,
+                pending_replication_replay_cycles_failed: 0,
+                pending_replication_replay_last_success_unix_ms: 0,
+            },
             topology: topology_payload(&topology("node-a.internal:9000", &[])),
             membership_view_id: "view-1".to_string(),
         };
@@ -984,6 +1079,14 @@ mod tests {
         assert_eq!(
             value["pendingReplicaFanoutOperations"],
             serde_json::json!([])
+        );
+        assert_eq!(
+            value["replicaFanoutExecution"]["writeDurabilityMode"],
+            "degraded-success"
+        );
+        assert_eq!(
+            value["replicaFanoutExecution"]["pendingReplicationQueueReadable"],
+            true
         );
     }
 }

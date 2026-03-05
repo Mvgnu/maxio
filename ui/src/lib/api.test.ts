@@ -74,6 +74,9 @@ describe('api client', () => {
           clusterPeers: ['node-b:9000', 'node-c:9000'],
           membershipProtocol: 'gossip',
           membershipProtocolReady: true,
+          clusterPeerAuthProductionReady: false,
+          clusterAuthProductionReason: 'transport-policy-not-required',
+          membershipLastUpdateAgeMs: 2100,
           placementEpoch: 7,
         }),
         {
@@ -95,6 +98,9 @@ describe('api client', () => {
       expect(result.data.clusterPeers).toEqual(['node-b:9000', 'node-c:9000'])
       expect(result.data.membershipProtocol).toBe('gossip')
       expect(result.data.membershipProtocolReady).toBe(true)
+      expect(result.data.clusterPeerAuthProductionReady).toBe(false)
+      expect(result.data.clusterAuthProductionReason).toBe('transport-policy-not-required')
+      expect(result.data.membershipLastUpdateAgeMs).toBe(2100)
       expect(result.data.placementEpoch).toBe(7)
     }
   })
@@ -119,6 +125,12 @@ describe('api client', () => {
           '# HELP maxio_membership_protocol_ready Membership protocol readiness (1=implemented/active, 0=placeholder/unimplemented).',
           '# TYPE maxio_membership_protocol_ready gauge',
           'maxio_membership_protocol_ready 0',
+          '# HELP maxio_cluster_peer_auth_production_ready Whether cluster peer auth posture is production-ready for distributed mode (1=true, 0=false).',
+          '# TYPE maxio_cluster_peer_auth_production_ready gauge',
+          'maxio_cluster_peer_auth_production_ready 1',
+          '# HELP maxio_cluster_peer_auth_production_reason_info Cluster peer auth production-readiness reason for current runtime state.',
+          '# TYPE maxio_cluster_peer_auth_production_reason_info gauge',
+          'maxio_cluster_peer_auth_production_reason_info{reason="ready"} 1',
           '# TYPE maxio_placement_epoch gauge',
           'maxio_placement_epoch 9',
         ].join('\n'),
@@ -140,6 +152,9 @@ describe('api client', () => {
       expect(result.data.clusterPeers).toEqual([])
       expect(result.data.membershipProtocol).toBe('gossip')
       expect(result.data.membershipProtocolReady).toBe(false)
+      expect(result.data.clusterPeerAuthProductionReady).toBe(true)
+      expect(result.data.clusterAuthProductionReason).toBe('ready')
+      expect(result.data.membershipLastUpdateAgeMs).toBeNull()
       expect(result.data.placementEpoch).toBe(9)
     }
   })
@@ -226,6 +241,8 @@ describe('api client', () => {
           nodeId: 'node-a',
           clusterPeers: ['node-b:9000', 'node-c:9000'],
           membershipProtocol: 'gossip',
+          clusterAuthProductionReason: 'transport-not-ready',
+          membershipLastUpdateAgeMs: 1750,
           placementEpoch: 3,
           checks: {
             dataDirAccessible: true,
@@ -234,6 +251,7 @@ describe('api client', () => {
             diskHeadroomSufficient: false,
             peerConnectivityReady: false,
             membershipProtocolReady: false,
+            clusterPeerAuthProductionReady: false,
           },
           warnings: ['Data directory write probe failed'],
         }),
@@ -256,6 +274,8 @@ describe('api client', () => {
       expect(result.data.clusterPeerCount).toBe(2)
       expect(result.data.clusterPeers).toEqual(['node-b:9000', 'node-c:9000'])
       expect(result.data.membershipProtocol).toBe('gossip')
+      expect(result.data.clusterAuthProductionReason).toBe('transport-not-ready')
+      expect(result.data.membershipLastUpdateAgeMs).toBe(1750)
       expect(result.data.placementEpoch).toBe(3)
       expect(result.data.status).toBe('degraded')
       expect(result.data.checks).toEqual({
@@ -265,6 +285,7 @@ describe('api client', () => {
         diskHeadroomSufficient: false,
         peerConnectivityReady: false,
         membershipProtocolReady: false,
+        clusterPeerAuthProductionReady: false,
       })
       expect(result.data.warnings).toEqual(['Data directory write probe failed'])
     }
@@ -297,6 +318,8 @@ describe('api client', () => {
             uptimeSeconds: 51.25,
             membershipViewId: 'view-123',
             membershipProtocol: 'raft',
+            clusterAuthProductionReason: 'ready',
+            membershipLastUpdateAgeMs: 2400,
             placementEpoch: 14,
             checks: {
               dataDirAccessible: true,
@@ -305,6 +328,7 @@ describe('api client', () => {
               diskHeadroomSufficient: true,
               peerConnectivityReady: true,
               membershipProtocolReady: true,
+              clusterPeerAuthProductionReady: true,
             },
             warnings: [],
           },
@@ -314,6 +338,9 @@ describe('api client', () => {
             version: '0.1.0',
             membershipProtocol: 'raft',
             membershipProtocolReady: true,
+            clusterPeerAuthProductionReady: true,
+            clusterAuthProductionReason: 'ready',
+            membershipLastUpdateAgeMs: 3200,
           },
           topology: {
             mode: 'distributed',
@@ -350,6 +377,8 @@ describe('api client', () => {
       expect(result.data.health.uptimeSeconds).toBe(51.25)
       expect(result.data.health.membershipViewId).toBe('view-123')
       expect(result.data.health.membershipProtocol).toBe('raft')
+      expect(result.data.health.clusterAuthProductionReason).toBe('ready')
+      expect(result.data.health.membershipLastUpdateAgeMs).toBe(2400)
       expect(result.data.health.placementEpoch).toBe(14)
       expect(result.data.health.status).toBe('ok')
       expect(result.data.health.checks).toEqual({
@@ -359,6 +388,7 @@ describe('api client', () => {
         diskHeadroomSufficient: true,
         peerConnectivityReady: true,
         membershipProtocolReady: true,
+        clusterPeerAuthProductionReady: true,
       })
       expect(result.data.health.warnings).toEqual([])
 
@@ -369,6 +399,9 @@ describe('api client', () => {
       expect(result.data.metrics.nodeId).toBe('node-a')
       expect(result.data.metrics.membershipProtocol).toBe('raft')
       expect(result.data.metrics.membershipProtocolReady).toBe(true)
+      expect(result.data.metrics.clusterPeerAuthProductionReady).toBe(true)
+      expect(result.data.metrics.clusterAuthProductionReason).toBe('ready')
+      expect(result.data.metrics.membershipLastUpdateAgeMs).toBe(3200)
       expect(result.data.metrics.placementEpoch).toBe(14)
 
       expect(result.data.topology.mode).toBe('distributed')
@@ -478,6 +511,18 @@ describe('api client', () => {
           mixedOwnerBatchMutationPolicy: 'forward-mixed-owner-batch',
           replicaFanoutOperations: ['put-object', 'copy-object'],
           pendingReplicaFanoutOperations: [],
+          replicaFanoutExecution: {
+            writeDurabilityMode: 'degraded-success',
+            pendingReplicationQueueReadable: true,
+            pendingReplicationBacklogOperations: 3,
+            pendingReplicationBacklogPendingTargets: 5,
+            pendingReplicationBacklogDueTargets: 2,
+            pendingReplicationBacklogFailedTargets: 1,
+            pendingReplicationReplayCyclesTotal: 8,
+            pendingReplicationReplayCyclesSucceeded: 7,
+            pendingReplicationReplayCyclesFailed: 1,
+            pendingReplicationReplayLastSuccessUnixMs: 1709500000000,
+          },
           owners: ['node-a:9000', 'node-b:9000'],
           primaryOwner: 'node-b:9000',
           forwardTarget: 'node-b:9000',
@@ -516,6 +561,11 @@ describe('api client', () => {
       expect(result.data.mixedOwnerBatchMutationPolicy).toBe('forward-mixed-owner-batch')
       expect(result.data.replicaFanoutOperations).toEqual(['put-object', 'copy-object'])
       expect(result.data.pendingReplicaFanoutOperations).toEqual([])
+      expect(result.data.replicaFanoutExecution).not.toBeNull()
+      expect(result.data.replicaFanoutExecution?.writeDurabilityMode).toBe('degraded-success')
+      expect(result.data.replicaFanoutExecution?.pendingReplicationQueueReadable).toBe(true)
+      expect(result.data.replicaFanoutExecution?.pendingReplicationBacklogOperations).toBe(3)
+      expect(result.data.replicaFanoutExecution?.pendingReplicationReplayCyclesTotal).toBe(8)
       expect(result.data.owners).toEqual(['node-a:9000', 'node-b:9000'])
       expect(result.data.primaryOwner).toBe('node-b:9000')
       expect(result.data.forwardTarget).toBe('node-b:9000')

@@ -196,22 +196,55 @@ pub struct PendingMetadataRepairReplayCycleOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PendingMetadataRepairApplyFailure {
-    Transient(String),
-    Permanent(String),
+    Transient { reason: &'static str, error: String },
+    Permanent { reason: &'static str, error: String },
 }
 
 impl PendingMetadataRepairApplyFailure {
+    pub const TRANSIENT_REASON_UNSPECIFIED: &'static str = "transient-error";
+    pub const PERMANENT_REASON_UNSPECIFIED: &'static str = "permanent-error";
+
     pub fn transient(error: impl Into<String>) -> Self {
-        Self::Transient(error.into())
+        Self::transient_with_reason(Self::TRANSIENT_REASON_UNSPECIFIED, error)
+    }
+
+    pub fn transient_with_reason(reason: &'static str, error: impl Into<String>) -> Self {
+        let reason = if reason.trim().is_empty() {
+            Self::TRANSIENT_REASON_UNSPECIFIED
+        } else {
+            reason
+        };
+        Self::Transient {
+            reason,
+            error: error.into(),
+        }
     }
 
     pub fn permanent(error: impl Into<String>) -> Self {
-        Self::Permanent(error.into())
+        Self::permanent_with_reason(Self::PERMANENT_REASON_UNSPECIFIED, error)
+    }
+
+    pub fn permanent_with_reason(reason: &'static str, error: impl Into<String>) -> Self {
+        let reason = if reason.trim().is_empty() {
+            Self::PERMANENT_REASON_UNSPECIFIED
+        } else {
+            reason
+        };
+        Self::Permanent {
+            reason,
+            error: error.into(),
+        }
+    }
+
+    pub const fn canonical_reason(&self) -> &'static str {
+        match self {
+            Self::Transient { reason, .. } | Self::Permanent { reason, .. } => reason,
+        }
     }
 
     pub fn message(&self) -> Option<&str> {
         match self {
-            Self::Transient(error) | Self::Permanent(error) => {
+            Self::Transient { error, .. } | Self::Permanent { error, .. } => {
                 let value = error.trim();
                 if value.is_empty() { None } else { Some(value) }
             }
@@ -219,7 +252,7 @@ impl PendingMetadataRepairApplyFailure {
     }
 
     pub fn is_permanent(&self) -> bool {
-        matches!(self, Self::Permanent(_))
+        matches!(self, Self::Permanent { .. })
     }
 }
 
@@ -366,6 +399,19 @@ pub enum PersistedBucketMutationPreconditionResolution {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistedBucketLifecycleMutationPreconditionResolution {
+    Present {
+        bucket: BucketMetadataState,
+        lifecycle_configuration: Option<BucketLifecycleConfigurationState>,
+    },
+    Tombstoned {
+        tombstone: BucketMetadataTombstoneState,
+        retention_active: bool,
+    },
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersistedObjectMetadataReadResolution {
     Present(ObjectMetadataState),
     Missing,
@@ -375,6 +421,48 @@ pub enum PersistedObjectMetadataReadResolution {
 pub enum PersistedObjectVersionMetadataReadResolution {
     Present(ObjectVersionMetadataState),
     Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistedObjectReadPreconditionResolution {
+    Present(ObjectMetadataState),
+    MissingObject,
+    MissingBucket,
+    TombstonedBucket(BucketMetadataTombstoneState),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistedObjectMutationPreconditionResolution {
+    PresentBucket {
+        bucket: BucketMetadataState,
+        object: Option<ObjectMetadataState>,
+    },
+    TombstonedBucket {
+        tombstone: BucketMetadataTombstoneState,
+        retention_active: bool,
+    },
+    MissingBucket,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistedObjectVersionReadPreconditionResolution {
+    Present(ObjectVersionMetadataState),
+    MissingVersion,
+    MissingBucket,
+    TombstonedBucket(BucketMetadataTombstoneState),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PersistedObjectVersionMutationPreconditionResolution {
+    PresentBucket {
+        bucket: BucketMetadataState,
+        version: Option<ObjectVersionMetadataState>,
+    },
+    TombstonedBucket {
+        tombstone: BucketMetadataTombstoneState,
+        retention_active: bool,
+    },
+    MissingBucket,
 }
 
 #[derive(Debug)]
@@ -665,6 +753,40 @@ pub enum MetadataRepairExecutionError {
     InvalidPlan {
         reason: MetadataRepairPlanValidationError,
     },
+}
+
+impl MetadataRepairExecutionError {
+    pub const fn canonical_reason(&self) -> &'static str {
+        match self {
+            Self::SourceViewMismatch { .. } => "source-view-mismatch",
+            Self::TargetViewMismatch { .. } => "target-view-mismatch",
+            Self::MissingSourceBucket { .. } => "missing-source-bucket",
+            Self::SourceContainsBucketForDelete { .. } => "source-contains-bucket-for-delete",
+            Self::MissingSourceBucketLifecycleConfiguration { .. } => {
+                "missing-source-bucket-lifecycle-configuration"
+            }
+            Self::SourceContainsBucketLifecycleConfigurationForDelete { .. } => {
+                "source-contains-bucket-lifecycle-configuration-for-delete"
+            }
+            Self::MissingSourceBucketTombstone { .. } => "missing-source-bucket-tombstone",
+            Self::SourceContainsBucketTombstoneForDelete { .. } => {
+                "source-contains-bucket-tombstone-for-delete"
+            }
+            Self::MissingSourceObject { .. } => "missing-source-object",
+            Self::MissingSourceObjectVersion { .. } => "missing-source-object-version",
+            Self::SourceContainsObjectVersionForDelete { .. } => {
+                "source-contains-object-version-for-delete"
+            }
+            Self::InvalidSourceObjectStateForUpsert { .. } => {
+                "invalid-source-object-state-for-upsert"
+            }
+            Self::InvalidSourceObjectStateForTombstone { .. } => {
+                "invalid-source-object-state-for-tombstone"
+            }
+            Self::MissingTargetObjectForTombstone { .. } => "missing-target-object-for-tombstone",
+            Self::InvalidPlan { .. } => "invalid-repair-plan",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1348,15 +1470,18 @@ mod tests {
         PendingMetadataRepairApplyFailure, PendingMetadataRepairEnqueueOutcome,
         PendingMetadataRepairFailureWithBackoffOutcome, PendingMetadataRepairLeaseOutcome,
         PendingMetadataRepairPlan, PendingMetadataRepairQueue, PendingMetadataRepairQueueSummary,
-        PendingMetadataRepairReplayCycleOutcome,
+        PendingMetadataRepairReplayCycleOutcome, PendingMetadataRepairReplayExecutionConfig,
         PersistedBucketLifecycleConfigurationOperationError,
-        PersistedBucketLifecycleConfigurationReadResolution, PersistedBucketMetadataOperationError,
-        PersistedBucketMetadataReadResolution, PersistedBucketMutationPreconditionResolution,
-        PersistedBucketPresenceReadResolution, PersistedMetadataQueryError,
-        PersistedMetadataQueryableStateError, PersistedMetadataState,
+        PersistedBucketLifecycleConfigurationReadResolution,
+        PersistedBucketLifecycleMutationPreconditionResolution,
+        PersistedBucketMetadataOperationError, PersistedBucketMetadataReadResolution,
+        PersistedBucketMutationPreconditionResolution, PersistedBucketPresenceReadResolution,
+        PersistedMetadataQueryError, PersistedMetadataQueryableStateError, PersistedMetadataState,
         PersistedObjectMetadataOperationError, PersistedObjectMetadataReadResolution,
+        PersistedObjectMutationPreconditionResolution, PersistedObjectReadPreconditionResolution,
         PersistedObjectVersionMetadataOperationError, PersistedObjectVersionMetadataReadResolution,
-        acknowledge_pending_metadata_repair_plan,
+        PersistedObjectVersionMutationPreconditionResolution,
+        PersistedObjectVersionReadPreconditionResolution, acknowledge_pending_metadata_repair_plan,
         apply_bucket_lifecycle_configuration_operation_to_persisted_state,
         apply_bucket_metadata_operation_to_persisted_state, apply_metadata_repair_plan,
         apply_metadata_repair_plan_with_lifecycle_configs,
@@ -1377,12 +1502,19 @@ mod tests {
         replay_pending_metadata_repairs_once_with_apply_fn,
         replay_pending_metadata_repairs_once_with_classified_apply_fn,
         replay_pending_metadata_repairs_once_with_persisted_state_apply,
+        replay_pending_metadata_repairs_once_with_persisted_state_apply_and_observer,
         resolve_bucket_lifecycle_configuration_from_persisted_state,
+        resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state,
         resolve_bucket_metadata_from_persisted_state,
         resolve_bucket_mutation_preconditions_from_persisted_state,
         resolve_bucket_presence_from_persisted_state, resolve_object_metadata_from_persisted_state,
-        resolve_object_version_metadata_from_persisted_state, summarize_metadata_repair_plan,
-        summarize_pending_metadata_repair_queue, validate_metadata_repair_plan,
+        resolve_object_mutation_preconditions_from_persisted_state,
+        resolve_object_read_preconditions_from_persisted_state,
+        resolve_object_version_metadata_from_persisted_state,
+        resolve_object_version_mutation_preconditions_from_persisted_state,
+        resolve_object_version_read_preconditions_from_persisted_state,
+        summarize_metadata_repair_plan, summarize_pending_metadata_repair_queue,
+        validate_metadata_repair_plan,
     };
     use crate::metadata::index::{MetadataQuery, MetadataQueryError, MetadataVersionsQuery};
     use crate::metadata::state::{
@@ -2833,6 +2965,50 @@ mod tests {
     }
 
     #[test]
+    fn pending_metadata_repair_queue_persist_does_not_leave_temp_files_on_success() {
+        let temp_dir = TempDir::new().expect("temp dir");
+        let queue_path = temp_dir
+            .path()
+            .join(".maxio-runtime/pending-metadata-repair.json");
+        let pending = PendingMetadataRepairPlan::new(
+            "repair-persist-temp-leak-check",
+            111,
+            MetadataRepairPlan {
+                source_view_id: "view-a".to_string(),
+                target_view_id: "view-b".to_string(),
+                actions: vec![MetadataReconcileAction::UpsertObject {
+                    bucket: "photos".to_string(),
+                    key: "docs/a.txt".to_string(),
+                    version_id: Some("v1".to_string()),
+                }],
+            },
+        )
+        .expect("pending plan");
+
+        let mut queue = PendingMetadataRepairQueue::default();
+        enqueue_pending_metadata_repair_plan(&mut queue, pending);
+        persist_pending_metadata_repair_queue(queue_path.as_path(), &queue).expect("persist queue");
+
+        let parent = queue_path
+            .parent()
+            .expect("queue path should include runtime directory");
+        let mut leaked_temp_files = Vec::new();
+        for entry in std::fs::read_dir(parent).expect("runtime directory should be readable") {
+            let entry = entry.expect("runtime directory entry should be readable");
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if file_name.starts_with(".pending-metadata-repair.json.tmp-") {
+                leaked_temp_files.push(file_name.to_string());
+            }
+        }
+
+        assert!(
+            leaked_temp_files.is_empty(),
+            "temporary metadata queue files should not remain after successful persist: {leaked_temp_files:?}"
+        );
+    }
+
+    #[test]
     fn replay_pending_metadata_repairs_once_acknowledges_successful_apply() {
         let temp = TempDir::new().expect("temp dir");
         let queue_path = temp.path().join("pending-metadata-repair-queue.json");
@@ -3125,6 +3301,77 @@ mod tests {
     }
 
     #[test]
+    fn replay_pending_metadata_repairs_once_with_persisted_state_apply_observes_permanent_failure_reason()
+     {
+        let temp = TempDir::new().expect("temp dir");
+        let queue_path = temp.path().join("pending-metadata-repair-queue.json");
+        let state_path = temp.path().join("cluster-metadata-state.json");
+        persist_persisted_metadata_state(
+            &state_path,
+            &PersistedMetadataState {
+                view_id: "view-live".to_string(),
+                buckets: Vec::new(),
+                bucket_tombstones: Vec::new(),
+                objects: Vec::new(),
+                object_versions: Vec::new(),
+                bucket_lifecycle_configurations: Vec::new(),
+            },
+        )
+        .expect("persisted state should save");
+        let pending = PendingMetadataRepairPlan::new(
+            "repair-persisted-apply-permanent-observer",
+            100,
+            MetadataRepairPlan {
+                source_view_id: "source-view".to_string(),
+                target_view_id: "view-stale".to_string(),
+                actions: vec![MetadataReconcileAction::UpsertBucket {
+                    bucket: "photos".to_string(),
+                    versioning_enabled: true,
+                    lifecycle_enabled: false,
+                }],
+            },
+        )
+        .expect("valid pending plan");
+        let mut queue = PendingMetadataRepairQueue::default();
+        queue.plans.push(pending);
+        persist_pending_metadata_repair_queue(&queue_path, &queue).expect("persist queue");
+
+        let permanent_reasons = std::cell::RefCell::new(Vec::new());
+        let outcome = replay_pending_metadata_repairs_once_with_persisted_state_apply_and_observer(
+            &queue_path,
+            &state_path,
+            PendingMetadataRepairReplayExecutionConfig {
+                now_unix_ms: 100,
+                max_candidates: 16,
+                lease_ms: 250,
+                backoff_base_ms: 500,
+                backoff_max_ms: 5_000,
+            },
+            |failure| {
+                permanent_reasons
+                    .borrow_mut()
+                    .push(failure.canonical_reason().to_string());
+            },
+        )
+        .expect("replay cycle");
+        assert_eq!(
+            outcome,
+            PendingMetadataRepairReplayCycleOutcome {
+                scanned_plans: 1,
+                leased_plans: 1,
+                acknowledged_plans: 0,
+                failed_plans: 0,
+                dropped_plans: 1,
+                skipped_plans: 0,
+            }
+        );
+        assert_eq!(
+            permanent_reasons.into_inner(),
+            vec!["target-view-mismatch".to_string()]
+        );
+    }
+
+    #[test]
     fn apply_pending_metadata_repair_plan_to_persisted_state_bootstraps_and_persists() {
         let temp = TempDir::new().expect("temp dir");
         let state_path = temp
@@ -3199,6 +3446,47 @@ mod tests {
     }
 
     #[test]
+    fn persisted_metadata_state_persist_does_not_leave_temp_files_on_success() {
+        let temp = TempDir::new().expect("temp dir");
+        let state_path = temp
+            .path()
+            .join(".maxio-runtime/cluster-metadata-state.json");
+        let persisted = PersistedMetadataState {
+            view_id: "view-source".to_string(),
+            buckets: vec![BucketMetadataState {
+                bucket: "photos".to_string(),
+                versioning_enabled: true,
+                lifecycle_enabled: false,
+            }],
+            bucket_tombstones: Vec::new(),
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        persist_persisted_metadata_state(state_path.as_path(), &persisted)
+            .expect("persisted state should save");
+
+        let parent = state_path
+            .parent()
+            .expect("state path should include runtime directory");
+        let mut leaked_temp_files = Vec::new();
+        for entry in std::fs::read_dir(parent).expect("runtime directory should be readable") {
+            let entry = entry.expect("runtime directory entry should be readable");
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if file_name.starts_with(".cluster-metadata-state.json.tmp-") {
+                leaked_temp_files.push(file_name.to_string());
+            }
+        }
+
+        assert!(
+            leaked_temp_files.is_empty(),
+            "temporary persisted metadata state files should not remain after successful persist: {leaked_temp_files:?}"
+        );
+    }
+
+    #[test]
     fn apply_pending_metadata_repair_plan_to_persisted_state_rejects_target_view_mismatch() {
         let temp = TempDir::new().expect("temp dir");
         let state_path = temp
@@ -3255,8 +3543,9 @@ mod tests {
         let failure = classify_pending_metadata_repair_apply_error(&error);
         assert!(matches!(
             failure,
-            PendingMetadataRepairApplyFailure::Transient(_)
+            PendingMetadataRepairApplyFailure::Transient { .. }
         ));
+        assert_eq!(failure.canonical_reason(), "persisted-state-load-failed");
         assert_eq!(failure.message(), Some("permission denied"));
     }
 
@@ -3271,10 +3560,25 @@ mod tests {
 
         let failure = classify_pending_metadata_repair_apply_error(&error);
         assert!(failure.is_permanent());
+        assert_eq!(failure.canonical_reason(), "target-view-mismatch");
         let message = failure
             .message()
             .expect("permanent classification should include message");
         assert!(message.contains("TargetViewMismatch"));
+    }
+
+    #[test]
+    fn metadata_repair_execution_error_canonical_reason_is_stable_for_source_state_guards() {
+        let error = MetadataRepairExecutionError::SourceContainsObjectVersionForDelete {
+            bucket: "photos".to_string(),
+            key: "object.bin".to_string(),
+            version_id: "v1".to_string(),
+        };
+
+        assert_eq!(
+            error.canonical_reason(),
+            "source-contains-object-version-for-delete"
+        );
     }
 
     #[test]
@@ -3316,6 +3620,7 @@ mod tests {
         .expect_err("stale target view should classify as permanent failure");
 
         assert!(failure.is_permanent());
+        assert_eq!(failure.canonical_reason(), "target-view-mismatch");
         let message = failure
             .message()
             .expect("permanent failure should include message");
@@ -4502,6 +4807,169 @@ mod tests {
     }
 
     #[test]
+    fn resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state_resolves_state() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: vec![
+                BucketMetadataState {
+                    bucket: "present-with-config".to_string(),
+                    versioning_enabled: false,
+                    lifecycle_enabled: true,
+                },
+                BucketMetadataState {
+                    bucket: "present-without-config".to_string(),
+                    versioning_enabled: true,
+                    lifecycle_enabled: false,
+                },
+            ],
+            bucket_tombstones: vec![
+                BucketMetadataTombstoneState {
+                    bucket: "active".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 1_000,
+                },
+                BucketMetadataTombstoneState {
+                    bucket: "expired".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 200,
+                },
+            ],
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: vec![BucketLifecycleConfigurationState {
+                bucket: "present-with-config".to_string(),
+                configuration_xml: "<LifecycleConfiguration/>".to_string(),
+                updated_at_unix_ms: 1234,
+            }],
+        };
+
+        let present_with_config =
+            resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state(
+                &state,
+                "present-with-config",
+                Some("view-a"),
+                500,
+            )
+            .expect("present bucket with lifecycle config should resolve");
+        assert_eq!(
+            present_with_config,
+            PersistedBucketLifecycleMutationPreconditionResolution::Present {
+                bucket: BucketMetadataState {
+                    bucket: "present-with-config".to_string(),
+                    versioning_enabled: false,
+                    lifecycle_enabled: true,
+                },
+                lifecycle_configuration: Some(BucketLifecycleConfigurationState {
+                    bucket: "present-with-config".to_string(),
+                    configuration_xml: "<LifecycleConfiguration/>".to_string(),
+                    updated_at_unix_ms: 1234,
+                }),
+            }
+        );
+
+        let present_without_config =
+            resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state(
+                &state,
+                "present-without-config",
+                Some("view-a"),
+                500,
+            )
+            .expect("present bucket without lifecycle config should resolve");
+        assert_eq!(
+            present_without_config,
+            PersistedBucketLifecycleMutationPreconditionResolution::Present {
+                bucket: BucketMetadataState {
+                    bucket: "present-without-config".to_string(),
+                    versioning_enabled: true,
+                    lifecycle_enabled: false,
+                },
+                lifecycle_configuration: None,
+            }
+        );
+
+        let active = resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state(
+            &state,
+            "active",
+            Some("view-a"),
+            500,
+        )
+        .expect("active tombstone should resolve");
+        assert_eq!(
+            active,
+            PersistedBucketLifecycleMutationPreconditionResolution::Tombstoned {
+                tombstone: BucketMetadataTombstoneState {
+                    bucket: "active".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 1_000,
+                },
+                retention_active: true,
+            }
+        );
+
+        let expired = resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state(
+            &state,
+            "expired",
+            Some("view-a"),
+            500,
+        )
+        .expect("expired tombstone should resolve");
+        assert_eq!(
+            expired,
+            PersistedBucketLifecycleMutationPreconditionResolution::Tombstoned {
+                tombstone: BucketMetadataTombstoneState {
+                    bucket: "expired".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 200,
+                },
+                retention_active: false,
+            }
+        );
+
+        let missing = resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state(
+            &state,
+            "missing",
+            Some("view-a"),
+            500,
+        )
+        .expect("missing bucket should resolve");
+        assert_eq!(
+            missing,
+            PersistedBucketLifecycleMutationPreconditionResolution::Missing
+        );
+    }
+
+    #[test]
+    fn resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state_rejects_view_mismatch()
+    {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: vec![BucketMetadataState {
+                bucket: "present".to_string(),
+                versioning_enabled: true,
+                lifecycle_enabled: false,
+            }],
+            bucket_tombstones: Vec::new(),
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state(
+            &state,
+            "present",
+            Some("view-b"),
+            500,
+        );
+        assert_eq!(
+            result,
+            Err(PersistedMetadataQueryError::ViewIdMismatch {
+                expected_view_id: "view-b".to_string(),
+                persisted_view_id: "view-a".to_string(),
+            })
+        );
+    }
+
+    #[test]
     fn resolve_object_metadata_from_persisted_state_returns_present_state() {
         let state = PersistedMetadataState {
             view_id: "view-a".to_string(),
@@ -4611,6 +5079,228 @@ mod tests {
     }
 
     #[test]
+    fn resolve_object_read_preconditions_from_persisted_state_reports_missing_bucket() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: Vec::new(),
+            bucket_tombstones: Vec::new(),
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_read_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            Some("view-a"),
+        )
+        .expect("missing bucket should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectReadPreconditionResolution::MissingBucket
+        );
+    }
+
+    #[test]
+    fn resolve_object_read_preconditions_from_persisted_state_reports_tombstoned_bucket() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: Vec::new(),
+            bucket_tombstones: vec![BucketMetadataTombstoneState {
+                bucket: "photos".to_string(),
+                deleted_at_unix_ms: 100,
+                retain_until_unix_ms: 200,
+            }],
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_read_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            Some("view-a"),
+        )
+        .expect("tombstoned bucket should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectReadPreconditionResolution::TombstonedBucket(
+                BucketMetadataTombstoneState {
+                    bucket: "photos".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 200,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_object_read_preconditions_from_persisted_state_reports_missing_object() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: vec![BucketMetadataState {
+                bucket: "photos".to_string(),
+                versioning_enabled: true,
+                lifecycle_enabled: false,
+            }],
+            bucket_tombstones: Vec::new(),
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_read_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            Some("view-a"),
+        )
+        .expect("missing object should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectReadPreconditionResolution::MissingObject
+        );
+    }
+
+    #[test]
+    fn resolve_object_read_preconditions_from_persisted_state_reports_present_object() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: vec![BucketMetadataState {
+                bucket: "photos".to_string(),
+                versioning_enabled: true,
+                lifecycle_enabled: false,
+            }],
+            bucket_tombstones: Vec::new(),
+            objects: vec![ObjectMetadataState {
+                bucket: "photos".to_string(),
+                key: "dog.jpg".to_string(),
+                latest_version_id: Some("v3".to_string()),
+                is_delete_marker: false,
+            }],
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_read_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            Some("view-a"),
+        )
+        .expect("present object should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectReadPreconditionResolution::Present(ObjectMetadataState {
+                bucket: "photos".to_string(),
+                key: "dog.jpg".to_string(),
+                latest_version_id: Some("v3".to_string()),
+                is_delete_marker: false,
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_object_mutation_preconditions_from_persisted_state_reports_missing_bucket() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: Vec::new(),
+            bucket_tombstones: Vec::new(),
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_mutation_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            Some("view-a"),
+            150,
+        )
+        .expect("missing bucket should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectMutationPreconditionResolution::MissingBucket
+        );
+    }
+
+    #[test]
+    fn resolve_object_mutation_preconditions_from_persisted_state_reports_tombstoned_bucket() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: Vec::new(),
+            bucket_tombstones: vec![BucketMetadataTombstoneState {
+                bucket: "photos".to_string(),
+                deleted_at_unix_ms: 100,
+                retain_until_unix_ms: 200,
+            }],
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_mutation_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            Some("view-a"),
+            150,
+        )
+        .expect("tombstoned bucket should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectMutationPreconditionResolution::TombstonedBucket {
+                tombstone: BucketMetadataTombstoneState {
+                    bucket: "photos".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 200,
+                },
+                retention_active: true,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_object_mutation_preconditions_from_persisted_state_reports_bucket_and_optional_object()
+     {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: vec![BucketMetadataState {
+                bucket: "photos".to_string(),
+                versioning_enabled: true,
+                lifecycle_enabled: false,
+            }],
+            bucket_tombstones: Vec::new(),
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_mutation_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            Some("view-a"),
+            150,
+        )
+        .expect("present bucket should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectMutationPreconditionResolution::PresentBucket {
+                bucket: BucketMetadataState {
+                    bucket: "photos".to_string(),
+                    versioning_enabled: true,
+                    lifecycle_enabled: false,
+                },
+                object: None,
+            }
+        );
+    }
+
+    #[test]
     fn resolve_object_version_metadata_from_persisted_state_returns_present_state() {
         let state = PersistedMetadataState {
             view_id: "view-a".to_string(),
@@ -4653,6 +5343,234 @@ mod tests {
                 is_delete_marker: false,
                 is_latest: true,
             })
+        );
+    }
+
+    #[test]
+    fn resolve_object_version_read_preconditions_from_persisted_state_reports_missing_bucket() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: Vec::new(),
+            bucket_tombstones: Vec::new(),
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_version_read_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            "v3",
+            Some("view-a"),
+        )
+        .expect("missing bucket should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectVersionReadPreconditionResolution::MissingBucket
+        );
+    }
+
+    #[test]
+    fn resolve_object_version_read_preconditions_from_persisted_state_reports_tombstoned_bucket() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: Vec::new(),
+            bucket_tombstones: vec![BucketMetadataTombstoneState {
+                bucket: "photos".to_string(),
+                deleted_at_unix_ms: 100,
+                retain_until_unix_ms: 200,
+            }],
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_version_read_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            "v3",
+            Some("view-a"),
+        )
+        .expect("tombstoned bucket should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectVersionReadPreconditionResolution::TombstonedBucket(
+                BucketMetadataTombstoneState {
+                    bucket: "photos".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 200,
+                }
+            )
+        );
+    }
+
+    #[test]
+    fn resolve_object_version_read_preconditions_from_persisted_state_reports_missing_version() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: vec![BucketMetadataState {
+                bucket: "photos".to_string(),
+                versioning_enabled: true,
+                lifecycle_enabled: false,
+            }],
+            bucket_tombstones: Vec::new(),
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_version_read_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            "v3",
+            Some("view-a"),
+        )
+        .expect("missing version should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectVersionReadPreconditionResolution::MissingVersion
+        );
+    }
+
+    #[test]
+    fn resolve_object_version_read_preconditions_from_persisted_state_reports_present_version() {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: vec![BucketMetadataState {
+                bucket: "photos".to_string(),
+                versioning_enabled: true,
+                lifecycle_enabled: false,
+            }],
+            bucket_tombstones: Vec::new(),
+            objects: vec![ObjectMetadataState {
+                bucket: "photos".to_string(),
+                key: "dog.jpg".to_string(),
+                latest_version_id: Some("v3".to_string()),
+                is_delete_marker: false,
+            }],
+            object_versions: vec![ObjectVersionMetadataState {
+                bucket: "photos".to_string(),
+                key: "dog.jpg".to_string(),
+                version_id: "v3".to_string(),
+                is_delete_marker: false,
+                is_latest: true,
+            }],
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_version_read_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            "v3",
+            Some("view-a"),
+        )
+        .expect("present version should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectVersionReadPreconditionResolution::Present(ObjectVersionMetadataState {
+                bucket: "photos".to_string(),
+                key: "dog.jpg".to_string(),
+                version_id: "v3".to_string(),
+                is_delete_marker: false,
+                is_latest: true,
+            })
+        );
+    }
+
+    #[test]
+    fn resolve_object_version_mutation_preconditions_from_persisted_state_reports_tombstoned_bucket()
+     {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: Vec::new(),
+            bucket_tombstones: vec![BucketMetadataTombstoneState {
+                bucket: "photos".to_string(),
+                deleted_at_unix_ms: 100,
+                retain_until_unix_ms: 200,
+            }],
+            objects: Vec::new(),
+            object_versions: Vec::new(),
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_version_mutation_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            "v3",
+            Some("view-a"),
+            250,
+        )
+        .expect("tombstoned bucket should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectVersionMutationPreconditionResolution::TombstonedBucket {
+                tombstone: BucketMetadataTombstoneState {
+                    bucket: "photos".to_string(),
+                    deleted_at_unix_ms: 100,
+                    retain_until_unix_ms: 200,
+                },
+                retention_active: false,
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_object_version_mutation_preconditions_from_persisted_state_reports_bucket_and_optional_version()
+     {
+        let state = PersistedMetadataState {
+            view_id: "view-a".to_string(),
+            buckets: vec![BucketMetadataState {
+                bucket: "photos".to_string(),
+                versioning_enabled: true,
+                lifecycle_enabled: false,
+            }],
+            bucket_tombstones: Vec::new(),
+            objects: vec![ObjectMetadataState {
+                bucket: "photos".to_string(),
+                key: "dog.jpg".to_string(),
+                latest_version_id: Some("v3".to_string()),
+                is_delete_marker: false,
+            }],
+            object_versions: vec![ObjectVersionMetadataState {
+                bucket: "photos".to_string(),
+                key: "dog.jpg".to_string(),
+                version_id: "v3".to_string(),
+                is_delete_marker: false,
+                is_latest: true,
+            }],
+            bucket_lifecycle_configurations: Vec::new(),
+        };
+
+        let result = resolve_object_version_mutation_preconditions_from_persisted_state(
+            &state,
+            "photos",
+            "dog.jpg",
+            "v3",
+            Some("view-a"),
+            150,
+        )
+        .expect("present bucket should resolve");
+        assert_eq!(
+            result,
+            PersistedObjectVersionMutationPreconditionResolution::PresentBucket {
+                bucket: BucketMetadataState {
+                    bucket: "photos".to_string(),
+                    versioning_enabled: true,
+                    lifecycle_enabled: false,
+                },
+                version: Some(ObjectVersionMetadataState {
+                    bucket: "photos".to_string(),
+                    key: "dog.jpg".to_string(),
+                    version_id: "v3".to_string(),
+                    is_delete_marker: false,
+                    is_latest: true,
+                }),
+            }
         );
     }
 
@@ -4765,7 +5683,10 @@ mod tests {
             expected_view_id: "view-a".to_string(),
             persisted_view_id: "view-b".to_string(),
         };
-        assert_eq!(view_mismatch.canonical_reason(), "persisted-view-id-mismatch");
+        assert_eq!(
+            view_mismatch.canonical_reason(),
+            "persisted-view-id-mismatch"
+        );
 
         let invalid_query =
             PersistedMetadataQueryError::InvalidQuery(MetadataQueryError::InvalidVersionsMarker);

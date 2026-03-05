@@ -107,7 +107,7 @@ pub(super) async fn list_objects(
         &headers,
         &strategy_params,
     );
-    if let Some(resp) = storage::reject_consensus_index_peer_fan_in_transport_unready(
+    if let Some(resp) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
         &state,
         &topology,
         internal_local_only,
@@ -139,6 +139,10 @@ pub(super) async fn list_objects(
             state.metadata_listing_strategy,
             "ListConsoleObjects",
             fan_in.responder_membership_views.as_slice(),
+            state
+                .config
+                .cluster_auth_token()
+                .is_some_and(|value| !value.trim().is_empty()),
         ) {
             return resp;
         }
@@ -146,7 +150,6 @@ pub(super) async fn list_objects(
             &state,
             fan_in.responded_nodes.as_slice(),
         );
-        let merged = merge_object_listing_objects(fan_in.objects);
         if state.metadata_listing_strategy == ClusterMetadataListingStrategy::ConsensusIndex
             && !internal_local_only
         {
@@ -162,7 +165,7 @@ pub(super) async fn list_objects(
             };
             let canonical = match hydrate_objects_from_consensus_states(
                 "ListConsoleObjects",
-                merged.as_slice(),
+                fan_in.objects.as_slice(),
                 canonical_rows.as_slice(),
             ) {
                 Ok(objects) => objects,
@@ -170,7 +173,7 @@ pub(super) async fn list_objects(
             };
             (canonical, coverage)
         } else {
-            (merged, coverage)
+            (merge_object_listing_objects(fan_in.objects), coverage)
         }
     } else {
         let objects = match state.storage.list_objects(&bucket, &prefix).await {
@@ -368,8 +371,13 @@ fn hydrate_objects_from_consensus_states(
     objects: &[ObjectMeta],
     states: &[ObjectMetadataState],
 ) -> Result<Vec<ObjectMeta>, String> {
+    let mut by_key_and_version = BTreeMap::<(String, String), ObjectMeta>::new();
     let mut by_key = BTreeMap::<String, ObjectMeta>::new();
     for object in objects {
+        let version_id = object.version_id.as_deref().unwrap_or("null").to_string();
+        by_key_and_version
+            .entry((object.key.clone(), version_id))
+            .or_insert_with(|| object.clone());
         by_key
             .entry(object.key.clone())
             .or_insert_with(|| object.clone());
@@ -377,13 +385,24 @@ fn hydrate_objects_from_consensus_states(
 
     let mut page = Vec::with_capacity(states.len());
     for state in states {
+        let version_id = state
+            .latest_version_id
+            .as_deref()
+            .unwrap_or("null")
+            .to_string();
         let key = state.key.clone();
-        let hydrated = by_key.get(&key).cloned().ok_or_else(|| {
-            format!(
-                "Distributed metadata listing operation '{}' cannot hydrate canonical metadata row for key '{}'",
-                operation, key
-            )
-        })?;
+        let hydrated = by_key_and_version
+            .get(&(key.clone(), version_id))
+            .cloned()
+            // Peer ListObjects payloads can omit version ids while canonical metadata rows
+            // remain version-aware; fall back to key-only hydration for current-object pages.
+            .or_else(|| by_key.get(&key).cloned())
+            .ok_or_else(|| {
+                format!(
+                    "Distributed metadata listing operation '{}' cannot hydrate canonical metadata row for key '{}'",
+                    operation, key
+                )
+            })?;
         page.push(hydrated);
     }
 
@@ -416,6 +435,14 @@ pub(super) async fn upload_object(
     let topology = runtime_topology_snapshot(&state);
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
+    }
+    if let Err(err) = storage::ensure_consensus_index_object_mutation_preconditions(
+        &state,
+        &topology,
+        &bucket,
+        "UploadConsoleObject",
+    ) {
+        return *err;
     }
 
     let content_type = headers
@@ -464,6 +491,14 @@ pub(super) async fn delete_object_api(
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
     }
+    if let Err(err) = storage::ensure_consensus_index_object_mutation_preconditions(
+        &state,
+        &topology,
+        &bucket,
+        "DeleteConsoleObject",
+    ) {
+        return *err;
+    }
 
     match state.storage.delete_object(&bucket, &key).await {
         Ok(result) => {
@@ -497,6 +532,17 @@ pub(super) async fn download_object(
 ) -> Response {
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
+    }
+    let topology = runtime_topology_snapshot(&state);
+    if let Err(err) = storage::ensure_consensus_index_object_read_authority(
+        &state,
+        &topology,
+        &bucket,
+        &key,
+        None,
+        "DownloadConsoleObject",
+    ) {
+        return *err;
     }
 
     let (reader, meta) = match state.storage.get_object(&bucket, &key).await {
@@ -538,6 +584,14 @@ pub(super) async fn create_folder(
     if let Err(resp) = storage::ensure_bucket_exists(&state, &bucket).await {
         return resp;
     }
+    if let Err(err) = storage::ensure_consensus_index_object_mutation_preconditions(
+        &state,
+        &topology,
+        &bucket,
+        "CreateConsoleFolder",
+    ) {
+        return *err;
+    }
 
     let name = body.name.trim().trim_matches('/');
     if name.is_empty() {
@@ -570,5 +624,71 @@ pub(super) async fn create_folder(
             response::ok()
         }
         Err(e) => storage::map_bucket_storage_err(e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn object_meta(key: &str, version_id: Option<&str>, last_modified: &str) -> ObjectMeta {
+        ObjectMeta {
+            key: key.to_string(),
+            size: 1,
+            etag: "\"etag\"".to_string(),
+            content_type: "application/octet-stream".to_string(),
+            last_modified: last_modified.to_string(),
+            version_id: version_id.map(ToOwned::to_owned),
+            is_delete_marker: false,
+            storage_format: None,
+            checksum_algorithm: None,
+            checksum_value: None,
+        }
+    }
+
+    #[test]
+    fn hydrate_objects_from_consensus_states_prefers_key_and_version_match() {
+        let objects = vec![
+            object_meta("docs/a.txt", Some("old"), "2026-03-05T10:00:00Z"),
+            object_meta("docs/a.txt", Some("new"), "2026-03-05T10:01:00Z"),
+        ];
+        let states = vec![ObjectMetadataState {
+            bucket: "bucket".to_string(),
+            key: "docs/a.txt".to_string(),
+            latest_version_id: Some("new".to_string()),
+            is_delete_marker: false,
+        }];
+
+        let hydrated = hydrate_objects_from_consensus_states(
+            "ListConsoleObjects",
+            objects.as_slice(),
+            states.as_slice(),
+        )
+        .expect("canonical row should hydrate");
+
+        assert_eq!(hydrated.len(), 1);
+        assert_eq!(hydrated[0].version_id.as_deref(), Some("new"));
+        assert_eq!(hydrated[0].last_modified, "2026-03-05T10:01:00Z");
+    }
+
+    #[test]
+    fn hydrate_objects_from_consensus_states_falls_back_to_key_when_version_id_missing() {
+        let objects = vec![object_meta("docs/a.txt", None, "2026-03-05T10:00:00Z")];
+        let states = vec![ObjectMetadataState {
+            bucket: "bucket".to_string(),
+            key: "docs/a.txt".to_string(),
+            latest_version_id: Some("v1".to_string()),
+            is_delete_marker: false,
+        }];
+
+        let hydrated = hydrate_objects_from_consensus_states(
+            "ListConsoleObjects",
+            objects.as_slice(),
+            states.as_slice(),
+        )
+        .expect("canonical row should hydrate with key-only fallback");
+
+        assert_eq!(hydrated.len(), 1);
+        assert_eq!(hydrated[0].key, "docs/a.txt");
     }
 }

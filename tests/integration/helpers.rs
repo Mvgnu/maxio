@@ -52,6 +52,10 @@ pub(crate) fn make_test_config(
         chunk_size,
         parity_shards,
         min_disk_headroom_bytes: 268_435_456,
+        pending_replication_due_warning_threshold: None,
+        pending_rebalance_due_warning_threshold: None,
+        pending_membership_propagation_due_warning_threshold: None,
+        pending_metadata_repair_due_warning_threshold: None,
     }
 }
 

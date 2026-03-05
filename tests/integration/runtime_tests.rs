@@ -101,6 +101,34 @@ async fn start_peer_healthz_stub_with_matching_single_peer_view(node_id: &str) -
     peer
 }
 
+async fn start_peer_healthz_stub_with_matching_single_peer_view_and_epoch(
+    node_id: &str,
+    placement_epoch: u64,
+) -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("peer healthz listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("peer healthz listener should expose local address");
+    let peer = addr.to_string();
+    let membership_view_id = membership_view_id_with_self(node_id, std::slice::from_ref(&peer));
+    let app = axum::Router::new()
+        .route("/healthz", axum::routing::get(peer_healthz_handler))
+        .with_state(PeerHealthStubState {
+            membership_view_id,
+            cluster_id: None,
+            cluster_peers: Vec::new(),
+            placement_epoch: Some(placement_epoch),
+        });
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("peer healthz stub should serve");
+    });
+    peer
+}
+
 async fn start_peer_healthz_stub_with_discovery_snapshot(
     local_node_id: &str,
     membership_view_id: &str,
@@ -400,6 +428,29 @@ struct MembershipPropagationRetryCaptureState {
     served_statuses: Arc<Mutex<Vec<u16>>>,
 }
 
+#[derive(Clone, Debug)]
+struct JoinAuthorizeProbeCapture {
+    forwarded_by: Option<String>,
+    join_cluster_id: Option<String>,
+    join_node_id: Option<String>,
+    auth_token: Option<String>,
+}
+
+#[derive(Clone)]
+struct JoinAuthorizeProbeCaptureState {
+    records: Arc<Mutex<Vec<JoinAuthorizeProbeCapture>>>,
+    response_status: StatusCode,
+}
+
+impl JoinAuthorizeProbeCaptureState {
+    fn with_response_status(response_status: StatusCode) -> Self {
+        Self {
+            records: Arc::new(Mutex::new(Vec::new())),
+            response_status,
+        }
+    }
+}
+
 impl MembershipPropagationRetryCaptureState {
     fn new(response_statuses: Vec<StatusCode>) -> Self {
         Self {
@@ -501,6 +552,46 @@ async fn membership_propagation_retry_capture_handler(
     )
 }
 
+async fn join_authorize_probe_capture_handler(
+    axum::extract::State(state): axum::extract::State<JoinAuthorizeProbeCaptureState>,
+    headers: axum::http::HeaderMap,
+) -> (StatusCode, axum::Json<serde_json::Value>) {
+    let forwarded_by = headers
+        .get("x-maxio-forwarded-by")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let join_cluster_id = headers
+        .get("x-maxio-join-cluster-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let join_node_id = headers
+        .get("x-maxio-join-node-id")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    let auth_token = headers
+        .get("x-maxio-internal-auth-token")
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string);
+    {
+        let mut records = state.records.lock().await;
+        records.push(JoinAuthorizeProbeCapture {
+            forwarded_by,
+            join_cluster_id,
+            join_node_id,
+            auth_token,
+        });
+    }
+
+    (
+        state.response_status,
+        axum::Json(json!({
+            "authorized": state.response_status.is_success(),
+            "status": if state.response_status.is_success() { "authorized" } else { "rejected" },
+            "reason": if state.response_status.is_success() { "authorized" } else { "unauthorized" },
+        })),
+    )
+}
+
 async fn start_membership_propagation_retry_stub(
     response_statuses: Vec<StatusCode>,
 ) -> (String, MembershipPropagationRetryCaptureState) {
@@ -525,6 +616,30 @@ async fn start_membership_propagation_retry_stub(
     (addr.to_string(), state)
 }
 
+async fn start_join_authorize_probe_capture_stub(
+    response_status: StatusCode,
+) -> (String, JoinAuthorizeProbeCaptureState) {
+    let state = JoinAuthorizeProbeCaptureState::with_response_status(response_status);
+    let app = axum::Router::new()
+        .route(
+            "/internal/cluster/join/authorize",
+            axum::routing::post(join_authorize_probe_capture_handler),
+        )
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("join-authorize capture stub listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("join-authorize capture stub should expose local address");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("join-authorize capture stub should serve");
+    });
+    (addr.to_string(), state)
+}
+
 #[derive(Clone, Debug)]
 struct RebalanceTransferCapture {
     path_and_query: String,
@@ -533,9 +648,27 @@ struct RebalanceTransferCapture {
     trusted_operation: Option<String>,
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct RebalanceTransferCaptureState {
     records: Arc<Mutex<Vec<RebalanceTransferCapture>>>,
+    bucket_head_paths: Arc<Mutex<Vec<String>>>,
+    bucket_head_status: StatusCode,
+}
+
+impl RebalanceTransferCaptureState {
+    fn new(bucket_head_status: StatusCode) -> Self {
+        Self {
+            records: Arc::new(Mutex::new(Vec::new())),
+            bucket_head_paths: Arc::new(Mutex::new(Vec::new())),
+            bucket_head_status,
+        }
+    }
+}
+
+impl Default for RebalanceTransferCaptureState {
+    fn default() -> Self {
+        Self::new(StatusCode::OK)
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -594,9 +727,32 @@ async fn rebalance_transfer_capture_put_handler(
     StatusCode::OK
 }
 
+async fn rebalance_transfer_capture_head_bucket_handler(
+    axum::extract::State(state): axum::extract::State<RebalanceTransferCaptureState>,
+    uri: axum::http::Uri,
+) -> StatusCode {
+    let path_and_query = uri
+        .path_and_query()
+        .map(|value| value.as_str().to_string())
+        .unwrap_or_else(|| uri.path().to_string());
+    let mut bucket_head_paths = state.bucket_head_paths.lock().await;
+    bucket_head_paths.push(path_and_query);
+    state.bucket_head_status
+}
+
 async fn start_rebalance_transfer_capture_stub() -> (String, RebalanceTransferCaptureState) {
-    let state = RebalanceTransferCaptureState::default();
+    start_rebalance_transfer_capture_stub_with_bucket_head_status(StatusCode::OK).await
+}
+
+async fn start_rebalance_transfer_capture_stub_with_bucket_head_status(
+    bucket_head_status: StatusCode,
+) -> (String, RebalanceTransferCaptureState) {
+    let state = RebalanceTransferCaptureState::new(bucket_head_status);
     let app = axum::Router::new()
+        .route(
+            "/{bucket}",
+            axum::routing::head(rebalance_transfer_capture_head_bucket_handler),
+        )
         .route(
             "/{bucket}/{*key}",
             axum::routing::put(rebalance_transfer_capture_put_handler),
@@ -612,6 +768,46 @@ async fn start_rebalance_transfer_capture_stub() -> (String, RebalanceTransferCa
         axum::serve(listener, app.into_make_service())
             .await
             .expect("rebalance capture stub should serve");
+    });
+    (addr.to_string(), state)
+}
+
+#[derive(Clone, Default)]
+struct RebalanceSourceCaptureState {
+    paths: Arc<Mutex<Vec<String>>>,
+}
+
+async fn rebalance_source_capture_get_handler(
+    axum::extract::State(state): axum::extract::State<RebalanceSourceCaptureState>,
+    uri: axum::http::Uri,
+) -> (StatusCode, &'static [u8]) {
+    let path_and_query = uri
+        .path_and_query()
+        .map(|value| value.as_str().to_string())
+        .unwrap_or_else(|| uri.path().to_string());
+    let mut paths = state.paths.lock().await;
+    paths.push(path_and_query);
+    (StatusCode::OK, b"rebalance-source-payload")
+}
+
+async fn start_rebalance_source_capture_stub() -> (String, RebalanceSourceCaptureState) {
+    let state = RebalanceSourceCaptureState::default();
+    let app = axum::Router::new()
+        .route(
+            "/{bucket}/{*key}",
+            axum::routing::get(rebalance_source_capture_get_handler),
+        )
+        .with_state(state.clone());
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("rebalance source capture stub listener should bind");
+    let addr = listener
+        .local_addr()
+        .expect("rebalance source capture stub listener should expose local address");
+    tokio::spawn(async move {
+        axum::serve(listener, app.into_make_service())
+            .await
+            .expect("rebalance source capture stub should serve");
     });
     (addr.to_string(), state)
 }
@@ -865,6 +1061,10 @@ async fn test_metrics_endpoint_reports_distributed_gauges_when_cluster_peers_con
         metric_value(&body, "maxio_membership_last_update_unix_ms")
             .is_some_and(|value| value > 0.0)
     );
+    assert!(
+        metric_value(&body, "maxio_membership_last_update_age_ms")
+            .is_some_and(|value| value >= 0.0)
+    );
     assert_eq!(metric_value(&body, "maxio_placement_epoch"), Some(0.0));
     assert_eq!(
         metric_value(&body, "maxio_pending_replication_queue_readable"),
@@ -934,6 +1134,10 @@ async fn test_metrics_membership_converged_reflects_peer_probe_for_static_bootst
     assert!(
         metric_value(&body, "maxio_membership_last_update_unix_ms")
             .is_some_and(|value| value > 0.0)
+    );
+    assert!(
+        metric_value(&body, "maxio_membership_last_update_age_ms")
+            .is_some_and(|value| value >= 0.0)
     );
 }
 
@@ -1189,10 +1393,168 @@ async fn test_pending_rebalance_replay_worker_forwards_due_send_transfer_and_dra
         record.path_and_query.contains("X-Amz-Signature="),
         "rebalance transfer should use presigned query auth"
     );
+
+    let bucket_head_paths = capture_state.bucket_head_paths.lock().await;
+    assert!(
+        !bucket_head_paths.is_empty(),
+        "rebalance replay should preflight target bucket existence before forwarding object payload"
+    );
 }
 
 #[tokio::test]
-async fn test_pending_rebalance_replay_worker_drops_chunk_scope_without_forwarding() {
+async fn test_pending_rebalance_replay_worker_drops_send_transfer_when_target_bucket_missing() {
+    let (capture_peer, capture_state) =
+        start_rebalance_transfer_capture_stub_with_bucket_head_status(StatusCode::NOT_FOUND).await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let local_node_id = "node-a.internal:9000";
+    seed_object_in_data_dir(
+        data_dir.as_str(),
+        "rebalance-bucket",
+        "docs/replay-object.txt",
+        b"rebalance-payload",
+        false,
+    )
+    .await;
+
+    let queue_path = Path::new(data_dir.as_str())
+        .join(".maxio-runtime")
+        .join("pending-rebalance-queue.json");
+    let placement = PlacementViewState::from_membership(1, local_node_id, &[capture_peer.clone()]);
+    let operation = PendingRebalanceOperation::new(
+        "rebalance-replay-missing-target-bucket-runtime-test",
+        "rebalance-bucket",
+        "docs/replay-object.txt",
+        RebalanceObjectScope::Object,
+        local_node_id,
+        &placement,
+        &[RebalanceTransfer {
+            from: Some(local_node_id.to_string()),
+            to: capture_peer.clone(),
+        }],
+        1,
+    )
+    .expect("pending rebalance operation should be valid");
+    let enqueue_outcome =
+        enqueue_pending_rebalance_operation_persisted(queue_path.as_path(), operation);
+    assert!(
+        enqueue_outcome.is_ok(),
+        "pending rebalance operation should enqueue: {enqueue_outcome:?}"
+    );
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = local_node_id.to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec![capture_peer.clone()];
+    let (_base_url, _tmp) = start_server_with_config_and_rebalance_replay_worker(config, tmp).await;
+
+    let mut queue_drained = false;
+    for _ in 0..130 {
+        let queue_is_empty = tokio::fs::read_to_string(queue_path.as_path())
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|value| {
+                value["operations"]
+                    .as_array()
+                    .map(|operations| operations.is_empty())
+            })
+            .unwrap_or(false);
+        if queue_is_empty {
+            queue_drained = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        queue_drained,
+        "pending rebalance replay worker should drain transfer when target bucket precondition fails"
+    );
+
+    let bucket_head_paths = capture_state.bucket_head_paths.lock().await;
+    assert!(
+        !bucket_head_paths.is_empty(),
+        "rebalance replay should preflight target bucket existence"
+    );
+    let records = capture_state.records.lock().await;
+    assert!(
+        records.is_empty(),
+        "rebalance replay should not forward object payload when target bucket is missing"
+    );
+}
+
+#[tokio::test]
+async fn test_pending_rebalance_replay_worker_drops_receive_transfer_when_local_bucket_missing() {
+    let (source_peer, source_capture_state) = start_rebalance_source_capture_stub().await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let local_node_id = "node-a.internal:9000";
+
+    let queue_path = Path::new(data_dir.as_str())
+        .join(".maxio-runtime")
+        .join("pending-rebalance-queue.json");
+    let placement = PlacementViewState::from_membership(1, local_node_id, &[source_peer.clone()]);
+    let operation = PendingRebalanceOperation::new(
+        "rebalance-replay-missing-local-bucket-runtime-test",
+        "rebalance-bucket",
+        "docs/replay-object.txt",
+        RebalanceObjectScope::Object,
+        local_node_id,
+        &placement,
+        &[RebalanceTransfer {
+            from: Some(source_peer.clone()),
+            to: local_node_id.to_string(),
+        }],
+        1,
+    )
+    .expect("pending rebalance operation should be valid");
+    let enqueue_outcome =
+        enqueue_pending_rebalance_operation_persisted(queue_path.as_path(), operation);
+    assert!(
+        enqueue_outcome.is_ok(),
+        "pending rebalance operation should enqueue: {enqueue_outcome:?}"
+    );
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = local_node_id.to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec![source_peer.clone()];
+    let (_base_url, _tmp) = start_server_with_config_and_rebalance_replay_worker(config, tmp).await;
+
+    let mut queue_drained = false;
+    for _ in 0..130 {
+        let queue_is_empty = tokio::fs::read_to_string(queue_path.as_path())
+            .await
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .and_then(|value| {
+                value["operations"]
+                    .as_array()
+                    .map(|operations| operations.is_empty())
+            })
+            .unwrap_or(false);
+        if queue_is_empty {
+            queue_drained = true;
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        queue_drained,
+        "pending rebalance replay worker should drain transfer when local bucket precondition fails"
+    );
+
+    let source_paths = source_capture_state.paths.lock().await;
+    assert!(
+        source_paths.is_empty(),
+        "rebalance replay should not fetch source payload when local target bucket is missing"
+    );
+}
+
+#[tokio::test]
+async fn test_pending_rebalance_replay_worker_forwards_chunk_scope_transfer_and_drains_queue() {
     let (capture_peer, capture_state) = start_rebalance_transfer_capture_stub().await;
 
     let tmp = tempfile::TempDir::new().unwrap();
@@ -1250,7 +1612,8 @@ async fn test_pending_rebalance_replay_worker_drops_chunk_scope_without_forwardi
                     .map(|operations| operations.is_empty())
             })
             .unwrap_or(false);
-        if queue_is_empty {
+        let has_capture = !capture_state.records.lock().await.is_empty();
+        if queue_is_empty && has_capture {
             queue_drained = true;
             break;
         }
@@ -1258,13 +1621,22 @@ async fn test_pending_rebalance_replay_worker_drops_chunk_scope_without_forwardi
     }
     assert!(
         queue_drained,
-        "pending rebalance replay worker should drain dropped chunk-scope operation"
+        "pending rebalance replay worker should forward chunk-scope transfer and drain queue"
     );
 
     let records = capture_state.records.lock().await;
+    let record = records
+        .first()
+        .expect("chunk-scope rebalance replay should forward object transport request");
+    assert_eq!(record.forwarded_by.as_deref(), Some(local_node_id));
+    assert_eq!(record.auth_token.as_deref(), Some("shared-secret"));
+    assert_eq!(
+        record.trusted_operation.as_deref(),
+        Some("replicate-put-object")
+    );
     assert!(
-        records.is_empty(),
-        "chunk-scope rebalance replay should not forward object transport requests"
+        record.path_and_query.contains("X-Amz-Signature="),
+        "chunk-scope rebalance transfer should use presigned query auth"
     );
 }
 
@@ -1622,6 +1994,10 @@ async fn test_pending_metadata_repair_replay_worker_drops_stale_view_plans_witho
             .unwrap();
         assert_eq!(response.status(), 200);
         let body = response.text().await.unwrap();
+        let dropped_plans = metric_value(
+            &body,
+            "maxio_pending_metadata_repair_replay_dropped_plans_total",
+        );
         let skipped_plans = metric_value(
             &body,
             "maxio_pending_metadata_repair_replay_skipped_plans_total",
@@ -1630,16 +2006,36 @@ async fn test_pending_metadata_repair_replay_worker_drops_stale_view_plans_witho
             &body,
             "maxio_pending_metadata_repair_replay_failed_plans_total",
         );
+        let target_view_mismatch_terminal_failures = metric_labeled_value(
+            &body,
+            "maxio_pending_metadata_repair_replay_terminal_failure_reason_total{reason=\"target-view-mismatch\"}",
+        );
         let cycles_failed = metric_value(
             &body,
             "maxio_pending_metadata_repair_replay_cycles_failed_total",
         );
 
-        if let (Some(skipped), Some(failed), Some(cycles_failed_total)) =
-            (skipped_plans, failed_plans, cycles_failed)
-        {
-            if skipped >= 1.0 {
-                observed = Some((skipped, failed, cycles_failed_total));
+        if let (
+            Some(dropped),
+            Some(skipped),
+            Some(failed),
+            Some(terminal_failures),
+            Some(cycles_failed_total),
+        ) = (
+            dropped_plans,
+            skipped_plans,
+            failed_plans,
+            target_view_mismatch_terminal_failures,
+            cycles_failed,
+        ) {
+            if dropped >= 1.0 {
+                observed = Some((
+                    dropped,
+                    skipped,
+                    failed,
+                    terminal_failures,
+                    cycles_failed_total,
+                ));
                 break;
             }
         }
@@ -1647,10 +2043,17 @@ async fn test_pending_metadata_repair_replay_worker_drops_stale_view_plans_witho
         tokio::time::sleep(Duration::from_millis(100)).await;
     }
 
-    let (skipped_plans, failed_plans, cycles_failed) =
-        observed.expect("metadata replay metrics should reflect dropped terminal-plan execution");
-    assert!(skipped_plans >= 1.0);
+    let (
+        dropped_plans,
+        skipped_plans,
+        failed_plans,
+        target_view_mismatch_terminal_failures,
+        cycles_failed,
+    ) = observed.expect("metadata replay metrics should reflect dropped terminal-plan execution");
+    assert!(dropped_plans >= 1.0);
+    assert_eq!(skipped_plans, 0.0);
     assert_eq!(failed_plans, 0.0);
+    assert!(target_view_mismatch_terminal_failures >= 1.0);
     assert_eq!(cycles_failed, 0.0);
 }
 
@@ -1959,6 +2362,10 @@ async fn test_metrics_endpoint_exposes_runtime_counters() {
         "metrics output missing pending metadata repair replay failure counter"
     );
     assert!(
+        body.contains("maxio_pending_metadata_repair_replay_dropped_plans_total"),
+        "metrics output missing pending metadata repair replay dropped-plans counter"
+    );
+    assert!(
         body.contains("maxio_pending_metadata_repair_replay_last_success_unix_ms"),
         "metrics output missing pending metadata repair replay last-success gauge"
     );
@@ -2064,6 +2471,13 @@ async fn test_metrics_endpoint_exposes_runtime_counters() {
         metric_value(
             &body,
             "maxio_pending_metadata_repair_replay_cycles_failed_total"
+        ),
+        Some(0.0)
+    );
+    assert_eq!(
+        metric_value(
+            &body,
+            "maxio_pending_metadata_repair_replay_dropped_plans_total"
         ),
         Some(0.0)
     );
@@ -2176,6 +2590,50 @@ async fn test_metrics_peer_auth_reject_reason_counter_increments_for_runtime_end
 }
 
 #[tokio::test]
+async fn test_metrics_peer_auth_reject_reason_counter_increments_for_internal_membership_view_header()
+ {
+    let (base_url, _tmp) = start_server().await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .header("x-maxio-internal-membership-view-id", "spoofed-view")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+
+    let metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), 200);
+    let body = metrics.text().await.unwrap();
+
+    assert!(
+        metric_labeled_value(
+            &body,
+            "maxio_runtime_internal_header_reject_endpoint_total{endpoint=\"healthz\"}"
+        )
+        .is_some_and(|value| value >= 1.0)
+    );
+    assert!(
+        metric_labeled_value(
+            &body,
+            "maxio_runtime_internal_header_reject_sender_total{sender=\"missing_or_invalid\"}"
+        )
+        .is_some_and(|value| value >= 1.0)
+    );
+    assert!(
+        metric_labeled_value(
+            &body,
+            "maxio_cluster_peer_auth_reject_reason_total{reason=\"missing_or_malformed_forwarded_by\"}"
+        )
+        .is_some_and(|value| value >= 1.0)
+    );
+}
+
+#[tokio::test]
 async fn test_metrics_runtime_internal_header_reject_dimensions_track_api_unknown_sender() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
@@ -2275,6 +2733,56 @@ async fn test_metrics_runtime_internal_header_reject_dimensions_track_api_known_
 }
 
 #[tokio::test]
+async fn test_metrics_runtime_internal_header_reject_dimensions_track_internal_unknown_sender() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["node-b:9000".to_string()];
+    config.membership_protocol = MembershipProtocol::StaticBootstrap;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let response = client()
+        .post(format!("{}/internal/cluster/join/authorize", base_url))
+        .header("x-maxio-forwarded-by", "node-x:9000")
+        .header("x-maxio-internal-auth-token", "shared-secret")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 403);
+
+    let metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), 200);
+    let body = metrics.text().await.unwrap();
+
+    assert!(
+        metric_labeled_value(
+            &body,
+            "maxio_runtime_internal_header_reject_endpoint_total{endpoint=\"internal\"}"
+        )
+        .is_some_and(|value| value >= 1.0)
+    );
+    assert!(
+        metric_labeled_value(
+            &body,
+            "maxio_runtime_internal_header_reject_sender_total{sender=\"unknown_peer\"}"
+        )
+        .is_some_and(|value| value >= 1.0)
+    );
+    assert!(
+        metric_labeled_value(
+            &body,
+            "maxio_cluster_peer_auth_reject_reason_total{reason=\"sender_not_in_allowlist\"}"
+        )
+        .is_some_and(|value| value >= 1.0)
+    );
+}
+
+#[tokio::test]
 async fn test_healthz_endpoint_reports_runtime_status() {
     let (base_url, _tmp) = start_server().await;
     let resp = client()
@@ -2306,6 +2814,10 @@ async fn test_healthz_endpoint_reports_runtime_status() {
     assert_eq!(body["clusterAuthMode"], "compatibility-no-token");
     assert_eq!(body["clusterAuthTrustModel"], "forwarded-by-marker-only");
     assert_eq!(body["clusterAuthTransportIdentity"], "none");
+    assert_eq!(
+        body["clusterAuthProductionReason"],
+        "not-required-standalone"
+    );
     assert_eq!(body["clusterJoinAuthMode"], "compatibility_no_token");
     assert_eq!(body["clusterJoinAuthReason"], "authorized");
     assert_eq!(
@@ -2482,6 +2994,7 @@ async fn test_healthz_reports_distributed_mode_when_cluster_peers_configured() {
     assert_eq!(body["checks"]["peerConnectivityReady"], false);
     assert_eq!(body["checks"]["clusterPeerAuthConfigured"], false);
     assert_eq!(body["checks"]["clusterPeerAuthIdentityBound"], false);
+    assert_eq!(body["checks"]["clusterPeerAuthProductionReady"], false);
     assert_eq!(body["checks"]["clusterPeerAuthSenderAllowlistBound"], false);
     assert_eq!(body["checks"]["clusterJoinAuthReady"], false);
     assert_eq!(body["checks"]["metadataListClusterAuthoritative"], false);
@@ -2492,6 +3005,56 @@ async fn test_healthz_reports_distributed_mode_when_cluster_peers_configured() {
             .as_array()
             .is_some_and(|warnings| !warnings.is_empty())
     );
+}
+
+#[tokio::test]
+async fn test_healthz_and_metrics_report_unimplemented_membership_protocol_reason_for_raft() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_peers = vec!["127.0.0.1:1".to_string()];
+    config.membership_protocol = MembershipProtocol::Raft;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(health.status(), 200);
+    let health_body: serde_json::Value = health.json().await.unwrap();
+    assert_eq!(health_body["ok"], false);
+    assert_eq!(health_body["status"], "degraded");
+    assert_eq!(health_body["membershipProtocol"], "raft");
+    assert_eq!(health_body["membershipEngine"], "unimplemented-placeholder");
+    assert_eq!(
+        health_body["membershipProtocolReason"],
+        "engine-unimplemented"
+    );
+    assert_eq!(health_body["checks"]["membershipProtocolReady"], false);
+    assert!(health_body["warnings"].as_array().is_some_and(|warnings| {
+        warnings.iter().any(|warning| {
+            warning
+                .as_str()
+                .is_some_and(|message| message.contains("not implemented yet"))
+        })
+    }));
+
+    let metrics = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(metrics.status(), 200);
+    let metrics_body = metrics.text().await.unwrap();
+    assert_eq!(
+        metric_value(&metrics_body, "maxio_membership_protocol_ready"),
+        Some(0.0)
+    );
+    assert!(metrics_body.contains("maxio_membership_protocol_info{protocol=\"raft\"} 1"));
+    assert!(metrics_body.contains(
+        "maxio_membership_protocol_readiness_reason_info{reason=\"engine-unimplemented\"} 1"
+    ));
 }
 
 #[tokio::test]
@@ -2517,6 +3080,10 @@ async fn test_healthz_and_metrics_report_shared_token_cluster_auth_mode_when_con
         "forwarded-by-marker+shared-token"
     );
     assert_eq!(health_body["clusterAuthTransportIdentity"], "none");
+    assert_eq!(
+        health_body["clusterAuthProductionReason"],
+        "transport-policy-not-required"
+    );
     assert_eq!(health_body["clusterJoinAuthMode"], "shared_token");
     assert_eq!(health_body["clusterJoinAuthReason"], "authorized");
     assert_eq!(health_body["writeDurabilityMode"], "degraded-success");
@@ -2533,6 +3100,10 @@ async fn test_healthz_and_metrics_report_shared_token_cluster_auth_mode_when_con
     assert_eq!(
         health_body["checks"]["clusterPeerAuthSenderAllowlistBound"],
         true
+    );
+    assert_eq!(
+        health_body["checks"]["clusterPeerAuthProductionReady"],
+        false
     );
     assert_eq!(health_body["checks"]["clusterJoinAuthReady"], true);
     assert!(
@@ -2573,6 +3144,13 @@ async fn test_healthz_and_metrics_report_shared_token_cluster_auth_mode_when_con
         ),
         Some(1.0)
     );
+    assert_eq!(
+        metric_value(&metrics_body, "maxio_cluster_peer_auth_production_ready"),
+        Some(0.0)
+    );
+    assert!(metrics_body.contains(
+        "maxio_cluster_peer_auth_production_reason_info{reason=\"transport-policy-not-required\"} 1"
+    ));
     assert!(metrics_body.contains("maxio_cluster_join_auth_mode_info{mode=\"shared_token\"} 1"));
     assert_eq!(
         metric_value(&metrics_body, "maxio_cluster_join_auth_ready"),
@@ -2606,11 +3184,19 @@ async fn test_healthz_and_metrics_report_required_peer_transport_mode_when_confi
     assert_eq!(health_body["clusterAuthMode"], "shared-token");
     assert_eq!(health_body["clusterAuthTransportIdentity"], "none");
     assert_eq!(
+        health_body["clusterAuthProductionReason"],
+        "transport-not-ready"
+    );
+    assert_eq!(
         health_body["checks"]["clusterPeerAuthTransportRequired"],
         true
     );
     assert_eq!(
         health_body["checks"]["clusterPeerAuthTransportReady"],
+        false
+    );
+    assert_eq!(
+        health_body["checks"]["clusterPeerAuthProductionReady"],
         false
     );
     assert_eq!(health_body["checks"]["clusterJoinAuthReady"], false);
@@ -2630,6 +3216,13 @@ async fn test_healthz_and_metrics_report_required_peer_transport_mode_when_confi
         metric_value(&metrics_body, "maxio_cluster_peer_auth_transport_required"),
         Some(1.0)
     );
+    assert_eq!(
+        metric_value(&metrics_body, "maxio_cluster_peer_auth_production_ready"),
+        Some(0.0)
+    );
+    assert!(metrics_body.contains(
+        "maxio_cluster_peer_auth_production_reason_info{reason=\"transport-not-ready\"} 1"
+    ));
     assert!(
         metrics_body
             .contains("maxio_cluster_join_auth_readiness_reason_info{reason=\"cluster_peer_transport_not_ready\"} 1")
@@ -2916,7 +3509,8 @@ async fn test_cluster_join_authorize_endpoint_accepts_and_rejects_nonce_replay()
     let accepted = client()
         .post(request_url.clone())
         .header("x-maxio-join-cluster-id", cluster_id)
-        .header("x-maxio-join-node-id", "peer-node-a")
+        .header("x-maxio-join-node-id", "node-b.internal:9000")
+        .header("x-maxio-forwarded-by", "node-b.internal:9000")
         .header("x-maxio-join-unix-ms", request_timestamp.as_str())
         .header("x-maxio-join-nonce", request_nonce)
         .header("x-maxio-internal-auth-token", "shared-secret")
@@ -2929,13 +3523,14 @@ async fn test_cluster_join_authorize_endpoint_accepts_and_rejects_nonce_replay()
     assert_eq!(accepted_body["status"], "authorized");
     assert_eq!(accepted_body["mode"], "shared_token");
     assert_eq!(accepted_body["reason"], "authorized");
-    assert_eq!(accepted_body["peerNodeId"], "peer-node-a");
+    assert_eq!(accepted_body["peerNodeId"], "node-b.internal:9000");
     assert_eq!(accepted_body["clusterId"], cluster_id);
 
     let replayed = client()
         .post(request_url)
         .header("x-maxio-join-cluster-id", cluster_id)
-        .header("x-maxio-join-node-id", "peer-node-a")
+        .header("x-maxio-join-node-id", "node-b.internal:9000")
+        .header("x-maxio-forwarded-by", "node-b.internal:9000")
         .header("x-maxio-join-unix-ms", request_timestamp.as_str())
         .header("x-maxio-join-nonce", request_nonce)
         .header("x-maxio-internal-auth-token", "shared-secret")
@@ -3014,7 +3609,8 @@ async fn test_cluster_join_authorize_endpoint_persists_nonce_replay_guard_across
     let accepted = client()
         .post(format!("{}/internal/cluster/join/authorize", base_url))
         .header("x-maxio-join-cluster-id", cluster_id)
-        .header("x-maxio-join-node-id", "peer-node-a")
+        .header("x-maxio-join-node-id", "node-b.internal:9000")
+        .header("x-maxio-forwarded-by", "node-b.internal:9000")
         .header("x-maxio-join-unix-ms", request_timestamp.as_str())
         .header("x-maxio-join-nonce", request_nonce)
         .header("x-maxio-internal-auth-token", "shared-secret")
@@ -3034,7 +3630,8 @@ async fn test_cluster_join_authorize_endpoint_persists_nonce_replay_guard_across
             restarted_base_url
         ))
         .header("x-maxio-join-cluster-id", cluster_id)
-        .header("x-maxio-join-node-id", "peer-node-a")
+        .header("x-maxio-join-node-id", "node-b.internal:9000")
+        .header("x-maxio-forwarded-by", "node-b.internal:9000")
         .header("x-maxio-join-unix-ms", request_timestamp.as_str())
         .header("x-maxio-join-nonce", request_nonce)
         .header("x-maxio-internal-auth-token", "shared-secret")
@@ -3124,6 +3721,7 @@ async fn test_cluster_join_authorize_endpoint_rejects_invalid_peer_node_identity
         .post(format!("{}/internal/cluster/join/authorize", base_url))
         .header("x-maxio-join-cluster-id", cluster_id)
         .header("x-maxio-join-node-id", "peer/node-b")
+        .header("x-maxio-forwarded-by", "node-b.internal:9000")
         .header("x-maxio-join-unix-ms", unix_ms_now_string())
         .header("x-maxio-join-nonce", "join-probe-invalid-node")
         .header("x-maxio-internal-auth-token", "shared-secret")
@@ -3179,6 +3777,7 @@ async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_for_in
         .post(format!("{}/internal/cluster/join/authorize", base_url))
         .header("x-maxio-join-cluster-id", cluster_id)
         .header("x-maxio-join-node-id", "peer-node-b")
+        .header("x-maxio-forwarded-by", "node-b.internal:9000")
         .header("x-maxio-join-unix-ms", unix_ms_now_string())
         .header("x-maxio-join-nonce", "join-probe-invalid-config")
         .header("x-maxio-internal-auth-token", "shared-secret")
@@ -3644,7 +4243,10 @@ async fn test_cluster_join_endpoint_rejects_propagated_request_without_precondit
         .header("x-maxio-join-node-id", "127.0.0.1:30526")
         .header("x-maxio-forwarded-by", "127.0.0.1:30526")
         .header("x-maxio-join-unix-ms", unix_ms_now_string())
-        .header("x-maxio-join-nonce", "join-apply-propagated-missing-preconditions")
+        .header(
+            "x-maxio-join-nonce",
+            "join-apply-propagated-missing-preconditions",
+        )
         .header("x-maxio-internal-auth-token", "shared-secret")
         .header("x-maxio-internal-membership-propagated", "1")
         .json(&json!({}))
@@ -3698,7 +4300,10 @@ async fn test_cluster_join_endpoint_rejects_forwarded_sender_not_in_allowlist() 
     let rejected_body: serde_json::Value = rejected.json().await.unwrap();
     assert_eq!(rejected_body["status"], "rejected");
     assert_eq!(rejected_body["reason"], "unauthorized");
-    assert_eq!(rejected_body["authReason"], "sender_not_in_allowlist");
+    assert_eq!(
+        rejected_body["authReason"],
+        "missing_or_malformed_auth_token"
+    );
     assert_eq!(rejected_body["updated"], false);
 }
 
@@ -3742,7 +4347,10 @@ async fn test_cluster_join_endpoint_rejects_known_sender_with_token_mismatch() {
     let rejected_body: serde_json::Value = rejected.json().await.unwrap();
     assert_eq!(rejected_body["status"], "rejected");
     assert_eq!(rejected_body["reason"], "unauthorized");
-    assert_eq!(rejected_body["authReason"], "auth_token_mismatch");
+    assert_eq!(
+        rejected_body["authReason"],
+        "missing_or_malformed_auth_token"
+    );
     assert_eq!(rejected_body["updated"], false);
 }
 
@@ -5261,9 +5869,9 @@ async fn test_cluster_membership_update_endpoint_returns_service_unavailable_whe
     assert_eq!(rejected_body["reason"], "unauthorized");
     assert_eq!(
         rejected_body["authReason"],
-        "missing_or_malformed_forwarded_by"
+        "missing_or_malformed_auth_token"
     );
-    assert_eq!(rejected_body["mode"], "shared_token_allowlist");
+    assert_eq!(rejected_body["mode"], "shared_token");
     assert_eq!(rejected_body["updated"], false);
 
     let metrics = client()
@@ -5415,7 +6023,10 @@ async fn test_cluster_membership_update_endpoint_rejects_forwarded_sender_not_in
     let rejected_body: serde_json::Value = rejected.json().await.unwrap();
     assert_eq!(rejected_body["status"], "rejected");
     assert_eq!(rejected_body["reason"], "unauthorized");
-    assert_eq!(rejected_body["authReason"], "sender_not_in_allowlist");
+    assert_eq!(
+        rejected_body["authReason"],
+        "missing_or_malformed_auth_token"
+    );
     assert_eq!(rejected_body["updated"], false);
 }
 
@@ -5461,7 +6072,10 @@ async fn test_cluster_membership_update_endpoint_rejects_known_sender_with_token
     let rejected_body: serde_json::Value = rejected.json().await.unwrap();
     assert_eq!(rejected_body["status"], "rejected");
     assert_eq!(rejected_body["reason"], "unauthorized");
-    assert_eq!(rejected_body["authReason"], "auth_token_mismatch");
+    assert_eq!(
+        rejected_body["authReason"],
+        "missing_or_malformed_auth_token"
+    );
     assert_eq!(rejected_body["updated"], false);
 }
 
@@ -5657,7 +6271,7 @@ async fn test_healthz_and_metrics_report_consensus_index_metadata_listing_strate
     assert_eq!(health_body["metadataListingStrategy"], "consensus-index");
     assert_eq!(
         health_body["metadataListingGap"],
-        "consensus-index-peer-fan-in-auth-token-missing"
+        "cluster-peer-fan-in-auth-token-missing"
     );
     assert_eq!(
         health_body["checks"]["metadataListClusterAuthoritative"],
@@ -5681,7 +6295,7 @@ async fn test_healthz_and_metrics_report_consensus_index_metadata_listing_strate
         Some(0.0)
     );
     assert!(metrics_body.contains(
-        "maxio_metadata_listing_gap_info{gap=\"consensus-index-peer-fan-in-auth-token-missing\"} 1"
+        "maxio_metadata_listing_gap_info{gap=\"cluster-peer-fan-in-auth-token-missing\"} 1"
     ));
 }
 
@@ -5792,7 +6406,10 @@ async fn test_healthz_and_metrics_report_request_time_aggregation_metadata_listi
         health_body["metadataListingStrategy"],
         "request-time-aggregation"
     );
-    assert_eq!(health_body["metadataListingGap"], "missing-expected-nodes");
+    assert_eq!(
+        health_body["metadataListingGap"],
+        "cluster-peer-fan-in-auth-token-missing"
+    );
     assert!(
         health_body["metadataListingSnapshotId"]
             .as_str()
@@ -5831,9 +6448,9 @@ async fn test_healthz_and_metrics_report_request_time_aggregation_metadata_listi
         metric_value(&metrics_body, "maxio_metadata_listing_ready"),
         Some(0.0)
     );
-    assert!(
-        metrics_body.contains("maxio_metadata_listing_gap_info{gap=\"missing-expected-nodes\"} 1")
-    );
+    assert!(metrics_body.contains(
+        "maxio_metadata_listing_gap_info{gap=\"cluster-peer-fan-in-auth-token-missing\"} 1"
+    ));
     assert_eq!(
         metric_value(&metrics_body, "maxio_metadata_listing_expected_nodes"),
         Some(2.0)
@@ -6113,6 +6730,223 @@ async fn test_healthz_warns_when_pending_membership_propagation_due_backlog_exce
 }
 
 #[tokio::test]
+async fn test_healthz_warns_when_pending_replication_due_backlog_exceeds_replay_batch_size() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+
+    let queue_path = tmp
+        .path()
+        .join(".maxio-runtime")
+        .join("pending-replication-queue.json");
+    let local_node_id = "node-a.internal:9000";
+    let peer_node = "node-b.internal:9000".to_string();
+    let placement = PlacementViewState::from_membership(1, local_node_id, &[peer_node.clone()]);
+    for index in 0..129 {
+        let operation_id = format!("pending-replication-healthz-warning-{index}");
+        let object_key = format!("docs/object-{index}.txt");
+        let operation = PendingReplicationOperation::new(
+            operation_id.as_str(),
+            ReplicationMutationOperation::PutObject,
+            "photos",
+            object_key.as_str(),
+            None,
+            local_node_id,
+            &placement,
+            std::slice::from_ref(&peer_node),
+            1,
+        )
+        .expect("pending replication operation should be valid");
+        enqueue_pending_replication_operation_persisted(queue_path.as_path(), operation)
+            .expect("pending replication operation should enqueue");
+    }
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let resp = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["status"], "ok");
+    assert!(
+        body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("Pending replication backlog has")
+                    && msg.contains("exceeding replay batch size"))))
+    );
+}
+
+#[tokio::test]
+async fn test_healthz_respects_pending_replication_due_warning_threshold_override() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.pending_replication_due_warning_threshold = Some(512);
+
+    let queue_path = tmp
+        .path()
+        .join(".maxio-runtime")
+        .join("pending-replication-queue.json");
+    let local_node_id = "node-a.internal:9000";
+    let peer_node = "node-b.internal:9000".to_string();
+    let placement = PlacementViewState::from_membership(1, local_node_id, &[peer_node.clone()]);
+    for index in 0..129 {
+        let operation_id = format!("pending-replication-healthz-threshold-{index}");
+        let object_key = format!("docs/object-{index}.txt");
+        let operation = PendingReplicationOperation::new(
+            operation_id.as_str(),
+            ReplicationMutationOperation::PutObject,
+            "photos",
+            object_key.as_str(),
+            None,
+            local_node_id,
+            &placement,
+            std::slice::from_ref(&peer_node),
+            1,
+        )
+        .expect("pending replication operation should be valid");
+        enqueue_pending_replication_operation_persisted(queue_path.as_path(), operation)
+            .expect("pending replication operation should enqueue");
+    }
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let resp = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["status"], "ok");
+    assert!(
+        !body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("Pending replication backlog has"))))
+    );
+}
+
+#[tokio::test]
+async fn test_healthz_warns_when_pending_rebalance_due_backlog_exceeds_replay_batch_size() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+
+    let queue_path = tmp
+        .path()
+        .join(".maxio-runtime")
+        .join("pending-rebalance-queue.json");
+    let local_node_id = "node-a.internal:9000";
+    let peer_node = "node-b.internal:9000".to_string();
+    let placement = PlacementViewState::from_membership(1, local_node_id, &[peer_node.clone()]);
+    let transfers = vec![RebalanceTransfer {
+        from: Some(local_node_id.to_string()),
+        to: peer_node.clone(),
+    }];
+    for index in 0..129 {
+        let operation_id = format!("pending-rebalance-healthz-warning-{index}");
+        let object_key = format!("docs/object-{index}.txt");
+        let operation = PendingRebalanceOperation::new(
+            operation_id.as_str(),
+            "photos",
+            object_key.as_str(),
+            RebalanceObjectScope::Object,
+            local_node_id,
+            &placement,
+            transfers.as_slice(),
+            1,
+        )
+        .expect("pending rebalance operation should be valid");
+        enqueue_pending_rebalance_operation_persisted(queue_path.as_path(), operation)
+            .expect("pending rebalance operation should enqueue");
+    }
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let resp = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["status"], "ok");
+    assert!(
+        body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("Pending rebalance backlog has")
+                    && msg.contains("exceeding replay batch size"))))
+    );
+}
+
+#[tokio::test]
+async fn test_healthz_warns_when_pending_metadata_repair_due_backlog_exceeds_replay_batch_size() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+
+    let queue_path = tmp
+        .path()
+        .join(".maxio-runtime")
+        .join("pending-metadata-repair-queue.json");
+    for index in 0..129 {
+        let plan_id = format!("pending-metadata-repair-healthz-warning-{index}");
+        let plan = PendingMetadataRepairPlan::new(
+            plan_id.as_str(),
+            1,
+            MetadataRepairPlan {
+                source_view_id: "view-source".to_string(),
+                target_view_id: "view-target".to_string(),
+                actions: vec![MetadataReconcileAction::UpsertBucket {
+                    bucket: format!("bucket-{index}"),
+                    versioning_enabled: false,
+                    lifecycle_enabled: false,
+                }],
+            },
+        )
+        .expect("pending metadata repair plan should be valid");
+        enqueue_pending_metadata_repair_plan_persisted(queue_path.as_path(), plan)
+            .expect("pending metadata repair plan should enqueue");
+    }
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let resp = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["ok"], true);
+    assert_eq!(body["status"], "ok");
+    assert!(
+        body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("Pending metadata repair backlog has")
+                    && msg.contains("exceeding replay batch size"))))
+    );
+}
+
+#[tokio::test]
 async fn test_healthz_reports_degraded_when_static_peer_connectivity_probe_fails() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
@@ -6215,6 +7049,53 @@ async fn test_healthz_reports_degraded_when_static_peer_membership_view_mismatch
 }
 
 #[tokio::test]
+async fn test_healthz_reports_degraded_when_static_peer_placement_epoch_mismatches() {
+    let peer =
+        start_peer_healthz_stub_with_matching_single_peer_view_and_epoch("maxio-node-a", 9).await;
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "maxio-node-a".to_string();
+    config.cluster_peers = vec![peer];
+    config.membership_protocol = MembershipProtocol::StaticBootstrap;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let healthz_resp = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(healthz_resp.status(), 200);
+    let healthz_body: serde_json::Value = healthz_resp.json().await.unwrap();
+    assert_eq!(healthz_body["ok"], false);
+    assert_eq!(healthz_body["status"], "degraded");
+    assert_eq!(healthz_body["checks"]["peerConnectivityReady"], true);
+    assert_eq!(healthz_body["checks"]["membershipConverged"], false);
+    assert_eq!(
+        healthz_body["membershipConvergenceReason"],
+        "placement-epoch-mismatch"
+    );
+    assert!(
+        healthz_body["warnings"]
+            .as_array()
+            .is_some_and(|warnings| warnings.iter().any(|warning| warning
+                .as_str()
+                .is_some_and(|msg| msg.contains("Placement epoch mismatch detected"))))
+    );
+
+    let metrics_resp = client()
+        .get(format!("{}/metrics", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(metrics_resp.status(), 200);
+    let metrics_body = metrics_resp.text().await.unwrap();
+    assert!(metrics_body.contains(
+        "maxio_membership_convergence_reason_info{reason=\"placement-epoch-mismatch\"} 1"
+    ));
+}
+
+#[tokio::test]
 async fn test_static_bootstrap_convergence_worker_applies_discovered_peers_from_peer_healthz() {
     let peer = "127.0.0.1:31501".to_string();
     let discovered_peer = "127.0.0.1:31502".to_string();
@@ -6266,6 +7147,195 @@ async fn test_static_bootstrap_convergence_worker_applies_discovered_peers_from_
             .any(|value| value.as_str() == Some(discovered_peer.as_str()))
     }));
     assert_eq!(body["checks"]["membershipProtocolReady"], true);
+}
+
+#[tokio::test]
+async fn test_gossip_convergence_worker_applies_discovered_peer_when_join_authorize_preflight_succeeds()
+ {
+    let local_node_id = "node-a.internal:9000";
+    let (discovered_peer, join_authorize_state) =
+        start_join_authorize_probe_capture_stub(StatusCode::OK).await;
+    let peer_view =
+        membership_view_id_with_self("maxio-node-b", std::slice::from_ref(&discovered_peer));
+    let healthz_peer = start_peer_healthz_stub_with_discovery_snapshot(
+        local_node_id,
+        peer_view.as_str(),
+        vec![discovered_peer.clone()],
+    )
+    .await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = local_node_id.to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec![healthz_peer];
+    config.membership_protocol = MembershipProtocol::Gossip;
+    let (base_url, _tmp) = start_server_with_config_and_convergence_worker(config, tmp).await;
+
+    let mut observed_discovered = false;
+    for _ in 0..80 {
+        let resp = client()
+            .get(format!("{}/healthz", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        observed_discovered = body["clusterPeers"].as_array().is_some_and(|peers| {
+            peers
+                .iter()
+                .any(|value| value.as_str() == Some(discovered_peer.as_str()))
+        });
+        if observed_discovered {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        observed_discovered,
+        "gossip convergence should apply discovered peer after join-authorization preflight"
+    );
+
+    let mut captured = None;
+    for _ in 0..40 {
+        {
+            let records = join_authorize_state.records.lock().await;
+            if let Some(record) = records.first() {
+                captured = Some(record.clone());
+            }
+        }
+        if captured.is_some() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    let captured =
+        captured.expect("join-authorization preflight should be attempted for discovered peer");
+    assert_eq!(captured.forwarded_by.as_deref(), Some(local_node_id));
+    assert_eq!(captured.join_node_id.as_deref(), Some(local_node_id));
+    assert_eq!(captured.auth_token.as_deref(), Some("shared-secret"));
+    assert!(captured.join_cluster_id.is_some());
+}
+
+#[tokio::test]
+async fn test_gossip_convergence_worker_skips_discovered_peer_when_join_authorize_preflight_rejected()
+ {
+    let local_node_id = "node-a.internal:9000";
+    let (discovered_peer, join_authorize_state) =
+        start_join_authorize_probe_capture_stub(StatusCode::FORBIDDEN).await;
+    let peer_view =
+        membership_view_id_with_self("maxio-node-b", std::slice::from_ref(&discovered_peer));
+    let healthz_peer = start_peer_healthz_stub_with_discovery_snapshot(
+        local_node_id,
+        peer_view.as_str(),
+        vec![discovered_peer.clone()],
+    )
+    .await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = local_node_id.to_string();
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec![healthz_peer];
+    config.membership_protocol = MembershipProtocol::Gossip;
+    let (base_url, _tmp) = start_server_with_config_and_convergence_worker(config, tmp).await;
+
+    let mut saw_discovered = false;
+    for _ in 0..80 {
+        let resp = client()
+            .get(format!("{}/healthz", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        saw_discovered = body["clusterPeers"].as_array().is_some_and(|peers| {
+            peers
+                .iter()
+                .any(|value| value.as_str() == Some(discovered_peer.as_str()))
+        });
+        if saw_discovered {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !saw_discovered,
+        "gossip convergence should drop discovered peer when join-authorization preflight fails"
+    );
+
+    let mut attempt_count = 0_usize;
+    for _ in 0..40 {
+        {
+            let records = join_authorize_state.records.lock().await;
+            attempt_count = records.len();
+        }
+        if attempt_count > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        attempt_count > 0,
+        "join-authorization preflight should be attempted for rejected discovered peers"
+    );
+}
+
+#[tokio::test]
+async fn test_gossip_convergence_worker_skips_discovered_peer_when_cluster_auth_token_not_configured()
+ {
+    let local_node_id = "node-a.internal:9000";
+    let (discovered_peer, join_authorize_state) =
+        start_join_authorize_probe_capture_stub(StatusCode::OK).await;
+    let peer_view =
+        membership_view_id_with_self("maxio-node-b", std::slice::from_ref(&discovered_peer));
+    let healthz_peer = start_peer_healthz_stub_with_discovery_snapshot(
+        local_node_id,
+        peer_view.as_str(),
+        vec![discovered_peer.clone()],
+    )
+    .await;
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = local_node_id.to_string();
+    config.cluster_peers = vec![healthz_peer];
+    config.membership_protocol = MembershipProtocol::Gossip;
+    let (base_url, _tmp) = start_server_with_config_and_convergence_worker(config, tmp).await;
+
+    let mut saw_discovered = false;
+    for _ in 0..80 {
+        let resp = client()
+            .get(format!("{}/healthz", base_url))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        saw_discovered = body["clusterPeers"].as_array().is_some_and(|peers| {
+            peers
+                .iter()
+                .any(|value| value.as_str() == Some(discovered_peer.as_str()))
+        });
+        if saw_discovered {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(
+        !saw_discovered,
+        "gossip convergence should not apply discovered peers without shared-token auth"
+    );
+
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let attempt_count = { join_authorize_state.records.lock().await.len() };
+    assert_eq!(
+        attempt_count, 0,
+        "join-authorization preflight should not run when shared-token auth is unset"
+    );
 }
 
 #[tokio::test]

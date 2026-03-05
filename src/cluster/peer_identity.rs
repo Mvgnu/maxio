@@ -4,6 +4,21 @@ pub fn is_valid_peer_identity(value: &str) -> bool {
     parse_peer_identity(value).is_some()
 }
 
+pub(crate) fn canonical_peer_identity(value: &str) -> Option<String> {
+    let (host, port) = parse_peer_identity(value)?;
+    if host.contains(':') {
+        return Some(match port {
+            Some(port) => format!("[{host}]:{port}"),
+            None => format!("[{host}]"),
+        });
+    }
+
+    Some(match port {
+        Some(port) => format!("{host}:{port}"),
+        None => host,
+    })
+}
+
 pub(crate) fn parse_peer_identity(value: &str) -> Option<(String, Option<u16>)> {
     let normalized = value.trim();
     if normalized.is_empty() || normalized.len() > 255 {
@@ -12,15 +27,13 @@ pub(crate) fn parse_peer_identity(value: &str) -> Option<(String, Option<u16>)> 
 
     if let Some(bracketed) = normalized.strip_prefix('[') {
         let (host, remainder) = bracketed.split_once(']')?;
-        if host.parse::<Ipv6Addr>().is_err() {
-            return None;
-        }
+        let host = host.parse::<Ipv6Addr>().ok()?.to_string();
 
         if remainder.is_empty() {
-            return Some((host.to_ascii_lowercase(), None));
+            return Some((host, None));
         }
         let port = remainder.strip_prefix(':').and_then(parse_peer_port)?;
-        return Some((host.to_ascii_lowercase(), Some(port)));
+        return Some((host, Some(port)));
     }
 
     if normalized.matches(':').count() > 1 {
@@ -86,7 +99,7 @@ fn parse_peer_port(port: &str) -> Option<u16> {
 
 #[cfg(test)]
 mod tests {
-    use super::{is_valid_peer_identity, parse_peer_identity};
+    use super::{canonical_peer_identity, is_valid_peer_identity, parse_peer_identity};
 
     #[test]
     fn valid_peer_identity_accepts_expected_chars() {
@@ -139,6 +152,18 @@ mod tests {
         assert_eq!(
             parse_peer_identity("[2001:DB8::1]"),
             Some(("2001:db8::1".to_string(), None))
+        );
+    }
+
+    #[test]
+    fn canonical_peer_identity_normalizes_equivalent_ipv6_notation() {
+        assert_eq!(
+            canonical_peer_identity("[2001:0db8:0000:0000:0000:0000:0000:0001]:9000"),
+            Some("[2001:db8::1]:9000".to_string())
+        );
+        assert_eq!(
+            canonical_peer_identity("[2001:DB8::1]"),
+            Some("[2001:db8::1]".to_string())
         );
     }
 }

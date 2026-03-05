@@ -497,6 +497,63 @@ impl FilesystemStorage {
         Ok((Box::pin(reader), meta))
     }
 
+    pub async fn get_object_chunk(
+        &self,
+        bucket: &str,
+        key: &str,
+        chunk_index: u32,
+    ) -> Result<(Vec<u8>, ChunkInfo, ObjectMeta), StorageError> {
+        validation::validate_key(key)?;
+        let meta = self.read_object_meta(bucket, key).await?;
+        let ec_dir = self.ec_dir(bucket, key);
+        if !Self::is_chunked_path(&ec_dir).await? {
+            return Err(StorageError::InvalidKey(format!(
+                "object is not chunked: {key}"
+            )));
+        }
+
+        let manifest = self.read_manifest(bucket, key).await?;
+        let chunk = manifest
+            .chunks
+            .iter()
+            .find(|info| info.index == chunk_index)
+            .cloned()
+            .ok_or_else(|| StorageError::NotFound(format!("{key}#chunk:{chunk_index}")))?;
+        let chunk_path = self.chunk_path(bucket, key, chunk_index);
+        let data = fs::read(&chunk_path).await.map_err(|error| {
+            if error.kind() == std::io::ErrorKind::NotFound {
+                StorageError::NotFound(format!("{key}#chunk:{chunk_index}"))
+            } else {
+                StorageError::Io(error)
+            }
+        })?;
+        if data.len() as u64 != chunk.size {
+            return Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "chunk {} size mismatch for key {}: expected {}, got {}",
+                    chunk_index,
+                    key,
+                    chunk.size,
+                    data.len()
+                ),
+            )));
+        }
+
+        let checksum = hex::encode(Sha256::digest(&data));
+        if checksum != chunk.sha256 {
+            return Err(StorageError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "chunk {} checksum mismatch for key {}: expected {}, got {}",
+                    chunk_index, key, chunk.sha256, checksum
+                ),
+            )));
+        }
+
+        Ok((data, chunk, meta))
+    }
+
     pub async fn head_object(&self, bucket: &str, key: &str) -> Result<ObjectMeta, StorageError> {
         validation::validate_key(key)?;
         self.read_object_meta(bucket, key).await

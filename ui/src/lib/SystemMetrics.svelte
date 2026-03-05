@@ -18,12 +18,15 @@
   let clusterPeerCount = $state<number | null>(null);
   let placementEpoch = $state<number | null>(null);
   let membershipViewId = $state<string | null>(null);
+  let membershipLastUpdateAgeMs = $state<number | null>(null);
   let membershipProtocol = $state<string | null>(null);
   let coordinatorNodeId = $state<string | null>(null);
   let leaderNodeId = $state<string | null>(null);
   let membershipNodeCount = $state<number | null>(null);
   let healthOk = $state<boolean | null>(null);
   let healthStatus = $state<string | null>(null);
+  let clusterPeerAuthProductionReady = $state<boolean | null>(null);
+  let clusterAuthProductionReason = $state<string | null>(null);
   let healthWarnings = $state<string[]>([]);
   let healthChecks = $state<{
     dataDirAccessible: boolean | null;
@@ -32,6 +35,7 @@
     diskHeadroomSufficient: boolean | null;
     peerConnectivityReady: boolean | null;
     membershipProtocolReady: boolean | null;
+    clusterPeerAuthProductionReady: boolean | null;
   } | null>(null);
   let raw = $state("");
   let placementLoading = $state(false);
@@ -49,6 +53,11 @@
   let placementMixedOwnerBatchMutationPolicy = $state<string | null>(null);
   let placementReplicaFanoutOperations = $state<string[]>([]);
   let placementPendingReplicaFanoutOperations = $state<string[]>([]);
+  let placementWriteDurabilityMode = $state<string | null>(null);
+  let placementPendingReplicationQueueReadable = $state<boolean | null>(null);
+  let placementPendingReplicationBacklogOperations = $state<number | null>(null);
+  let placementPendingReplicationBacklogDueTargets = $state<number | null>(null);
+  let placementPendingReplicationReplayCyclesTotal = $state<number | null>(null);
   let placementMembershipViewId = $state<string | null>(null);
   let placementPrimaryOwner = $state<string | null>(null);
   let placementForwardTarget = $state<string | null>(null);
@@ -81,6 +90,15 @@
     return `${secs}s`;
   }
 
+  function formatAgeMs(ageMs: number): string {
+    if (ageMs < 1_000) return `${ageMs}ms`;
+    const seconds = Math.floor(ageMs / 1_000);
+    if (seconds < 60) return `${seconds}s`;
+    const minutes = Math.floor(seconds / 60);
+    const remSeconds = seconds % 60;
+    return `${minutes}m ${remSeconds}s`;
+  }
+
   async function loadMetrics() {
     loading = true;
     const result = await loadSystemMetricsSnapshot();
@@ -98,12 +116,15 @@
     clusterPeerCount = result.data.clusterPeerCount;
     placementEpoch = result.data.placementEpoch;
     membershipViewId = result.data.membershipViewId;
+    membershipLastUpdateAgeMs = result.data.membershipLastUpdateAgeMs;
     membershipProtocol = result.data.membershipProtocol;
     coordinatorNodeId = result.data.coordinatorNodeId;
     leaderNodeId = result.data.leaderNodeId;
     membershipNodeCount = result.data.membershipNodeCount;
     healthOk = result.data.healthOk;
     healthStatus = result.data.healthStatus;
+    clusterPeerAuthProductionReady = result.data.clusterPeerAuthProductionReady;
+    clusterAuthProductionReason = result.data.clusterAuthProductionReason;
     healthWarnings = result.data.healthWarnings;
     healthChecks = result.data.healthChecks;
     raw = result.data.raw;
@@ -146,6 +167,15 @@
     placementMixedOwnerBatchMutationPolicy = result.data.mixedOwnerBatchMutationPolicy;
     placementReplicaFanoutOperations = result.data.replicaFanoutOperations;
     placementPendingReplicaFanoutOperations = result.data.pendingReplicaFanoutOperations;
+    placementWriteDurabilityMode = result.data.replicaFanoutExecution?.writeDurabilityMode ?? null;
+    placementPendingReplicationQueueReadable =
+      result.data.replicaFanoutExecution?.pendingReplicationQueueReadable ?? null;
+    placementPendingReplicationBacklogOperations =
+      result.data.replicaFanoutExecution?.pendingReplicationBacklogOperations ?? null;
+    placementPendingReplicationBacklogDueTargets =
+      result.data.replicaFanoutExecution?.pendingReplicationBacklogDueTargets ?? null;
+    placementPendingReplicationReplayCyclesTotal =
+      result.data.replicaFanoutExecution?.pendingReplicationReplayCyclesTotal ?? null;
     placementMembershipViewId = result.data.membershipViewId;
     placementPrimaryOwner = result.data.primaryOwner;
     placementForwardTarget = result.data.forwardTarget;
@@ -241,6 +271,14 @@
         <p class="mt-1 text-xs text-muted-foreground">
           Protocol ready: {healthChecks.membershipProtocolReady === null ? "--" : healthChecks.membershipProtocolReady ? "yes" : "no"}
         </p>
+        <p class="mt-1 text-xs text-muted-foreground">
+          Peer auth production ready: {healthChecks.clusterPeerAuthProductionReady === null ? "--" : healthChecks.clusterPeerAuthProductionReady ? "yes" : "no"}
+        </p>
+      {/if}
+      {#if clusterAuthProductionReason}
+        <p class="mt-1 text-xs text-muted-foreground truncate" title={clusterAuthProductionReason}>
+          Peer auth reason {clusterAuthProductionReason}
+        </p>
       {/if}
     </div>
     <div class="rounded-sm border p-4" style="border-color: var(--cool-sidebar-border);">
@@ -273,6 +311,11 @@
       {#if membershipViewId}
         <p class="mt-1 text-xs text-muted-foreground truncate" title={membershipViewId}>
           View {membershipViewId}
+        </p>
+      {/if}
+      {#if membershipLastUpdateAgeMs !== null}
+        <p class="mt-1 text-xs text-muted-foreground">
+          Update age {formatAgeMs(membershipLastUpdateAgeMs)}
         </p>
       {/if}
     </div>
@@ -358,6 +401,21 @@
         </p>
         <p>
           Pending fanout operations: {placementPendingReplicaFanoutOperations.length === 0 ? "--" : placementPendingReplicaFanoutOperations.join(", ")}
+        </p>
+        <p>
+          Write durability mode: {placementWriteDurabilityMode ?? "--"}
+        </p>
+        <p>
+          Pending replication queue readable: {placementPendingReplicationQueueReadable === null ? "--" : placementPendingReplicationQueueReadable ? "yes" : "no"}
+        </p>
+        <p>
+          Pending replication backlog operations: {placementPendingReplicationBacklogOperations ?? "--"}
+        </p>
+        <p>
+          Pending replication due targets: {placementPendingReplicationBacklogDueTargets ?? "--"}
+        </p>
+        <p>
+          Pending replication replay cycles: {placementPendingReplicationReplayCyclesTotal ?? "--"}
         </p>
         <p class="truncate" title={placementPrimaryOwner ?? undefined}>
           Primary owner: {placementPrimaryOwner ?? "--"}

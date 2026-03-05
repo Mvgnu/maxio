@@ -8,6 +8,7 @@ use axum::{
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::Response,
 };
+use chrono::Utc;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use tokio::io::AsyncReadExt;
@@ -18,9 +19,16 @@ use crate::error::S3Error;
 use crate::metadata::{
     ClusterMetadataListingStrategy, ObjectMetadataOperation, ObjectMetadataOperationError,
     ObjectVersionMetadataOperation, ObjectVersionMetadataOperationError,
-    PersistedObjectMetadataOperationError, PersistedObjectVersionMetadataOperationError,
+    PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError,
+    PersistedObjectMetadataOperationError, PersistedObjectMutationPreconditionResolution,
+    PersistedObjectReadPreconditionResolution, PersistedObjectVersionMetadataOperationError,
+    PersistedObjectVersionReadPreconditionResolution,
     apply_object_metadata_operation_to_persisted_state,
-    apply_object_version_metadata_operation_to_persisted_state,
+    apply_object_version_metadata_operation_to_persisted_state, load_persisted_metadata_state,
+    resolve_bucket_mutation_preconditions_from_persisted_state,
+    resolve_object_mutation_preconditions_from_persisted_state,
+    resolve_object_read_preconditions_from_persisted_state,
+    resolve_object_version_read_preconditions_from_persisted_state,
 };
 use crate::server::AppState;
 use crate::storage::placement::{
@@ -126,6 +134,7 @@ pub async fn put_object(
     }
 
     ensure_bucket_exists(&state, &bucket).await?;
+    ensure_consensus_object_mutation_authority(&state, &placement, &bucket, &key, "PutObject")?;
 
     let raw_body_bytes = axum::body::to_bytes(body, usize::MAX)
         .await
@@ -231,12 +240,179 @@ fn persisted_metadata_state_path(data_dir: &str) -> PathBuf {
         .join(PERSISTED_METADATA_STATE_FILE)
 }
 
+fn current_unix_ms_u64() -> u64 {
+    u64::try_from(Utc::now().timestamp_millis()).map_or(0, |value| value)
+}
+
+fn map_persisted_bucket_mutation_query_error(
+    operation: &str,
+    err: PersistedMetadataQueryError,
+) -> S3Error {
+    match err {
+        PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        } => S3Error::service_unavailable(&format!(
+            "Distributed object metadata mutation '{operation}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{expected_view_id}', persisted='{persisted_view_id}')"
+        )),
+        other => S3Error::service_unavailable(&format!(
+            "Distributed object metadata mutation '{operation}' cannot query consensus metadata state ({})",
+            other.canonical_reason()
+        )),
+    }
+}
+
+fn map_persisted_object_read_query_error(
+    operation: &str,
+    err: PersistedMetadataQueryError,
+) -> S3Error {
+    match err {
+        PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        } => S3Error::service_unavailable(&format!(
+            "Distributed object metadata read '{operation}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{expected_view_id}', persisted='{persisted_view_id}')"
+        )),
+        other => S3Error::service_unavailable(&format!(
+            "Distributed object metadata read '{operation}' cannot query consensus metadata state ({})",
+            other.canonical_reason()
+        )),
+    }
+}
+
 fn should_persist_consensus_object_metadata(
     state: &AppState,
     placement: &PlacementViewState,
 ) -> bool {
     !placement.members.is_empty()
         && state.metadata_listing_strategy == ClusterMetadataListingStrategy::ConsensusIndex
+}
+
+pub(crate) fn ensure_consensus_bucket_authority(
+    state: &AppState,
+    placement: &PlacementViewState,
+    bucket: &str,
+    operation: &str,
+) -> Result<(), S3Error> {
+    if !should_persist_consensus_object_metadata(state, placement) {
+        return Ok(());
+    }
+
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|error| {
+        S3Error::service_unavailable(&format!(
+            "Distributed object metadata mutation '{operation}' cannot load consensus metadata state: {error}"
+        ))
+    })?;
+
+    match resolve_bucket_mutation_preconditions_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(placement.view_id.as_str()),
+        current_unix_ms_u64(),
+    )
+    .map_err(|error| map_persisted_bucket_mutation_query_error(operation, error))?
+    {
+        PersistedBucketMutationPreconditionResolution::Present(_) => Ok(()),
+        PersistedBucketMutationPreconditionResolution::Tombstoned { .. }
+        | PersistedBucketMutationPreconditionResolution::Missing => {
+            Err(S3Error::no_such_bucket(bucket))
+        }
+    }
+}
+
+pub(crate) fn ensure_consensus_object_mutation_authority(
+    state: &AppState,
+    placement: &PlacementViewState,
+    bucket: &str,
+    key: &str,
+    operation: &str,
+) -> Result<(), S3Error> {
+    if !should_persist_consensus_object_metadata(state, placement) {
+        return Ok(());
+    }
+
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|error| {
+        S3Error::service_unavailable(&format!(
+            "Distributed object metadata mutation '{operation}' cannot load consensus metadata state: {error}"
+        ))
+    })?;
+
+    match resolve_object_mutation_preconditions_from_persisted_state(
+        &persisted_state,
+        bucket,
+        key,
+        Some(placement.view_id.as_str()),
+        current_unix_ms_u64(),
+    )
+    .map_err(|error| map_persisted_bucket_mutation_query_error(operation, error))?
+    {
+        PersistedObjectMutationPreconditionResolution::PresentBucket { .. } => Ok(()),
+        PersistedObjectMutationPreconditionResolution::TombstonedBucket { .. }
+        | PersistedObjectMutationPreconditionResolution::MissingBucket => {
+            Err(S3Error::no_such_bucket(bucket))
+        }
+    }
+}
+
+fn ensure_consensus_object_read_authority(
+    state: &AppState,
+    placement: &PlacementViewState,
+    bucket: &str,
+    key: &str,
+    requested_version_id: Option<&str>,
+    operation: &str,
+) -> Result<(), S3Error> {
+    if !should_persist_consensus_object_metadata(state, placement) {
+        return Ok(());
+    }
+
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|error| {
+        S3Error::service_unavailable(&format!(
+            "Distributed object metadata read '{operation}' cannot load consensus metadata state: {error}"
+        ))
+    })?;
+
+    if let Some(version_id) = requested_version_id {
+        match resolve_object_version_read_preconditions_from_persisted_state(
+            &persisted_state,
+            bucket,
+            key,
+            version_id,
+            Some(placement.view_id.as_str()),
+        )
+        .map_err(|error| map_persisted_object_read_query_error(operation, error))?
+        {
+            PersistedObjectVersionReadPreconditionResolution::Present(_) => Ok(()),
+            PersistedObjectVersionReadPreconditionResolution::MissingVersion => {
+                Err(S3Error::no_such_version(version_id))
+            }
+            PersistedObjectVersionReadPreconditionResolution::MissingBucket
+            | PersistedObjectVersionReadPreconditionResolution::TombstonedBucket(_) => {
+                Err(S3Error::no_such_bucket(bucket))
+            }
+        }
+    } else {
+        match resolve_object_read_preconditions_from_persisted_state(
+            &persisted_state,
+            bucket,
+            key,
+            Some(placement.view_id.as_str()),
+        )
+        .map_err(|error| map_persisted_object_read_query_error(operation, error))?
+        {
+            PersistedObjectReadPreconditionResolution::Present(_) => Ok(()),
+            PersistedObjectReadPreconditionResolution::MissingObject => {
+                Err(S3Error::no_such_key(key))
+            }
+            PersistedObjectReadPreconditionResolution::MissingBucket
+            | PersistedObjectReadPreconditionResolution::TombstonedBucket(_) => {
+                Err(S3Error::no_such_bucket(bucket))
+            }
+        }
+    }
 }
 
 fn object_metadata_persist_error_reason(error: &PersistedObjectMetadataOperationError) -> String {
@@ -739,6 +915,14 @@ fn presigned_replica_path_and_query(
     Some(path)
 }
 
+fn resolve_signed_host_for_internal_presign(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 fn presigned_replica_delete_path_and_query(
     state: &AppState,
     signed_host: &str,
@@ -861,11 +1045,21 @@ async fn replicate_delete_to_replica_owners(
         .filter(|owner| owner.as_str() != request.state.node_id.as_ref())
     {
         let path_and_query = if request.params.is_empty() {
-            let signed_host = replica_headers
-                .get(header::HOST)
-                .and_then(|value| value.to_str().ok())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(target.as_str());
+            let Some(signed_host) = resolve_signed_host_for_internal_presign(&replica_headers)
+            else {
+                tracing::warn!(
+                    operation = "replicate-delete-object",
+                    target_node = %target,
+                    bucket = %request.bucket,
+                    key = %request.key,
+                    "Skipping replica fanout because signed host header is missing or malformed"
+                );
+                observations.push(WriteAckObservation {
+                    node: target.clone(),
+                    acked: false,
+                });
+                continue;
+            };
             let Some(path_and_query) = presigned_replica_delete_path_and_query(
                 request.state,
                 signed_host,
@@ -997,11 +1191,20 @@ async fn execute_primary_read_repair(
         .iter()
         .filter(|owner| owner.as_str() != state.node_id.as_ref())
     {
-        let signed_host = probe_headers
-            .get(header::HOST)
-            .and_then(|value| value.to_str().ok())
-            .filter(|value| !value.trim().is_empty())
-            .unwrap_or(target.as_str());
+        let Some(signed_host) = resolve_signed_host_for_internal_presign(&probe_headers) else {
+            tracing::warn!(
+                operation = "read-repair-probe-head",
+                target_node = %target,
+                bucket = %bucket,
+                key = %key,
+                "Skipping read-repair probe because signed host header is missing or malformed"
+            );
+            observations.push(ReplicaObservation {
+                node: target.clone(),
+                version: None,
+            });
+            continue;
+        };
         let Some(path_and_query) = presigned_replica_head_path_and_query(
             state,
             signed_host,
@@ -1148,11 +1351,17 @@ async fn execute_primary_read_repair(
                     repair_payload = Some(body);
                 }
 
-                let signed_host = put_headers
-                    .get(header::HOST)
-                    .and_then(|value| value.to_str().ok())
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or(node.as_str());
+                let Some(signed_host) = resolve_signed_host_for_internal_presign(&put_headers)
+                else {
+                    tracing::warn!(
+                        operation = "read-repair-upsert",
+                        target_node = %node,
+                        bucket = %bucket,
+                        key = %key,
+                        "Skipping read-repair upsert because signed host header is missing or malformed"
+                    );
+                    continue;
+                };
                 let Some(path_and_query) =
                     presigned_replica_put_path_and_query(state, signed_host, bucket, key)
                 else {
@@ -1200,11 +1409,17 @@ async fn execute_primary_read_repair(
                 }
             }
             ReadRepairAction::DeleteReplica { node } => {
-                let signed_host = delete_headers
-                    .get(header::HOST)
-                    .and_then(|value| value.to_str().ok())
-                    .filter(|value| !value.trim().is_empty())
-                    .unwrap_or(node.as_str());
+                let Some(signed_host) = resolve_signed_host_for_internal_presign(&delete_headers)
+                else {
+                    tracing::warn!(
+                        operation = "read-repair-delete",
+                        target_node = %node,
+                        bucket = %bucket,
+                        key = %key,
+                        "Skipping read-repair delete because signed host header is missing or malformed"
+                    );
+                    continue;
+                };
                 let Some(path_and_query) = presigned_replica_delete_path_and_query(
                     state,
                     signed_host,
@@ -1315,6 +1530,16 @@ async fn copy_object(
     // Validate source and destination bucket existence.
     ensure_bucket_exists(&state, &copy_source.bucket).await?;
     ensure_bucket_exists(&state, &bucket).await?;
+    ensure_consensus_bucket_authority(&state, &placement, &copy_source.bucket, "CopyObject")?;
+    ensure_consensus_object_mutation_authority(&state, &placement, &bucket, &key, "CopyObject")?;
+    ensure_consensus_object_read_authority(
+        &state,
+        &placement,
+        &copy_source.bucket,
+        &copy_source.key,
+        copy_source.version_id.as_deref(),
+        "CopyObject",
+    )?;
 
     // Get source object
     let (mut reader, src_meta) = if let Some(source_version_id) = copy_source.version_id.as_deref()
@@ -1475,6 +1700,14 @@ pub async fn get_object(
 
     let range_header = headers.get("range").and_then(|v| v.to_str().ok());
     let requested_version_id = params.get("versionId").map(String::as_str);
+    ensure_consensus_object_read_authority(
+        &state,
+        &placement,
+        &bucket,
+        &key,
+        requested_version_id,
+        "GetObject",
+    )?;
 
     if let Some(range_str) = range_header {
         let meta = if let Some(version_id) = requested_version_id {
@@ -1617,6 +1850,14 @@ pub async fn head_object(
     ensure_bucket_exists(&state, &bucket).await?;
 
     let requested_version_id = params.get("versionId").map(String::as_str);
+    ensure_consensus_object_read_authority(
+        &state,
+        &placement,
+        &bucket,
+        &key,
+        requested_version_id,
+        "HeadObject",
+    )?;
     let meta = if let Some(version_id) = requested_version_id {
         state
             .storage
@@ -1709,6 +1950,21 @@ pub async fn delete_object(
 
     if let Some(version_id) = params.get("versionId") {
         ensure_bucket_exists(&state, &bucket).await?;
+        ensure_consensus_object_mutation_authority(
+            &state,
+            &placement,
+            &bucket,
+            &key,
+            "DeleteObjectVersion",
+        )?;
+        ensure_consensus_object_read_authority(
+            &state,
+            &placement,
+            &bucket,
+            &key,
+            Some(version_id),
+            "DeleteObjectVersion",
+        )?;
 
         let deleted_meta = state
             .storage
@@ -1746,6 +2002,7 @@ pub async fn delete_object(
     }
 
     ensure_bucket_exists(&state, &bucket).await?;
+    ensure_consensus_object_mutation_authority(&state, &placement, &bucket, &key, "DeleteObject")?;
 
     let result = state
         .storage
@@ -1965,6 +2222,7 @@ pub async fn delete_objects(
         .any(|entry| entry.forward_target.is_none());
     if has_local_entries {
         ensure_bucket_exists(&state, &bucket).await?;
+        ensure_consensus_bucket_authority(&state, &placement, &bucket, "DeleteObjects")?;
     }
 
     let mut outcomes = Vec::with_capacity(planned_entries.len());
@@ -1974,11 +2232,16 @@ pub async fn delete_objects(
     let forwarded_delete_headers = replica_delete_headers(&headers);
     for entry in planned_entries {
         if let Some(forward) = entry.forward_target {
-            let signed_host = forwarded_delete_headers
-                .get(header::HOST)
-                .and_then(|value| value.to_str().ok())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or(forward.target.as_str());
+            let Some(signed_host) =
+                resolve_signed_host_for_internal_presign(&forwarded_delete_headers)
+            else {
+                outcomes.push(DeleteObjectsOutcome::Error {
+                    key: entry.key,
+                    code: "ServiceUnavailable",
+                    message: "Write forwarding to primary owner failed: signed host header is missing or malformed".to_string(),
+                });
+                continue;
+            };
             let Some(path_and_query) = presigned_replica_delete_path_and_query(
                 &state,
                 signed_host,
@@ -2121,6 +2384,21 @@ mod tests {
     use crate::metadata::PersistedMetadataQueryableStateError;
 
     #[test]
+    fn resolve_signed_host_for_internal_presign_returns_host() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::HOST, HeaderValue::from_static("node-b:9000"));
+
+        let signed_host = resolve_signed_host_for_internal_presign(&headers);
+        assert_eq!(signed_host, Some("node-b:9000"));
+    }
+
+    #[test]
+    fn resolve_signed_host_for_internal_presign_returns_none_for_missing_host() {
+        let headers = HeaderMap::new();
+        assert_eq!(resolve_signed_host_for_internal_presign(&headers), None);
+    }
+
+    #[test]
     fn forwarded_delete_objects_outcome_maps_auth_rejects_to_service_unavailable() {
         let forbidden = Response::builder()
             .status(StatusCode::FORBIDDEN)
@@ -2200,7 +2478,10 @@ mod tests {
                 },
             ),
         );
-        assert_eq!(reason, "invalid persisted metadata state (duplicate-object-state)");
+        assert_eq!(
+            reason,
+            "invalid persisted metadata state (duplicate-object-state)"
+        );
     }
 
     #[test]
@@ -2218,5 +2499,43 @@ mod tests {
             reason,
             "invalid persisted metadata state (duplicate-object-version-state)"
         );
+    }
+
+    #[test]
+    fn map_persisted_object_read_query_error_uses_canonical_reason_for_non_view_errors() {
+        let err = map_persisted_object_read_query_error(
+            "GetObject",
+            PersistedMetadataQueryError::InvalidPersistedState(
+                PersistedMetadataQueryableStateError::DuplicateObjectState {
+                    bucket: "bucket".to_string(),
+                    key: "key".to_string(),
+                },
+            ),
+        );
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::ServiceUnavailable
+        ));
+        assert!(
+            err.message
+                .contains("cannot query consensus metadata state (duplicate-object-state)")
+        );
+    }
+
+    #[test]
+    fn map_persisted_object_read_query_error_preserves_view_mismatch_details() {
+        let err = map_persisted_object_read_query_error(
+            "HeadObject",
+            PersistedMetadataQueryError::ViewIdMismatch {
+                expected_view_id: "view-a".to_string(),
+                persisted_view_id: "view-b".to_string(),
+            },
+        );
+        assert!(matches!(
+            err.code,
+            crate::error::S3ErrorCode::ServiceUnavailable
+        ));
+        assert!(err.message.contains("expected='view-a'"));
+        assert!(err.message.contains("persisted='view-b'"));
     }
 }

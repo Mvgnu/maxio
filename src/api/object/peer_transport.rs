@@ -2,10 +2,9 @@ use std::fs;
 use std::time::Duration;
 
 use crate::cluster::transport_identity::{
-    PeerTransportEnforcementMode,
-    PeerCertificatePolicy, PeerTransportIdentityMode,
+    PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityMode,
     assess_peer_transport_policy_with_context,
-    attest_peer_transport_identity_with_mtls_with_policy,
+    attest_peer_transport_identity_with_mtls_with_policy, peer_transport_policy_effective_reason,
     probe_peer_transport_identity_with_certificate_policy_and_node_id_binding,
 };
 use crate::config::Config;
@@ -51,12 +50,13 @@ fn resolve_internal_peer_transport_with_cluster_peer_presence(
         auth_configured,
         has_cluster_peers,
     );
+    let readiness_reason = peer_transport_policy_effective_reason(&policy).as_str();
 
     match status.mode {
         PeerTransportIdentityMode::None if policy.required => {
-            Err(S3Error::service_unavailable(
-                "Internal peer transport policy requires mTLS identity in distributed shared-token mode, but no peer TLS configuration is present",
-            ))
+            Err(S3Error::service_unavailable(&format!(
+                "Internal peer transport policy requires mTLS identity in distributed shared-token mode ({readiness_reason}), but no peer TLS configuration is present"
+            )))
         }
         PeerTransportIdentityMode::None => Ok(ResolvedInternalPeerTransport {
             scheme: "http",
@@ -69,8 +69,7 @@ fn resolve_internal_peer_transport_with_cluster_peer_presence(
                 .unwrap_or("mTLS peer transport identity is not ready with current configuration");
             Err(S3Error::service_unavailable(&format!(
                 "Internal peer transport is not ready ({}): {}",
-                status.reason.as_str(),
-                warning
+                readiness_reason, warning
             )))
         }
         PeerTransportIdentityMode::MtlsPath => {
@@ -248,6 +247,10 @@ mod tests {
             chunk_size: 10 * 1024 * 1024,
             parity_shards: 0,
             min_disk_headroom_bytes: 0,
+            pending_replication_due_warning_threshold: None,
+            pending_rebalance_due_warning_threshold: None,
+            pending_membership_propagation_due_warning_threshold: None,
+            pending_metadata_repair_due_warning_threshold: None,
             cluster_auth_token: None,
             cluster_peer_tls_cert_path: None,
             cluster_peer_tls_key_path: None,
@@ -289,6 +292,7 @@ mod tests {
         )
         .expect_err("should fail closed");
         assert!(err.message.contains("requires mTLS identity"));
+        assert!(err.message.contains("(not_configured)"));
     }
 
     #[test]
@@ -312,6 +316,7 @@ mod tests {
         let err = resolve_internal_peer_transport_with_cluster_peer_presence(&config, true)
             .expect_err("should fail closed");
         assert!(err.message.contains("requires mTLS identity"));
+        assert!(err.message.contains("(not_configured)"));
     }
 
     #[test]

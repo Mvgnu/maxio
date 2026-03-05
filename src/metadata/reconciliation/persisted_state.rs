@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind;
+use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -201,14 +202,23 @@ pub fn classify_pending_metadata_repair_apply_error(
     error: &PendingMetadataRepairApplyError,
 ) -> PendingMetadataRepairApplyFailure {
     match error {
-        PendingMetadataRepairApplyError::StateLoad(source)
-        | PendingMetadataRepairApplyError::StatePersist(source) => {
-            PendingMetadataRepairApplyFailure::transient(source.to_string())
+        PendingMetadataRepairApplyError::StateLoad(source) => {
+            PendingMetadataRepairApplyFailure::transient_with_reason(
+                "persisted-state-load-failed",
+                source.to_string(),
+            )
+        }
+        PendingMetadataRepairApplyError::StatePersist(source) => {
+            PendingMetadataRepairApplyFailure::transient_with_reason(
+                "persisted-state-persist-failed",
+                source.to_string(),
+            )
         }
         PendingMetadataRepairApplyError::Execution(source) => {
-            PendingMetadataRepairApplyFailure::permanent(format!(
-                "metadata repair execution is not applicable to current state: {source:?}"
-            ))
+            PendingMetadataRepairApplyFailure::permanent_with_reason(
+                source.canonical_reason(),
+                format!("metadata repair execution is not applicable to current state: {source:?}"),
+            )
         }
     }
 }
@@ -560,7 +570,10 @@ pub fn persist_persisted_metadata_state(
         nanos_since_epoch
     );
     let temp_path = parent.join(temp_file_name);
-    std::fs::write(&temp_path, payload)?;
+    let mut temp_file = std::fs::File::create(&temp_path)?;
+    temp_file.write_all(payload.as_slice())?;
+    temp_file.sync_all()?;
+    drop(temp_file);
     if let Err(error) = std::fs::rename(&temp_path, path) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(error);
@@ -857,6 +870,48 @@ pub fn resolve_bucket_mutation_preconditions_from_persisted_state(
     })
 }
 
+pub fn resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state(
+    state: &PersistedMetadataState,
+    bucket: &str,
+    expected_view_id: Option<&str>,
+    now_unix_ms: u64,
+) -> Result<PersistedBucketLifecycleMutationPreconditionResolution, PersistedMetadataQueryError> {
+    let presence_resolution =
+        resolve_bucket_presence_from_persisted_state(state, bucket, expected_view_id)?;
+
+    match presence_resolution {
+        PersistedBucketPresenceReadResolution::Present(bucket_state) => {
+            let lifecycle_resolution = resolve_bucket_lifecycle_configuration_from_persisted_state(
+                state,
+                bucket_state.bucket.as_str(),
+                expected_view_id,
+            )?;
+            let lifecycle_configuration = match lifecycle_resolution {
+                PersistedBucketLifecycleConfigurationReadResolution::Present(configuration) => {
+                    Some(configuration)
+                }
+                PersistedBucketLifecycleConfigurationReadResolution::Missing => None,
+            };
+
+            Ok(
+                PersistedBucketLifecycleMutationPreconditionResolution::Present {
+                    bucket: bucket_state,
+                    lifecycle_configuration,
+                },
+            )
+        }
+        PersistedBucketPresenceReadResolution::Tombstoned(tombstone) => Ok(
+            PersistedBucketLifecycleMutationPreconditionResolution::Tombstoned {
+                retention_active: !tombstone.is_expired(now_unix_ms),
+                tombstone,
+            },
+        ),
+        PersistedBucketPresenceReadResolution::Missing => {
+            Ok(PersistedBucketLifecycleMutationPreconditionResolution::Missing)
+        }
+    }
+}
+
 pub fn resolve_object_metadata_from_persisted_state(
     state: &PersistedMetadataState,
     bucket: &str,
@@ -880,6 +935,74 @@ pub fn resolve_object_metadata_from_persisted_state(
         .cloned()
         .map(PersistedObjectMetadataReadResolution::Present)
         .unwrap_or(PersistedObjectMetadataReadResolution::Missing))
+}
+
+pub fn resolve_object_read_preconditions_from_persisted_state(
+    state: &PersistedMetadataState,
+    bucket: &str,
+    key: &str,
+    expected_view_id: Option<&str>,
+) -> Result<PersistedObjectReadPreconditionResolution, PersistedMetadataQueryError> {
+    match resolve_bucket_presence_from_persisted_state(state, bucket, expected_view_id)? {
+        PersistedBucketPresenceReadResolution::Present(_) => {
+            match resolve_object_metadata_from_persisted_state(
+                state,
+                bucket,
+                key,
+                expected_view_id,
+            )? {
+                PersistedObjectMetadataReadResolution::Present(object) => {
+                    Ok(PersistedObjectReadPreconditionResolution::Present(object))
+                }
+                PersistedObjectMetadataReadResolution::Missing => {
+                    Ok(PersistedObjectReadPreconditionResolution::MissingObject)
+                }
+            }
+        }
+        PersistedBucketPresenceReadResolution::Tombstoned(tombstone) => Ok(
+            PersistedObjectReadPreconditionResolution::TombstonedBucket(tombstone),
+        ),
+        PersistedBucketPresenceReadResolution::Missing => {
+            Ok(PersistedObjectReadPreconditionResolution::MissingBucket)
+        }
+    }
+}
+
+pub fn resolve_object_mutation_preconditions_from_persisted_state(
+    state: &PersistedMetadataState,
+    bucket: &str,
+    key: &str,
+    expected_view_id: Option<&str>,
+    now_unix_ms: u64,
+) -> Result<PersistedObjectMutationPreconditionResolution, PersistedMetadataQueryError> {
+    match resolve_bucket_presence_from_persisted_state(state, bucket, expected_view_id)? {
+        PersistedBucketPresenceReadResolution::Present(bucket_state) => {
+            let object = match resolve_object_metadata_from_persisted_state(
+                state,
+                bucket,
+                key,
+                expected_view_id,
+            )? {
+                PersistedObjectMetadataReadResolution::Present(object) => Some(object),
+                PersistedObjectMetadataReadResolution::Missing => None,
+            };
+            Ok(
+                PersistedObjectMutationPreconditionResolution::PresentBucket {
+                    bucket: bucket_state,
+                    object,
+                },
+            )
+        }
+        PersistedBucketPresenceReadResolution::Tombstoned(tombstone) => Ok(
+            PersistedObjectMutationPreconditionResolution::TombstonedBucket {
+                retention_active: !tombstone.is_expired(now_unix_ms),
+                tombstone,
+            },
+        ),
+        PersistedBucketPresenceReadResolution::Missing => {
+            Ok(PersistedObjectMutationPreconditionResolution::MissingBucket)
+        }
+    }
 }
 
 pub fn resolve_object_version_metadata_from_persisted_state(
@@ -907,4 +1030,76 @@ pub fn resolve_object_version_metadata_from_persisted_state(
         .cloned()
         .map(PersistedObjectVersionMetadataReadResolution::Present)
         .unwrap_or(PersistedObjectVersionMetadataReadResolution::Missing))
+}
+
+pub fn resolve_object_version_read_preconditions_from_persisted_state(
+    state: &PersistedMetadataState,
+    bucket: &str,
+    key: &str,
+    version_id: &str,
+    expected_view_id: Option<&str>,
+) -> Result<PersistedObjectVersionReadPreconditionResolution, PersistedMetadataQueryError> {
+    match resolve_bucket_presence_from_persisted_state(state, bucket, expected_view_id)? {
+        PersistedBucketPresenceReadResolution::Present(_) => {
+            match resolve_object_version_metadata_from_persisted_state(
+                state,
+                bucket,
+                key,
+                version_id,
+                expected_view_id,
+            )? {
+                PersistedObjectVersionMetadataReadResolution::Present(version) => Ok(
+                    PersistedObjectVersionReadPreconditionResolution::Present(version),
+                ),
+                PersistedObjectVersionMetadataReadResolution::Missing => {
+                    Ok(PersistedObjectVersionReadPreconditionResolution::MissingVersion)
+                }
+            }
+        }
+        PersistedBucketPresenceReadResolution::Tombstoned(tombstone) => {
+            Ok(PersistedObjectVersionReadPreconditionResolution::TombstonedBucket(tombstone))
+        }
+        PersistedBucketPresenceReadResolution::Missing => {
+            Ok(PersistedObjectVersionReadPreconditionResolution::MissingBucket)
+        }
+    }
+}
+
+pub fn resolve_object_version_mutation_preconditions_from_persisted_state(
+    state: &PersistedMetadataState,
+    bucket: &str,
+    key: &str,
+    version_id: &str,
+    expected_view_id: Option<&str>,
+    now_unix_ms: u64,
+) -> Result<PersistedObjectVersionMutationPreconditionResolution, PersistedMetadataQueryError> {
+    match resolve_bucket_presence_from_persisted_state(state, bucket, expected_view_id)? {
+        PersistedBucketPresenceReadResolution::Present(bucket_state) => {
+            let version = match resolve_object_version_metadata_from_persisted_state(
+                state,
+                bucket,
+                key,
+                version_id,
+                expected_view_id,
+            )? {
+                PersistedObjectVersionMetadataReadResolution::Present(version) => Some(version),
+                PersistedObjectVersionMetadataReadResolution::Missing => None,
+            };
+            Ok(
+                PersistedObjectVersionMutationPreconditionResolution::PresentBucket {
+                    bucket: bucket_state,
+                    version,
+                },
+            )
+        }
+        PersistedBucketPresenceReadResolution::Tombstoned(tombstone) => Ok(
+            PersistedObjectVersionMutationPreconditionResolution::TombstonedBucket {
+                retention_active: !tombstone.is_expired(now_unix_ms),
+                tombstone,
+            },
+        ),
+        PersistedBucketPresenceReadResolution::Missing => {
+            Ok(PersistedObjectVersionMutationPreconditionResolution::MissingBucket)
+        }
+    }
 }

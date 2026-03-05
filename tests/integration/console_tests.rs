@@ -1,5 +1,6 @@
 use super::*;
 use hmac::{Hmac, Mac};
+use maxio::config::ClusterPeerTransportMode;
 use maxio::metadata::{
     BucketLifecycleConfigurationState, BucketMetadataState, BucketMetadataTombstoneState,
     ClusterMetadataListingStrategy, ObjectMetadataState, ObjectVersionMetadataState,
@@ -676,6 +677,192 @@ async fn test_console_presign_returns_not_found_for_missing_object() {
 }
 
 #[tokio::test]
+async fn test_console_presign_consensus_index_does_not_fallback_to_local_object_storage() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "presign-consensus-local-only";
+    let key = "docs/readme.txt";
+    let payload = b"local-object-without-consensus-row";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, false).await;
+    seed_consensus_metadata_object_rows(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+        &[],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/{}/presign/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Object not found");
+}
+
+#[tokio::test]
+async fn test_console_presign_consensus_index_rejects_missing_persisted_bucket() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "presign-consensus-missing-bucket";
+    let key = "docs/readme.txt";
+    let payload = b"local-object-without-persisted-bucket-row";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, false).await;
+    seed_consensus_metadata_object_rows(&data_dir, membership_view_id.as_str(), &[], &[]);
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/{}/presign/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+}
+
+#[tokio::test]
+async fn test_console_presign_consensus_index_uses_persisted_object_metadata_state() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "presign-consensus-canonical";
+    let key = "docs/readme.txt";
+    let payload = b"canonical-consensus-object";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, false).await;
+    seed_consensus_metadata_object_rows(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+        &[ObjectMetadataState {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            latest_version_id: None,
+            is_delete_marker: false,
+        }],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/{}/presign/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(body["url"].as_str().is_some_and(|value| !value.is_empty()));
+    assert_eq!(body["expiresIn"], 3600);
+}
+
+#[tokio::test]
+async fn test_console_presign_consensus_index_rejects_persisted_view_mismatch() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let bucket = "presign-consensus-view-mismatch";
+    let key = "docs/readme.txt";
+    let payload = b"canonical-consensus-object";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, false).await;
+    seed_consensus_metadata_object_rows(
+        &data_dir,
+        "stale-console-consensus-view",
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+        &[ObjectMetadataState {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            latest_version_id: None,
+            is_delete_marker: false,
+        }],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .get(format!(
+            "{}/api/buckets/{}/presign/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 503);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("persisted metadata view mismatch")),
+        "unexpected body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn test_console_lifecycle_roundtrip() {
     let (base_url, _tmp) = start_server().await;
     s3_request("PUT", &format!("{}/lifecycle-bucket", base_url), vec![]).await;
@@ -791,6 +978,12 @@ async fn test_console_metrics_endpoint_requires_auth_and_returns_json() {
     assert_eq!(body["membershipProtocolReady"], true);
     assert_eq!(body["membershipConverged"], true);
     assert_eq!(body["membershipConvergenceReason"], "not-required");
+    assert!(body["membershipLastUpdateAgeMs"].as_u64().is_some());
+    assert_eq!(body["clusterPeerAuthProductionReady"], false);
+    assert_eq!(
+        body["clusterAuthProductionReason"],
+        "not-required-standalone"
+    );
     assert_eq!(body["writeDurabilityMode"], "degraded-success");
     assert!(
         body["metadataListingStrategy"]
@@ -831,6 +1024,22 @@ async fn test_console_metrics_endpoint_requires_auth_and_returns_json() {
             .as_u64()
             .is_some()
     );
+    assert_eq!(
+        body["pendingDueWarningThresholdOverrides"]["replicationDueTargets"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["pendingDueWarningThresholdOverrides"]["rebalanceDueTransfers"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["pendingDueWarningThresholdOverrides"]["membershipPropagationDueOperations"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["pendingDueWarningThresholdOverrides"]["metadataRepairDuePlans"],
+        serde_json::Value::Null
+    );
 }
 
 #[tokio::test]
@@ -840,6 +1049,10 @@ async fn test_console_metrics_endpoint_reports_distributed_mode_when_configured(
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
     config.cluster_peers = vec!["node-b.internal:9000".to_string()];
     config.membership_protocol = maxio::config::MembershipProtocol::Gossip;
+    config.pending_replication_due_warning_threshold = Some(512);
+    config.pending_rebalance_due_warning_threshold = Some(1024);
+    config.pending_membership_propagation_due_warning_threshold = Some(256);
+    config.pending_metadata_repair_due_warning_threshold = Some(0);
     let (base_url, _tmp) = start_server_with_config(config, tmp).await;
 
     let cookie = console_login_cookie(&base_url).await;
@@ -864,6 +1077,12 @@ async fn test_console_metrics_endpoint_reports_distributed_mode_when_configured(
     assert_eq!(
         body["membershipConvergenceReason"],
         "peer-connectivity-failed"
+    );
+    assert!(body["membershipLastUpdateAgeMs"].as_u64().is_some());
+    assert_eq!(body["clusterPeerAuthProductionReady"], false);
+    assert_eq!(
+        body["clusterAuthProductionReason"],
+        "cluster-auth-token-not-configured"
     );
     assert!(
         body["writeDurabilityMode"]
@@ -890,6 +1109,22 @@ async fn test_console_metrics_endpoint_reports_distributed_mode_when_configured(
         body["pendingReplicationReplayCyclesTotal"]
             .as_u64()
             .is_some()
+    );
+    assert_eq!(
+        body["pendingDueWarningThresholdOverrides"]["replicationDueTargets"],
+        512
+    );
+    assert_eq!(
+        body["pendingDueWarningThresholdOverrides"]["rebalanceDueTransfers"],
+        1024
+    );
+    assert_eq!(
+        body["pendingDueWarningThresholdOverrides"]["membershipPropagationDueOperations"],
+        256
+    );
+    assert_eq!(
+        body["pendingDueWarningThresholdOverrides"]["metadataRepairDuePlans"],
+        0
     );
 }
 
@@ -1275,6 +1510,18 @@ async fn test_console_placement_endpoint_requires_auth_and_returns_json() {
         body["pendingReplicaFanoutOperations"],
         serde_json::json!([])
     );
+    assert_eq!(
+        body["replicaFanoutExecution"]["pendingReplicationQueueReadable"],
+        true
+    );
+    assert_eq!(
+        body["replicaFanoutExecution"]["pendingReplicationBacklogOperations"],
+        0
+    );
+    assert_eq!(
+        body["replicaFanoutExecution"]["pendingReplicationReplayCyclesTotal"],
+        0
+    );
 }
 
 #[tokio::test]
@@ -1328,6 +1575,18 @@ async fn test_console_placement_endpoint_reports_distributed_chunk_owners() {
     assert_eq!(
         body["pendingReplicaFanoutOperations"],
         serde_json::json!([])
+    );
+    assert_eq!(
+        body["replicaFanoutExecution"]["pendingReplicationQueueReadable"],
+        true
+    );
+    assert_eq!(
+        body["replicaFanoutExecution"]["pendingReplicationBacklogOperations"],
+        0
+    );
+    assert_eq!(
+        body["replicaFanoutExecution"]["pendingReplicationReplayCyclesTotal"],
+        0
     );
     assert_eq!(body["clusterPeerCount"], 1);
     assert_eq!(
@@ -1491,6 +1750,7 @@ async fn test_console_placement_endpoint_contract_shape_is_stable() {
             "mixedOwnerBatchMutationPolicy",
             "replicaFanoutOperations",
             "pendingReplicaFanoutOperations",
+            "replicaFanoutExecution",
             "mode",
             "nodeId",
             "clusterPeerCount",
@@ -1789,6 +2049,16 @@ async fn test_console_summary_endpoint_requires_auth_and_returns_json() {
     assert!(body["metrics"]["requestsTotal"].as_u64().is_some());
     assert_eq!(body["metrics"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(body["metrics"]["membershipProtocolReady"], true);
+    assert!(
+        body["metrics"]["membershipLastUpdateAgeMs"]
+            .as_u64()
+            .is_some()
+    );
+    assert_eq!(body["metrics"]["clusterPeerAuthProductionReady"], false);
+    assert_eq!(
+        body["metrics"]["clusterAuthProductionReason"],
+        "not-required-standalone"
+    );
     assert_eq!(body["metrics"]["writeDurabilityMode"], "degraded-success");
     assert!(
         body["metrics"]["metadataListingStrategy"]
@@ -1810,6 +2080,22 @@ async fn test_console_summary_endpoint_requires_auth_and_returns_json() {
         body["metrics"]["pendingReplicationReplayCyclesTotal"]
             .as_u64()
             .is_some()
+    );
+    assert_eq!(
+        body["metrics"]["pendingDueWarningThresholdOverrides"]["replicationDueTargets"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["metrics"]["pendingDueWarningThresholdOverrides"]["rebalanceDueTransfers"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["metrics"]["pendingDueWarningThresholdOverrides"]["membershipPropagationDueOperations"],
+        serde_json::Value::Null
+    );
+    assert_eq!(
+        body["metrics"]["pendingDueWarningThresholdOverrides"]["metadataRepairDuePlans"],
+        serde_json::Value::Null
     );
     assert_eq!(body["topology"]["mode"], "standalone");
     assert!(
@@ -1850,6 +2136,10 @@ async fn test_console_summary_endpoint_reports_distributed_mode_when_configured(
     let data_dir = tmp.path().to_str().unwrap().to_string();
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
     config.cluster_peers = vec!["127.0.0.1:1".to_string()];
+    config.pending_replication_due_warning_threshold = Some(2048);
+    config.pending_rebalance_due_warning_threshold = Some(4096);
+    config.pending_membership_propagation_due_warning_threshold = Some(512);
+    config.pending_metadata_repair_due_warning_threshold = Some(0);
     let (base_url, _tmp) = start_server_with_config(config, tmp).await;
 
     let cookie = console_login_cookie(&base_url).await;
@@ -1885,6 +2175,16 @@ async fn test_console_summary_endpoint_reports_distributed_mode_when_configured(
         "peer-connectivity-failed"
     );
     assert!(
+        body["metrics"]["membershipLastUpdateAgeMs"]
+            .as_u64()
+            .is_some()
+    );
+    assert_eq!(body["metrics"]["clusterPeerAuthProductionReady"], false);
+    assert_eq!(
+        body["metrics"]["clusterAuthProductionReason"],
+        "cluster-auth-token-not-configured"
+    );
+    assert!(
         body["metrics"]["writeDurabilityMode"]
             .as_str()
             .is_some_and(|v| !v.is_empty())
@@ -1909,6 +2209,22 @@ async fn test_console_summary_endpoint_reports_distributed_mode_when_configured(
         body["metrics"]["pendingReplicationReplayCyclesTotal"]
             .as_u64()
             .is_some()
+    );
+    assert_eq!(
+        body["metrics"]["pendingDueWarningThresholdOverrides"]["replicationDueTargets"],
+        2048
+    );
+    assert_eq!(
+        body["metrics"]["pendingDueWarningThresholdOverrides"]["rebalanceDueTransfers"],
+        4096
+    );
+    assert_eq!(
+        body["metrics"]["pendingDueWarningThresholdOverrides"]["membershipPropagationDueOperations"],
+        512
+    );
+    assert_eq!(
+        body["metrics"]["pendingDueWarningThresholdOverrides"]["metadataRepairDuePlans"],
+        0
     );
     assert_eq!(body["topology"]["mode"], "distributed");
     assert_eq!(body["topology"]["clusterPeerCount"], 1);
@@ -2054,6 +2370,68 @@ async fn test_console_health_endpoint_contract_shape_is_stable() {
             "diskHeadroomSufficient",
             "peerConnectivityReady",
             "membershipProtocolReady",
+            "clusterPeerAuthProductionReady",
+        ],
+    );
+}
+
+#[tokio::test]
+async fn test_console_metrics_endpoint_contract_shape_is_stable() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let response = client()
+        .get(format!("{}/api/system/metrics", base_url))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status(), 200);
+
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_object_has_keys(
+        &body,
+        &[
+            "requestsTotal",
+            "uptimeSeconds",
+            "version",
+            "membershipProtocolReady",
+            "membershipConverged",
+            "membershipConvergenceReason",
+            "membershipLastUpdateAgeMs",
+            "clusterPeerAuthProductionReady",
+            "clusterAuthProductionReason",
+            "writeDurabilityMode",
+            "metadataListingStrategy",
+            "metadataListingReady",
+            "pendingReplicationBacklogOperations",
+            "pendingReplicationBacklogDueTargets",
+            "pendingReplicationReplayCyclesTotal",
+            "pendingRebalanceBacklogOperations",
+            "pendingRebalanceReplayCyclesTotal",
+            "pendingMembershipPropagationBacklogOperations",
+            "pendingMembershipPropagationReplayCyclesTotal",
+            "pendingMetadataRepairBacklogPlans",
+            "pendingMetadataRepairReplayCyclesTotal",
+            "pendingDueWarningThresholdOverrides",
+            "mode",
+            "nodeId",
+            "clusterPeerCount",
+            "clusterPeers",
+            "membershipProtocol",
+            "membershipEngine",
+            "placementEpoch",
+        ],
+    );
+    assert!(body["clusterPeers"].is_array());
+    assert!(body["membershipLastUpdateAgeMs"].as_u64().is_some());
+    assert_object_has_keys(
+        &body["pendingDueWarningThresholdOverrides"],
+        &[
+            "replicationDueTargets",
+            "rebalanceDueTransfers",
+            "membershipPropagationDueOperations",
+            "metadataRepairDuePlans",
         ],
     );
 }
@@ -2103,6 +2481,7 @@ async fn test_console_summary_endpoint_contract_shape_is_stable() {
             "diskHeadroomSufficient",
             "peerConnectivityReady",
             "membershipProtocolReady",
+            "clusterPeerAuthProductionReady",
         ],
     );
     assert_object_has_keys(
@@ -2114,6 +2493,9 @@ async fn test_console_summary_endpoint_contract_shape_is_stable() {
             "membershipProtocolReady",
             "membershipConverged",
             "membershipConvergenceReason",
+            "membershipLastUpdateAgeMs",
+            "clusterPeerAuthProductionReady",
+            "clusterAuthProductionReason",
             "writeDurabilityMode",
             "metadataListingStrategy",
             "metadataListingReady",
@@ -2126,6 +2508,7 @@ async fn test_console_summary_endpoint_contract_shape_is_stable() {
             "pendingMembershipPropagationReplayCyclesTotal",
             "pendingMetadataRepairBacklogPlans",
             "pendingMetadataRepairReplayCyclesTotal",
+            "pendingDueWarningThresholdOverrides",
         ],
     );
     assert_object_has_keys(
@@ -2313,6 +2696,190 @@ async fn test_console_download_object_returns_expected_headers_and_body() {
         Some("attachment; filename=\"report.txt\"")
     );
     assert_eq!(download.bytes().await.unwrap().as_ref(), payload.as_slice());
+}
+
+#[tokio::test]
+async fn test_console_download_object_consensus_index_does_not_fallback_to_local_object_storage() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "console-download-consensus-local-only";
+    let key = "docs/readme.txt";
+    let payload = b"local-object-without-consensus-row";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, false).await;
+    seed_consensus_metadata_object_rows(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+        &[],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/download/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 404);
+    let body: serde_json::Value = download.json().await.unwrap();
+    assert_eq!(body["error"], "Object not found");
+}
+
+#[tokio::test]
+async fn test_console_download_object_consensus_index_rejects_missing_persisted_bucket() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "console-download-consensus-missing-bucket";
+    let key = "docs/readme.txt";
+    let payload = b"local-object-without-persisted-bucket-row";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, false).await;
+    seed_consensus_metadata_object_rows(&data_dir, membership_view_id.as_str(), &[], &[]);
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/download/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 404);
+    let body: serde_json::Value = download.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+}
+
+#[tokio::test]
+async fn test_console_download_object_consensus_index_uses_persisted_object_metadata_state() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "console-download-consensus-canonical";
+    let key = "docs/readme.txt";
+    let payload = b"canonical-consensus-object";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, false).await;
+    seed_consensus_metadata_object_rows(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+        &[ObjectMetadataState {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            latest_version_id: None,
+            is_delete_marker: false,
+        }],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/download/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 200);
+    assert_eq!(download.bytes().await.unwrap().as_ref(), payload);
+}
+
+#[tokio::test]
+async fn test_console_download_object_consensus_index_rejects_persisted_view_mismatch() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let bucket = "console-download-consensus-view-mismatch";
+    let key = "docs/readme.txt";
+    let payload = b"canonical-consensus-object";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, false).await;
+    seed_consensus_metadata_object_rows(
+        &data_dir,
+        "stale-console-consensus-view",
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: false,
+        }],
+        &[ObjectMetadataState {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            latest_version_id: None,
+            is_delete_marker: false,
+        }],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/download/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 503);
+    let body: serde_json::Value = download.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("persisted metadata view mismatch")),
+        "unexpected body: {body}"
+    );
 }
 
 #[tokio::test]
@@ -2596,7 +3163,7 @@ async fn test_console_list_objects_consensus_index_returns_service_unavailable_w
     let body: serde_json::Value = list.json().await.unwrap();
     assert_eq!(
         body["error"],
-        "Distributed metadata listing strategy is not ready for this request (consensus-index-peer-fan-in-auth-token-missing)"
+        "Distributed metadata listing strategy is not ready for this request (cluster-peer-fan-in-auth-token-missing)"
     );
 }
 
@@ -3515,7 +4082,7 @@ async fn test_console_list_versions_consensus_index_returns_service_unavailable_
     let body: serde_json::Value = list.json().await.unwrap();
     assert_eq!(
         body["error"],
-        "Distributed metadata listing strategy is not ready for this request (consensus-index-peer-fan-in-auth-token-missing)"
+        "Distributed metadata listing strategy is not ready for this request (cluster-peer-fan-in-auth-token-missing)"
     );
 }
 
@@ -4596,6 +5163,360 @@ async fn test_console_get_bucket_lifecycle_consensus_index_persists_local_mutati
 }
 
 #[tokio::test]
+async fn test_console_set_bucket_versioning_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-consensus-set-versioning-missing";
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    seed_consensus_metadata_buckets(&data_dir, membership_view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let set = client()
+        .put(format!("{}/api/buckets/{}/versioning", base_url, bucket))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "enabled": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(set.status(), 404);
+    let body: serde_json::Value = set.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let enabled = storage
+        .is_versioned(bucket)
+        .await
+        .expect("versioning read should succeed");
+    assert!(
+        !enabled,
+        "expected no local versioning side effect when consensus metadata marks bucket missing"
+    );
+}
+
+#[tokio::test]
+async fn test_console_set_bucket_lifecycle_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-consensus-set-lifecycle-missing";
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    seed_consensus_metadata_buckets(&data_dir, membership_view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let set = client()
+        .put(format!("{}/api/buckets/{}/lifecycle", base_url, bucket))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({
+            "rules": [{
+                "id": "reject-local-fallback",
+                "prefix": "logs/",
+                "expirationDays": 7,
+                "enabled": true
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(set.status(), 404);
+    let body: serde_json::Value = set.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let rules = storage
+        .get_lifecycle_rules(bucket)
+        .await
+        .expect("lifecycle read should succeed");
+    assert!(
+        rules.is_empty(),
+        "expected no local lifecycle side effect when consensus metadata marks bucket missing"
+    );
+}
+
+#[tokio::test]
+async fn test_console_upload_object_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-consensus-upload-object-missing";
+    let key = "docs/reject-upload.txt";
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    seed_consensus_metadata_buckets(&data_dir, membership_view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let upload = client()
+        .put(format!(
+            "{}/api/buckets/{}/upload/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .header("content-type", "text/plain")
+        .body("consensus-payload")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(upload.status(), 404);
+    let body: serde_json::Value = upload.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let head = storage.head_object(bucket, key).await;
+    assert!(
+        head.is_err(),
+        "expected no local object write when consensus metadata marks bucket missing"
+    );
+}
+
+#[tokio::test]
+async fn test_console_delete_object_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-consensus-delete-object-missing";
+    let key = "docs/reject-delete.txt";
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    seed_consensus_metadata_buckets(&data_dir, membership_view_id.as_str(), &[]);
+    seed_object_in_data_dir(&data_dir, bucket, key, b"delete-me", false).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let delete = client()
+        .delete(format!(
+            "{}/api/buckets/{}/objects/{}",
+            base_url, bucket, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), 404);
+    let body: serde_json::Value = delete.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let head = storage.head_object(bucket, key).await;
+    assert!(
+        head.is_ok(),
+        "expected no local object delete when consensus metadata marks bucket missing"
+    );
+}
+
+#[tokio::test]
+async fn test_console_create_folder_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-consensus-create-folder-missing";
+    let folder = "docs";
+    let folder_key = "docs/";
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    seed_consensus_metadata_buckets(&data_dir, membership_view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let create_folder = client()
+        .post(format!("{}/api/buckets/{}/folders", base_url, bucket))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "name": folder }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create_folder.status(), 404);
+    let body: serde_json::Value = create_folder.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let head = storage.head_object(bucket, folder_key).await;
+    assert!(
+        head.is_err(),
+        "expected no local folder-marker write when consensus metadata marks bucket missing"
+    );
+}
+
+#[tokio::test]
+async fn test_console_delete_version_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-consensus-delete-version-missing";
+    let key = "docs/versioned.txt";
+    let payload = b"versioned-payload";
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, true).await;
+    let versions = list_object_versions_from_data_dir(&data_dir, bucket, key).await;
+    let version_id = versions
+        .iter()
+        .find_map(|version| {
+            if version.is_delete_marker {
+                None
+            } else {
+                version.version_id.clone()
+            }
+        })
+        .expect("seeded versioned object should include version id");
+
+    seed_consensus_metadata_buckets(&data_dir, membership_view_id.as_str(), &[]);
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let delete = client()
+        .delete(format!(
+            "{}/api/buckets/{}/versions/{}/objects/{}",
+            base_url, bucket, version_id, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), 404);
+    let body: serde_json::Value = delete.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+
+    let versions_after = list_object_versions_from_data_dir(&data_dir, bucket, key).await;
+    assert!(
+        versions_after.iter().any(|version| {
+            !version.is_delete_marker && version.version_id.as_deref() == Some(version_id.as_str())
+        }),
+        "expected no local object-version delete when consensus metadata marks bucket missing"
+    );
+}
+
+#[tokio::test]
+async fn test_console_delete_bucket_lifecycle_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-consensus-delete-lifecycle-missing";
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    seed_consensus_metadata_buckets(&data_dir, membership_view_id.as_str(), &[]);
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    storage
+        .set_lifecycle_rules(
+            bucket,
+            &[maxio::storage::lifecycle::LifecycleRule {
+                id: "existing-rule".to_string(),
+                prefix: "logs/".to_string(),
+                expiration_days: 3,
+                enabled: true,
+            }],
+        )
+        .await
+        .expect("set lifecycle should succeed");
+
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let delete = client()
+        .put(format!("{}/api/buckets/{}/lifecycle", base_url, bucket))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "rules": [] }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(delete.status(), 404);
+    let body: serde_json::Value = delete.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let rules = storage
+        .get_lifecycle_rules(bucket)
+        .await
+        .expect("lifecycle read should succeed");
+    assert_eq!(
+        rules,
+        vec![maxio::storage::lifecycle::LifecycleRule {
+            id: "existing-rule".to_string(),
+            prefix: "logs/".to_string(),
+            expiration_days: 3,
+            enabled: true,
+        }],
+        "expected no local lifecycle side effect when consensus metadata marks bucket missing"
+    );
+}
+
+#[tokio::test]
 async fn test_console_get_bucket_lifecycle_consensus_index_returns_service_unavailable_when_token_missing_for_enabled_rules()
  {
     let tmp = TempDir::new().unwrap();
@@ -4794,6 +5715,56 @@ async fn test_console_list_buckets_rejects_unready_authoritative_metadata_strate
 }
 
 #[tokio::test]
+async fn test_console_list_buckets_rejects_unready_authoritative_metadata_strategy_when_internal_peer_transport_mtls_not_ready()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-buckets-aggregation-unready-mtls";
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "node-a.internal:9000".to_string();
+    config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::RequestTimeAggregation;
+    config.cluster_auth_token = Some("console-bucket-list-auth-token".to_string());
+    config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+    config.cluster_peer_tls_cert_path = Some(
+        tmp.path()
+            .join("missing-peer.crt")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_key_path = Some(
+        tmp.path()
+            .join("missing-peer.key")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_ca_path = Some(
+        tmp.path()
+            .join("missing-ca.pem")
+            .to_string_lossy()
+            .to_string(),
+    );
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let list = client()
+        .get(format!("{}/api/buckets", base_url))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), 503);
+    let body: serde_json::Value = list.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("Internal peer transport")),
+        "unexpected body: {body}"
+    );
+}
+
+#[tokio::test]
 async fn test_console_create_bucket_rejects_unready_authoritative_metadata_strategy() {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
@@ -4827,6 +5798,70 @@ async fn test_console_create_bucket_rejects_unready_authoritative_metadata_strat
 }
 
 #[tokio::test]
+async fn test_console_create_bucket_rejects_unready_authoritative_metadata_strategy_when_internal_peer_transport_mtls_not_ready_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = "node-a.internal:9000".to_string();
+    config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::RequestTimeAggregation;
+    config.cluster_auth_token = Some("console-create-bucket-auth-token".to_string());
+    config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+    config.cluster_peer_tls_cert_path = Some(
+        tmp.path()
+            .join("missing-peer.crt")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_key_path = Some(
+        tmp.path()
+            .join("missing-peer.key")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_ca_path = Some(
+        tmp.path()
+            .join("missing-ca.pem")
+            .to_string_lossy()
+            .to_string(),
+    );
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+    let bucket = "console-create-bucket-unready-mtls";
+
+    let create = client()
+        .post(format!("{}/api/buckets", base_url))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "name": bucket }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(create.status(), 503);
+    let body: serde_json::Value = create.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("Internal peer transport")),
+        "unexpected body: {body}"
+    );
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let buckets = storage
+        .list_buckets()
+        .await
+        .expect("bucket listing should succeed");
+    assert!(
+        !buckets.iter().any(|entry| entry.name == bucket),
+        "expected no local bucket-create side effect when peer transport is unready"
+    );
+}
+
+#[tokio::test]
 async fn test_console_delete_bucket_rejects_unready_authoritative_metadata_strategy() {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
@@ -4856,6 +5891,71 @@ async fn test_console_delete_bucket_rejects_unready_authoritative_metadata_strat
 
     let head = s3_request("HEAD", &format!("{}/{}", base_url, bucket), vec![]).await;
     assert_eq!(head.status(), 503);
+}
+
+#[tokio::test]
+async fn test_console_set_bucket_versioning_rejects_unready_authoritative_metadata_strategy_when_internal_peer_transport_mtls_not_ready_without_local_side_effect()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-set-versioning-unready-mtls";
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+    let mut config = make_test_config(data_dir.clone(), false, 10 * 1024 * 1024, 0);
+    config.node_id = "node-a.internal:9000".to_string();
+    config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::RequestTimeAggregation;
+    config.cluster_auth_token = Some("console-set-versioning-auth-token".to_string());
+    config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+    config.cluster_peer_tls_cert_path = Some(
+        tmp.path()
+            .join("missing-peer.crt")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_key_path = Some(
+        tmp.path()
+            .join("missing-peer.key")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_ca_path = Some(
+        tmp.path()
+            .join("missing-ca.pem")
+            .to_string_lossy()
+            .to_string(),
+    );
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let set = client()
+        .put(format!("{}/api/buckets/{}/versioning", base_url, bucket))
+        .header("cookie", &cookie)
+        .header("content-type", "application/json")
+        .json(&serde_json::json!({ "enabled": true }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(set.status(), 503);
+    let body: serde_json::Value = set.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("Internal peer transport")),
+        "unexpected body: {body}"
+    );
+
+    let storage =
+        maxio::storage::filesystem::FilesystemStorage::new(&data_dir, false, 10 * 1024 * 1024, 0)
+            .await
+            .expect("storage should initialize");
+    let enabled = storage
+        .is_versioned(bucket)
+        .await
+        .expect("versioning read should succeed");
+    assert!(
+        !enabled,
+        "expected no local versioning side effect when peer transport is unready"
+    );
 }
 
 #[tokio::test]
@@ -4892,7 +5992,67 @@ async fn test_console_list_objects_rejects_unready_authoritative_metadata_strate
     assert!(
         body["error"]
             .as_str()
-            .is_some_and(|message| message.contains("missing-expected-nodes")),
+            .is_some_and(|message| message.contains("cluster-peer-fan-in-auth-token-missing")),
+        "unexpected body: {body}"
+    );
+}
+
+#[tokio::test]
+async fn test_console_list_objects_rejects_unready_authoritative_metadata_strategy_when_internal_peer_transport_mtls_not_ready()
+ {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-distributed-list-aggregation-unready-mtls";
+    seed_bucket_in_data_dir(&data_dir, bucket).await;
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "node-a.internal:9000".to_string();
+    config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::RequestTimeAggregation;
+    config.cluster_auth_token = Some("console-fan-in-auth-token".to_string());
+    config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+    config.cluster_peer_tls_cert_path = Some(
+        tmp.path()
+            .join("missing-peer.crt")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_key_path = Some(
+        tmp.path()
+            .join("missing-peer.key")
+            .to_string_lossy()
+            .to_string(),
+    );
+    config.cluster_peer_tls_ca_path = Some(
+        tmp.path()
+            .join("missing-ca.pem")
+            .to_string_lossy()
+            .to_string(),
+    );
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+    let put_object = s3_request(
+        "PUT",
+        &format!("{}/{}/docs/readme.txt", base_url, bucket),
+        b"hello".to_vec(),
+    )
+    .await;
+    assert_eq!(put_object.status(), 200);
+
+    let list = client()
+        .get(format!(
+            "{}/api/buckets/{}/objects?prefix=docs/&delimiter=/",
+            base_url, bucket
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(list.status(), 503);
+    let body: serde_json::Value = list.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("Internal peer transport")),
         "unexpected body: {body}"
     );
 }
@@ -4943,7 +6103,7 @@ async fn test_console_list_versions_rejects_unready_authoritative_metadata_strat
     assert!(
         body["error"]
             .as_str()
-            .is_some_and(|message| message.contains("missing-expected-nodes")),
+            .is_some_and(|message| message.contains("cluster-peer-fan-in-auth-token-missing")),
         "unexpected body: {body}"
     );
 }
@@ -5109,6 +6269,192 @@ async fn test_console_download_version_returns_expected_headers_and_body() {
     assert_eq!(
         download.bytes().await.unwrap().as_ref(),
         first_payload.as_slice()
+    );
+}
+
+#[tokio::test]
+async fn test_console_download_version_consensus_index_does_not_fallback_to_local_storage() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "console-download-version-consensus-local-only";
+    let key = "docs/versioned.txt";
+    let payload = b"local-version-without-consensus-row";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, true).await;
+    let versions = list_object_versions_from_data_dir(&data_dir, bucket, key).await;
+    let version_id = versions
+        .iter()
+        .find_map(|version| {
+            if version.is_delete_marker {
+                None
+            } else {
+                version.version_id.clone()
+            }
+        })
+        .expect("seeded versioned object should include version id");
+
+    seed_consensus_metadata_object_version_rows(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: true,
+            lifecycle_enabled: false,
+        }],
+        &[],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/versions/{}/download/{}",
+            base_url, bucket, version_id, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 404);
+    let body: serde_json::Value = download.json().await.unwrap();
+    assert_eq!(body["error"], "Version not found");
+}
+
+#[tokio::test]
+async fn test_console_download_version_consensus_index_uses_persisted_metadata_state() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let bucket = "console-download-version-consensus-canonical";
+    let key = "docs/versioned.txt";
+    let payload = b"canonical-versioned-object";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, true).await;
+    let versions = list_object_versions_from_data_dir(&data_dir, bucket, key).await;
+    let version_id = versions
+        .iter()
+        .find_map(|version| {
+            if version.is_delete_marker {
+                None
+            } else {
+                version.version_id.clone()
+            }
+        })
+        .expect("seeded versioned object should include version id");
+
+    seed_consensus_metadata_object_version_rows(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: true,
+            lifecycle_enabled: false,
+        }],
+        &[ObjectVersionMetadataState {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            version_id: version_id.clone(),
+            is_delete_marker: false,
+            is_latest: true,
+        }],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/versions/{}/download/{}",
+            base_url, bucket, version_id, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 200);
+    assert_eq!(download.bytes().await.unwrap().as_ref(), payload);
+}
+
+#[tokio::test]
+async fn test_console_download_version_consensus_index_rejects_persisted_view_mismatch() {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let bucket = "console-download-version-consensus-view-mismatch";
+    let key = "docs/versioned.txt";
+    let payload = b"canonical-versioned-object";
+
+    seed_object_in_data_dir(&data_dir, bucket, key, payload, true).await;
+    let versions = list_object_versions_from_data_dir(&data_dir, bucket, key).await;
+    let version_id = versions
+        .iter()
+        .find_map(|version| {
+            if version.is_delete_marker {
+                None
+            } else {
+                version.version_id.clone()
+            }
+        })
+        .expect("seeded versioned object should include version id");
+
+    seed_consensus_metadata_object_version_rows(
+        &data_dir,
+        "stale-console-consensus-view",
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: true,
+            lifecycle_enabled: false,
+        }],
+        &[ObjectVersionMetadataState {
+            bucket: bucket.to_string(),
+            key: key.to_string(),
+            version_id: version_id.clone(),
+            is_delete_marker: false,
+            is_latest: true,
+        }],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.cluster_auth_token = Some("shared-token".to_string());
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let download = client()
+        .get(format!(
+            "{}/api/buckets/{}/versions/{}/download/{}",
+            base_url, bucket, version_id, key
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(download.status(), 503);
+    let body: serde_json::Value = download.json().await.unwrap();
+    assert!(
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("persisted metadata view mismatch")),
+        "unexpected body: {body}"
     );
 }
 
@@ -5442,6 +6788,25 @@ async fn test_console_delete_version_returns_not_found_for_missing_version() {
     assert_eq!(resp.status(), 404);
     let body: serde_json::Value = resp.json().await.unwrap();
     assert_eq!(body["error"], "Version not found");
+}
+
+#[tokio::test]
+async fn test_console_delete_version_returns_not_found_for_missing_bucket() {
+    let (base_url, _tmp) = start_server().await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let resp = client()
+        .delete(format!(
+            "{}/api/buckets/missing-bucket/versions/version-123/objects/docs/readme.txt",
+            base_url
+        ))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+    let body: serde_json::Value = resp.json().await.unwrap();
+    assert_eq!(body["error"], "Bucket not found");
 }
 
 #[tokio::test]

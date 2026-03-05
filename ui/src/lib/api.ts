@@ -149,6 +149,9 @@ export interface RuntimeMetrics {
   clusterPeers: string[]
   membershipProtocol: string | null
   membershipProtocolReady: boolean | null
+  clusterPeerAuthProductionReady: boolean | null
+  clusterAuthProductionReason: string | null
+  membershipLastUpdateAgeMs: number | null
   placementEpoch: number | null
   raw: string
 }
@@ -174,6 +177,8 @@ export interface RuntimeHealth {
   clusterPeers: string[]
   membershipProtocol: string | null
   membershipViewId: string | null
+  clusterAuthProductionReason: string | null
+  membershipLastUpdateAgeMs: number | null
   placementEpoch: number | null
   checks: {
     dataDirAccessible: boolean | null
@@ -182,6 +187,7 @@ export interface RuntimeHealth {
     diskHeadroomSufficient: boolean | null
     peerConnectivityReady: boolean | null
     membershipProtocolReady: boolean | null
+    clusterPeerAuthProductionReady: boolean | null
   } | null
   warnings: string[]
   raw: unknown
@@ -223,6 +229,7 @@ export interface RuntimePlacement {
   mixedOwnerBatchMutationPolicy: string | null
   replicaFanoutOperations: string[]
   pendingReplicaFanoutOperations: string[]
+  replicaFanoutExecution: RuntimePlacementReplicaFanoutExecution | null
   owners: string[]
   primaryOwner: string | null
   forwardTarget: string | null
@@ -235,6 +242,19 @@ export interface RuntimePlacement {
   membershipProtocol: string | null
   membershipViewId: string | null
   raw: unknown
+}
+
+export interface RuntimePlacementReplicaFanoutExecution {
+  writeDurabilityMode: string | null
+  pendingReplicationQueueReadable: boolean | null
+  pendingReplicationBacklogOperations: number | null
+  pendingReplicationBacklogPendingTargets: number | null
+  pendingReplicationBacklogDueTargets: number | null
+  pendingReplicationBacklogFailedTargets: number | null
+  pendingReplicationReplayCyclesTotal: number | null
+  pendingReplicationReplayCyclesSucceeded: number | null
+  pendingReplicationReplayCyclesFailed: number | null
+  pendingReplicationReplayLastSuccessUnixMs: number | null
 }
 
 export interface RuntimeRebalanceMembershipSnapshot {
@@ -667,7 +687,9 @@ export async function getRuntimeSummaryApi(): Promise<ApiResult<RuntimeSummary>>
       clusterPeerCount?: number
       clusterPeers?: string[]
       membershipProtocol?: string
+      membershipLastUpdateAgeMs?: number
       placementEpoch?: number
+      clusterAuthProductionReason?: string
         checks?: {
           dataDirAccessible?: boolean
           dataDirWritable?: boolean
@@ -675,6 +697,7 @@ export async function getRuntimeSummaryApi(): Promise<ApiResult<RuntimeSummary>>
           diskHeadroomSufficient?: boolean
           peerConnectivityReady?: boolean
           membershipProtocolReady?: boolean
+          clusterPeerAuthProductionReady?: boolean
         }
       warnings?: string[]
     }
@@ -688,7 +711,10 @@ export async function getRuntimeSummaryApi(): Promise<ApiResult<RuntimeSummary>>
       clusterPeers?: string[]
       membershipProtocol?: string
       membershipProtocolReady?: boolean
+      membershipLastUpdateAgeMs?: number
       placementEpoch?: number
+      clusterPeerAuthProductionReady?: boolean
+      clusterAuthProductionReason?: string
     }
     topology?: {
       mode?: string
@@ -737,6 +763,11 @@ export async function getRuntimeSummaryApi(): Promise<ApiResult<RuntimeSummary>>
         clusterPeerCount: topology.clusterPeerCount,
         clusterPeers: topology.clusterPeers,
         membershipProtocol: topology.membershipProtocol,
+        clusterAuthProductionReason:
+          typeof (rawHealth as { clusterAuthProductionReason?: unknown })
+            .clusterAuthProductionReason === 'string'
+            ? (rawHealth as { clusterAuthProductionReason: string }).clusterAuthProductionReason
+            : null,
         placementEpoch:
           typeof (rawHealth as { placementEpoch?: unknown }).placementEpoch === 'number'
             ? Math.trunc((rawHealth as { placementEpoch: number }).placementEpoch)
@@ -744,6 +775,13 @@ export async function getRuntimeSummaryApi(): Promise<ApiResult<RuntimeSummary>>
         membershipViewId:
           typeof (rawHealth as { membershipViewId?: unknown }).membershipViewId === 'string'
             ? (rawHealth as { membershipViewId: string }).membershipViewId
+            : null,
+        membershipLastUpdateAgeMs:
+          typeof (rawHealth as { membershipLastUpdateAgeMs?: unknown }).membershipLastUpdateAgeMs ===
+          'number'
+            ? Math.trunc(
+                (rawHealth as { membershipLastUpdateAgeMs: number }).membershipLastUpdateAgeMs
+              )
             : null,
         checks:
           typeof rawHealth.checks === 'object' && rawHealth.checks !== null
@@ -772,6 +810,10 @@ export async function getRuntimeSummaryApi(): Promise<ApiResult<RuntimeSummary>>
                   typeof rawHealth.checks.membershipProtocolReady === 'boolean'
                     ? rawHealth.checks.membershipProtocolReady
                     : null,
+                clusterPeerAuthProductionReady:
+                  typeof rawHealth.checks.clusterPeerAuthProductionReady === 'boolean'
+                    ? rawHealth.checks.clusterPeerAuthProductionReady
+                    : null,
               }
             : null,
         warnings: Array.isArray(rawHealth.warnings)
@@ -795,6 +837,18 @@ export async function getRuntimeSummaryApi(): Promise<ApiResult<RuntimeSummary>>
         membershipProtocolReady:
           typeof rawMetrics.membershipProtocolReady === 'boolean'
             ? rawMetrics.membershipProtocolReady
+            : null,
+        clusterPeerAuthProductionReady:
+          typeof rawMetrics.clusterPeerAuthProductionReady === 'boolean'
+            ? rawMetrics.clusterPeerAuthProductionReady
+            : null,
+        clusterAuthProductionReason:
+          typeof rawMetrics.clusterAuthProductionReason === 'string'
+            ? rawMetrics.clusterAuthProductionReason
+            : null,
+        membershipLastUpdateAgeMs:
+          typeof rawMetrics.membershipLastUpdateAgeMs === 'number'
+            ? Math.trunc(rawMetrics.membershipLastUpdateAgeMs)
             : null,
         placementEpoch: topology.placementEpoch,
         raw: JSON.stringify(rawMetrics, null, 2),
@@ -827,6 +881,9 @@ export async function getRuntimeMetricsApi(): Promise<ApiResult<RuntimeMetrics>>
     clusterPeers?: string[]
     membershipProtocol?: string
     membershipProtocolReady?: boolean
+    clusterPeerAuthProductionReady?: boolean
+    clusterAuthProductionReason?: string
+    membershipLastUpdateAgeMs?: number
     placementEpoch?: number
   }>('/api/system/metrics')
   if (consoleResult.ok) {
@@ -857,6 +914,18 @@ export async function getRuntimeMetricsApi(): Promise<ApiResult<RuntimeMetrics>>
           typeof consoleResult.data.membershipProtocolReady === 'boolean'
             ? consoleResult.data.membershipProtocolReady
             : null,
+        clusterPeerAuthProductionReady:
+          typeof consoleResult.data.clusterPeerAuthProductionReady === 'boolean'
+            ? consoleResult.data.clusterPeerAuthProductionReady
+            : null,
+        clusterAuthProductionReason:
+          typeof consoleResult.data.clusterAuthProductionReason === 'string'
+            ? consoleResult.data.clusterAuthProductionReason
+            : null,
+        membershipLastUpdateAgeMs:
+          typeof consoleResult.data.membershipLastUpdateAgeMs === 'number'
+            ? Math.trunc(consoleResult.data.membershipLastUpdateAgeMs)
+            : null,
         placementEpoch: topology.placementEpoch,
         raw: JSON.stringify(consoleResult.data, null, 2),
       },
@@ -883,6 +952,12 @@ export async function getRuntimeMetricsApi(): Promise<ApiResult<RuntimeMetrics>>
   const membershipProtocolReadyMatch = raw.match(
     /^maxio_membership_protocol_ready\s+([0-9]+(?:\.[0-9]+)?)$/m
   )
+  const clusterPeerAuthProductionReadyMatch = raw.match(
+    /^maxio_cluster_peer_auth_production_ready\s+([0-9]+(?:\.[0-9]+)?)$/m
+  )
+  const clusterAuthProductionReasonMatch = raw.match(
+    /^maxio_cluster_peer_auth_production_reason_info\{reason="([^"]+)"\}\s+1(?:\.0+)?$/m
+  )
   const placementEpochMatch = raw.match(/^maxio_placement_epoch\s+([0-9]+(?:\.[0-9]+)?)$/m)
 
   const requestsTotal = requestsMatch ? Number(requestsMatch[1]) : null
@@ -898,6 +973,18 @@ export async function getRuntimeMetricsApi(): Promise<ApiResult<RuntimeMetrics>>
       : membershipProtocolReadyValue === 0
         ? false
         : null
+  const clusterPeerAuthProductionReadyValue = clusterPeerAuthProductionReadyMatch
+    ? Number(clusterPeerAuthProductionReadyMatch[1])
+    : null
+  const clusterPeerAuthProductionReady =
+    clusterPeerAuthProductionReadyValue === 1
+      ? true
+      : clusterPeerAuthProductionReadyValue === 0
+        ? false
+        : null
+  const clusterAuthProductionReason = clusterAuthProductionReasonMatch
+    ? clusterAuthProductionReasonMatch[1]
+    : null
   const placementEpoch = placementEpochMatch ? Number(placementEpochMatch[1]) : null
 
   return {
@@ -913,6 +1000,9 @@ export async function getRuntimeMetricsApi(): Promise<ApiResult<RuntimeMetrics>>
       clusterPeers: [],
       membershipProtocol,
       membershipProtocolReady,
+      clusterPeerAuthProductionReady,
+      clusterAuthProductionReason,
+      membershipLastUpdateAgeMs: null,
       placementEpoch:
         typeof placementEpoch === 'number' && Number.isFinite(placementEpoch)
           ? Math.trunc(placementEpoch)
@@ -929,6 +1019,7 @@ export async function getRuntimeTopologyApi(): Promise<ApiResult<RuntimeTopology
     clusterPeerCount?: number
     clusterPeers?: string[]
     membershipProtocol?: string
+    membershipLastUpdateAgeMs?: number
     placementEpoch?: number
   }>('/api/system/topology')
 
@@ -965,6 +1056,7 @@ export async function getRuntimeHealthApi(): Promise<ApiResult<RuntimeHealth>> {
     clusterPeers?: string[]
     membershipProtocol?: string
     placementEpoch?: number
+    clusterAuthProductionReason?: string
     checks?: {
       dataDirAccessible?: boolean
       dataDirWritable?: boolean
@@ -972,6 +1064,7 @@ export async function getRuntimeHealthApi(): Promise<ApiResult<RuntimeHealth>> {
       diskHeadroomSufficient?: boolean
       peerConnectivityReady?: boolean
       membershipProtocolReady?: boolean
+      clusterPeerAuthProductionReady?: boolean
     }
     warnings?: string[]
   }>('/api/system/health')
@@ -996,6 +1089,11 @@ export async function getRuntimeHealthApi(): Promise<ApiResult<RuntimeHealth>> {
       clusterPeerCount: topology.clusterPeerCount,
       clusterPeers: topology.clusterPeers,
       membershipProtocol: topology.membershipProtocol,
+      clusterAuthProductionReason:
+        typeof (result.data as { clusterAuthProductionReason?: unknown })
+          .clusterAuthProductionReason === 'string'
+          ? (result.data as { clusterAuthProductionReason: string }).clusterAuthProductionReason
+          : null,
       placementEpoch:
         typeof (result.data as { placementEpoch?: unknown }).placementEpoch === 'number'
           ? Math.trunc((result.data as { placementEpoch: number }).placementEpoch)
@@ -1003,6 +1101,13 @@ export async function getRuntimeHealthApi(): Promise<ApiResult<RuntimeHealth>> {
       membershipViewId:
         typeof (result.data as { membershipViewId?: unknown }).membershipViewId === 'string'
           ? (result.data as { membershipViewId: string }).membershipViewId
+          : null,
+      membershipLastUpdateAgeMs:
+        typeof (result.data as { membershipLastUpdateAgeMs?: unknown }).membershipLastUpdateAgeMs ===
+        'number'
+          ? Math.trunc(
+              (result.data as { membershipLastUpdateAgeMs: number }).membershipLastUpdateAgeMs
+            )
           : null,
       checks:
         typeof result.data.checks === 'object' && result.data.checks !== null
@@ -1030,6 +1135,10 @@ export async function getRuntimeHealthApi(): Promise<ApiResult<RuntimeHealth>> {
               membershipProtocolReady:
                 typeof result.data.checks.membershipProtocolReady === 'boolean'
                   ? result.data.checks.membershipProtocolReady
+                  : null,
+              clusterPeerAuthProductionReady:
+                typeof result.data.checks.clusterPeerAuthProductionReady === 'boolean'
+                  ? result.data.checks.clusterPeerAuthProductionReady
                   : null,
             }
           : null,
@@ -1093,6 +1202,18 @@ export async function getRuntimePlacementApi(args: {
     mixedOwnerBatchMutationPolicy?: string
     replicaFanoutOperations?: unknown
     pendingReplicaFanoutOperations?: unknown
+    replicaFanoutExecution?: {
+      writeDurabilityMode?: string
+      pendingReplicationQueueReadable?: boolean
+      pendingReplicationBacklogOperations?: number
+      pendingReplicationBacklogPendingTargets?: number
+      pendingReplicationBacklogDueTargets?: number
+      pendingReplicationBacklogFailedTargets?: number
+      pendingReplicationReplayCyclesTotal?: number
+      pendingReplicationReplayCyclesSucceeded?: number
+      pendingReplicationReplayCyclesFailed?: number
+      pendingReplicationReplayLastSuccessUnixMs?: number
+    }
     owners?: unknown
     primaryOwner?: string | null
     forwardTarget?: string | null
@@ -1113,6 +1234,52 @@ export async function getRuntimePlacementApi(args: {
   const topology = normalizeRuntimeTopology(result.data)
   const parseStringArray = (value: unknown): string[] =>
     Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  const execution = result.data.replicaFanoutExecution
+  const replicaFanoutExecution: RuntimePlacementReplicaFanoutExecution | null =
+    execution && typeof execution === 'object'
+      ? {
+          writeDurabilityMode:
+            typeof execution.writeDurabilityMode === 'string'
+              ? execution.writeDurabilityMode
+              : null,
+          pendingReplicationQueueReadable:
+            typeof execution.pendingReplicationQueueReadable === 'boolean'
+              ? execution.pendingReplicationQueueReadable
+              : null,
+          pendingReplicationBacklogOperations:
+            typeof execution.pendingReplicationBacklogOperations === 'number'
+              ? Math.trunc(execution.pendingReplicationBacklogOperations)
+              : null,
+          pendingReplicationBacklogPendingTargets:
+            typeof execution.pendingReplicationBacklogPendingTargets === 'number'
+              ? Math.trunc(execution.pendingReplicationBacklogPendingTargets)
+              : null,
+          pendingReplicationBacklogDueTargets:
+            typeof execution.pendingReplicationBacklogDueTargets === 'number'
+              ? Math.trunc(execution.pendingReplicationBacklogDueTargets)
+              : null,
+          pendingReplicationBacklogFailedTargets:
+            typeof execution.pendingReplicationBacklogFailedTargets === 'number'
+              ? Math.trunc(execution.pendingReplicationBacklogFailedTargets)
+              : null,
+          pendingReplicationReplayCyclesTotal:
+            typeof execution.pendingReplicationReplayCyclesTotal === 'number'
+              ? Math.trunc(execution.pendingReplicationReplayCyclesTotal)
+              : null,
+          pendingReplicationReplayCyclesSucceeded:
+            typeof execution.pendingReplicationReplayCyclesSucceeded === 'number'
+              ? Math.trunc(execution.pendingReplicationReplayCyclesSucceeded)
+              : null,
+          pendingReplicationReplayCyclesFailed:
+            typeof execution.pendingReplicationReplayCyclesFailed === 'number'
+              ? Math.trunc(execution.pendingReplicationReplayCyclesFailed)
+              : null,
+          pendingReplicationReplayLastSuccessUnixMs:
+            typeof execution.pendingReplicationReplayLastSuccessUnixMs === 'number'
+              ? Math.trunc(execution.pendingReplicationReplayLastSuccessUnixMs)
+              : null,
+        }
+      : null
   const owners = Array.isArray(result.data.owners)
     ? result.data.owners.filter((owner): owner is string => typeof owner === 'string')
     : []
@@ -1158,6 +1325,7 @@ export async function getRuntimePlacementApi(args: {
       pendingReplicaFanoutOperations: parseStringArray(
         result.data.pendingReplicaFanoutOperations
       ),
+      replicaFanoutExecution,
       owners,
       primaryOwner: typeof result.data.primaryOwner === 'string' ? result.data.primaryOwner : null,
       forwardTarget: typeof result.data.forwardTarget === 'string' ? result.data.forwardTarget : null,

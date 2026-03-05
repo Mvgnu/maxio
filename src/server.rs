@@ -57,19 +57,24 @@ use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::cluster::transport_identity::{
     PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityMode,
     PeerTransportIdentityReadinessReason, PeerTransportIdentityStatus,
-    PeerTransportPolicyAssessment, assess_peer_transport_policy_with_context,
-    attest_peer_transport_identity_with_mtls_with_policy, peer_transport_policy_reject_reason,
+    PeerTransportPolicyAssessment, assess_cluster_peer_auth_production_readiness,
+    assess_peer_transport_policy_with_context,
+    attest_peer_transport_identity_with_mtls_with_policy, peer_transport_policy_effective_reason,
     probe_peer_transport_identity_with_certificate_policy_and_node_id_binding,
 };
 use crate::config::{Config, MembershipProtocol, WriteDurabilityMode};
 use crate::embedded::ui_handler;
 use crate::membership::{MembershipEngine, MembershipEngineStatus, unix_ms_now};
-use crate::metadata::reconciliation::replay_pending_metadata_repairs_once_with_persisted_state_apply;
+use crate::metadata::reconciliation::{
+    PendingMetadataRepairReplayExecutionConfig,
+    replay_pending_metadata_repairs_once_with_persisted_state_apply_and_observer,
+};
 use crate::metadata::{
     ClusterMetadataListingStrategy, ClusterMetadataSnapshotAssessment,
     PendingMetadataRepairQueueSummary, assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
-    build_queryable_metadata_index_from_persisted_state, load_persisted_metadata_state,
+    build_queryable_metadata_index_from_persisted_state,
+    cluster_metadata_fan_in_auth_token_reject_reason, load_persisted_metadata_state,
     pending_metadata_repair_candidates_from_disk,
     summarize_pending_metadata_repair_queue_from_disk,
 };
@@ -218,6 +223,7 @@ pub struct RuntimeTopologySnapshot {
 pub struct RuntimeInternalHeaderRejectDimensions {
     total: AtomicU64,
     endpoint_api: AtomicU64,
+    endpoint_internal: AtomicU64,
     endpoint_healthz: AtomicU64,
     endpoint_metrics: AtomicU64,
     endpoint_ui: AtomicU64,
@@ -233,6 +239,7 @@ impl Default for RuntimeInternalHeaderRejectDimensions {
         Self {
             total: AtomicU64::new(0),
             endpoint_api: AtomicU64::new(0),
+            endpoint_internal: AtomicU64::new(0),
             endpoint_healthz: AtomicU64::new(0),
             endpoint_metrics: AtomicU64::new(0),
             endpoint_ui: AtomicU64::new(0),
@@ -248,6 +255,7 @@ impl Default for RuntimeInternalHeaderRejectDimensions {
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 enum RuntimeInternalHeaderRejectEndpoint {
     Api,
+    Internal,
     Healthz,
     Metrics,
     Ui,
@@ -258,6 +266,9 @@ impl RuntimeInternalHeaderRejectEndpoint {
     fn for_path(path: &str) -> Self {
         if path == "/api" || path.starts_with("/api/") {
             return Self::Api;
+        }
+        if path == "/internal" || path.starts_with("/internal/") {
+            return Self::Internal;
         }
         if path == "/healthz" {
             return Self::Healthz;
@@ -284,6 +295,7 @@ enum RuntimeInternalHeaderRejectSender {
 struct RuntimeInternalHeaderRejectDimensionsSnapshot {
     total: u64,
     endpoint_api: u64,
+    endpoint_internal: u64,
     endpoint_healthz: u64,
     endpoint_metrics: u64,
     endpoint_ui: u64,
@@ -515,13 +527,15 @@ pub struct PendingMetadataRepairReplayCounters {
     leased_plans_total: AtomicU64,
     acknowledged_plans_total: AtomicU64,
     failed_plans_total: AtomicU64,
+    dropped_plans_total: AtomicU64,
     skipped_plans_total: AtomicU64,
+    terminal_failure_reason_totals: RwLock<HashMap<String, u64>>,
     last_cycle_unix_ms: AtomicU64,
     last_success_unix_ms: AtomicU64,
     last_failure_unix_ms: AtomicU64,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Eq, PartialEq)]
 struct PendingMetadataRepairReplayCountersSnapshot {
     cycles_total: u64,
     cycles_succeeded: u64,
@@ -530,7 +544,9 @@ struct PendingMetadataRepairReplayCountersSnapshot {
     leased_plans_total: u64,
     acknowledged_plans_total: u64,
     failed_plans_total: u64,
+    dropped_plans_total: u64,
     skipped_plans_total: u64,
+    terminal_failure_reason_totals: Vec<(String, u64)>,
     last_cycle_unix_ms: u64,
     last_success_unix_ms: u64,
     last_failure_unix_ms: u64,
@@ -634,7 +650,9 @@ impl Default for PendingMetadataRepairReplayCounters {
             leased_plans_total: AtomicU64::new(0),
             acknowledged_plans_total: AtomicU64::new(0),
             failed_plans_total: AtomicU64::new(0),
+            dropped_plans_total: AtomicU64::new(0),
             skipped_plans_total: AtomicU64::new(0),
+            terminal_failure_reason_totals: RwLock::new(HashMap::new()),
             last_cycle_unix_ms: AtomicU64::new(0),
             last_success_unix_ms: AtomicU64::new(0),
             last_failure_unix_ms: AtomicU64::new(0),
@@ -1088,12 +1106,26 @@ impl PendingRebalanceReplayCounters {
 }
 
 impl PendingMetadataRepairReplayCounters {
+    fn record_terminal_failure_reason(&self, reason: &str) {
+        let reason = reason.trim();
+        if reason.is_empty() {
+            return;
+        }
+        let mut guard = match self.terminal_failure_reason_totals.write() {
+            Ok(guard) => guard,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let counter = guard.entry(reason.to_string()).or_insert(0);
+        *counter = counter.saturating_add(1);
+    }
+
     fn record_success(
         &self,
         scanned_plans: usize,
         leased_plans: usize,
         acknowledged_plans: usize,
         failed_plans: usize,
+        dropped_plans: usize,
         skipped_plans: usize,
     ) {
         let observed_at_unix_ms = unix_ms_now();
@@ -1107,6 +1139,8 @@ impl PendingMetadataRepairReplayCounters {
             .fetch_add(acknowledged_plans as u64, Ordering::Relaxed);
         self.failed_plans_total
             .fetch_add(failed_plans as u64, Ordering::Relaxed);
+        self.dropped_plans_total
+            .fetch_add(dropped_plans as u64, Ordering::Relaxed);
         self.skipped_plans_total
             .fetch_add(skipped_plans as u64, Ordering::Relaxed);
         self.last_cycle_unix_ms
@@ -1126,6 +1160,25 @@ impl PendingMetadataRepairReplayCounters {
     }
 
     fn snapshot(&self) -> PendingMetadataRepairReplayCountersSnapshot {
+        let terminal_failure_reason_totals = match self.terminal_failure_reason_totals.read() {
+            Ok(guard) => {
+                let mut values = guard
+                    .iter()
+                    .map(|(reason, total)| (reason.clone(), *total))
+                    .collect::<Vec<_>>();
+                values.sort_by(|left, right| left.0.cmp(&right.0));
+                values
+            }
+            Err(poisoned) => {
+                let mut values = poisoned
+                    .into_inner()
+                    .iter()
+                    .map(|(reason, total)| (reason.clone(), *total))
+                    .collect::<Vec<_>>();
+                values.sort_by(|left, right| left.0.cmp(&right.0));
+                values
+            }
+        };
         PendingMetadataRepairReplayCountersSnapshot {
             cycles_total: self.cycles_total.load(Ordering::Relaxed),
             cycles_succeeded: self.cycles_succeeded.load(Ordering::Relaxed),
@@ -1134,7 +1187,9 @@ impl PendingMetadataRepairReplayCounters {
             leased_plans_total: self.leased_plans_total.load(Ordering::Relaxed),
             acknowledged_plans_total: self.acknowledged_plans_total.load(Ordering::Relaxed),
             failed_plans_total: self.failed_plans_total.load(Ordering::Relaxed),
+            dropped_plans_total: self.dropped_plans_total.load(Ordering::Relaxed),
             skipped_plans_total: self.skipped_plans_total.load(Ordering::Relaxed),
+            terminal_failure_reason_totals,
             last_cycle_unix_ms: self.last_cycle_unix_ms.load(Ordering::Relaxed),
             last_success_unix_ms: self.last_success_unix_ms.load(Ordering::Relaxed),
             last_failure_unix_ms: self.last_failure_unix_ms.load(Ordering::Relaxed),
@@ -1210,6 +1265,9 @@ impl RuntimeInternalHeaderRejectDimensions {
             RuntimeInternalHeaderRejectEndpoint::Api => {
                 self.endpoint_api.fetch_add(1, Ordering::Relaxed);
             }
+            RuntimeInternalHeaderRejectEndpoint::Internal => {
+                self.endpoint_internal.fetch_add(1, Ordering::Relaxed);
+            }
             RuntimeInternalHeaderRejectEndpoint::Healthz => {
                 self.endpoint_healthz.fetch_add(1, Ordering::Relaxed);
             }
@@ -1244,6 +1302,7 @@ impl RuntimeInternalHeaderRejectDimensions {
         RuntimeInternalHeaderRejectDimensionsSnapshot {
             total: self.total.load(Ordering::Relaxed),
             endpoint_api: self.endpoint_api.load(Ordering::Relaxed),
+            endpoint_internal: self.endpoint_internal.load(Ordering::Relaxed),
             endpoint_healthz: self.endpoint_healthz.load(Ordering::Relaxed),
             endpoint_metrics: self.endpoint_metrics.load(Ordering::Relaxed),
             endpoint_ui: self.endpoint_ui.load(Ordering::Relaxed),
@@ -1492,7 +1551,7 @@ fn platform_routes(state: AppState) -> Router<AppState> {
         ))
 }
 
-fn internal_cluster_routes() -> Router<AppState> {
+fn internal_cluster_routes(state: AppState) -> Router<AppState> {
     Router::new()
         .route(
             "/internal/cluster/join/authorize",
@@ -1503,6 +1562,10 @@ fn internal_cluster_routes() -> Router<AppState> {
             "/internal/cluster/membership/update",
             post(cluster_membership_update_handler),
         )
+        .layer(axum::middleware::from_fn_with_state(
+            state,
+            internal_forwarding_sanitization_middleware,
+        ))
 }
 
 fn apply_runtime_middleware(state: AppState, routes: Router<AppState>) -> Router {
@@ -1523,13 +1586,13 @@ pub fn build_public_router(state: AppState) -> Router {
 }
 
 pub fn build_internal_router(state: AppState) -> Router {
-    apply_runtime_middleware(state, internal_cluster_routes())
+    apply_runtime_middleware(state.clone(), internal_cluster_routes(state))
 }
 
 pub fn build_router(state: AppState) -> Router {
     let routes = Router::new()
         .merge(platform_routes(state.clone()))
-        .merge(internal_cluster_routes())
+        .merge(internal_cluster_routes(state.clone()))
         .merge(s3_routes(state.clone()));
     apply_runtime_middleware(state, routes)
 }
@@ -1937,6 +2000,33 @@ struct PeerHttpTransport {
     scheme: &'static str,
 }
 
+fn runtime_peer_transport_has_cluster_peers(config: &Config) -> bool {
+    match config.parsed_cluster_peers() {
+        Ok(peers) => !peers.is_empty(),
+        Err(_) => true,
+    }
+}
+
+fn runtime_peer_transport_policy_assessment(
+    config: &Config,
+    status: &PeerTransportIdentityStatus,
+) -> PeerTransportPolicyAssessment {
+    let enforcement_mode = if config.cluster_peer_transport_required() {
+        PeerTransportEnforcementMode::StrictMtlsIdentityBound
+    } else {
+        PeerTransportEnforcementMode::Compatibility
+    };
+    let has_cluster_peers = runtime_peer_transport_has_cluster_peers(config);
+    let auth_configured = config.cluster_auth_token().is_some();
+    assess_peer_transport_policy_with_context(
+        status,
+        enforcement_mode,
+        has_cluster_peers,
+        auth_configured,
+        has_cluster_peers,
+    )
+}
+
 fn build_peer_http_transport(
     config: Option<&Config>,
     timeout: Duration,
@@ -1957,6 +2047,14 @@ fn build_peer_http_transport(
                 },
                 expected_node_id,
             );
+        let policy = runtime_peer_transport_policy_assessment(config, &identity_status);
+        let readiness_reason = peer_transport_policy_effective_reason(&policy).as_str();
+        if policy.required && !policy.is_ready() {
+            return Err(format!(
+                "mTLS peer transport policy requires ready peer transport identity in current mode ({readiness_reason})"
+            ));
+        }
+
         if identity_status.mode.as_str() == "mtls-path" {
             if !identity_status.transport_ready {
                 let warning = identity_status.warning.as_deref().unwrap_or(
@@ -1964,8 +2062,7 @@ fn build_peer_http_transport(
                 );
                 return Err(format!(
                     "mTLS peer transport is not ready ({}): {}",
-                    identity_status.reason.as_str(),
-                    warning
+                    readiness_reason, warning
                 ));
             }
 
@@ -2038,6 +2135,13 @@ fn attest_peer_http_target(
         },
         expected_node_id,
     );
+    let policy = runtime_peer_transport_policy_assessment(config, &identity_status);
+    let readiness_reason = peer_transport_policy_effective_reason(&policy).as_str();
+    if policy.required && !policy.is_ready() {
+        return Err(format!(
+            "mTLS peer transport policy requires ready peer transport identity in current mode ({readiness_reason})"
+        ));
+    }
     if identity_status.mode.as_str() != "mtls-path" {
         return Ok(());
     }
@@ -2048,8 +2152,7 @@ fn attest_peer_http_target(
             .unwrap_or("mTLS peer transport identity is not ready with current configuration");
         return Err(format!(
             "mTLS peer transport is not ready ({}): {}",
-            identity_status.reason.as_str(),
-            warning
+            readiness_reason, warning
         ));
     }
 
@@ -2907,15 +3010,18 @@ fn runtime_metadata_listing_readiness_for_topology(
     let mut effective_ready = readiness.ready;
     let mut effective_gap = readiness.gap.map(|gap| gap.as_str().to_string());
 
-    let consensus_peer_fan_in_transport_missing = topology.is_distributed()
-        && state.metadata_listing_strategy == ClusterMetadataListingStrategy::ConsensusIndex
-        && state
-            .config
-            .cluster_auth_token()
-            .is_none_or(|value| value.trim().is_empty());
-    if consensus_peer_fan_in_transport_missing {
-        effective_ready = false;
-        effective_gap = Some("consensus-index-peer-fan-in-auth-token-missing".to_string());
+    let has_cluster_auth_token = state
+        .config
+        .cluster_auth_token()
+        .is_some_and(|value| !value.trim().is_empty());
+    if topology.is_distributed() {
+        if let Some(reason) = cluster_metadata_fan_in_auth_token_reject_reason(
+            state.metadata_listing_strategy,
+            has_cluster_auth_token,
+        ) {
+            effective_ready = false;
+            effective_gap = Some(reason.to_string());
+        }
     }
 
     RuntimeMetadataListingReadiness {
@@ -2969,6 +3075,10 @@ mod tests {
             chunk_size: 10 * 1024 * 1024,
             parity_shards: 0,
             min_disk_headroom_bytes: 268_435_456,
+            pending_replication_due_warning_threshold: None,
+            pending_rebalance_due_warning_threshold: None,
+            pending_membership_propagation_due_warning_threshold: None,
+            pending_metadata_repair_due_warning_threshold: None,
             cluster_auth_token: None,
             cluster_peer_tls_cert_path: None,
             cluster_peer_tls_key_path: None,
@@ -4110,8 +4220,12 @@ mod tests {
             builder
                 .set_serial_number(&serial)
                 .map_err(|err| err.to_string())?;
-            builder.set_subject_name(&name).map_err(|err| err.to_string())?;
-            builder.set_issuer_name(&name).map_err(|err| err.to_string())?;
+            builder
+                .set_subject_name(&name)
+                .map_err(|err| err.to_string())?;
+            builder
+                .set_issuer_name(&name)
+                .map_err(|err| err.to_string())?;
             builder.set_pubkey(&key).map_err(|err| err.to_string())?;
             let not_before = Asn1Time::days_from_now(0).map_err(|err| err.to_string())?;
             let not_after = Asn1Time::days_from_now(3650).map_err(|err| err.to_string())?;
@@ -4166,6 +4280,38 @@ mod tests {
         let transport = build_peer_http_transport(Some(&config), Duration::from_secs(1))
             .expect("mTLS transport should initialize with parseable cert/key identity");
         assert_eq!(transport.scheme, "https");
+    }
+
+    #[test]
+    fn build_peer_http_transport_rejects_missing_mtls_when_required_policy_is_active() {
+        let mut config = test_config();
+        config.cluster_auth_token = Some("shared-token".to_string());
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+        config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+
+        let err = match build_peer_http_transport(Some(&config), Duration::from_secs(1)) {
+            Ok(_) => panic!("required policy should fail closed without mTLS identity"),
+            Err(err) => err,
+        };
+        assert!(err.contains("requires ready peer transport identity"));
+        assert!(err.contains("not_configured"));
+    }
+
+    #[test]
+    fn attest_peer_http_target_rejects_missing_mtls_when_required_policy_is_active() {
+        let mut config = test_config();
+        config.cluster_auth_token = Some("shared-token".to_string());
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+        config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+
+        let err = attest_peer_http_target(
+            Some(&config),
+            "node-b.internal:9000",
+            Duration::from_secs(1),
+        )
+        .expect_err("required policy should fail closed without mTLS attestation posture");
+        assert!(err.contains("requires ready peer transport identity"));
+        assert!(err.contains("not_configured"));
     }
 
     #[test]
@@ -4249,6 +4395,51 @@ mod tests {
         let convergence = probe_membership_convergence(&topology, &membership_status, &peer_probe);
         assert!(convergence.converged);
         assert!(convergence.warning.is_none());
+    }
+
+    #[test]
+    fn probe_membership_convergence_reports_false_for_static_bootstrap_epoch_mismatch() {
+        let membership_status = MembershipEngineStatus {
+            engine: "static-bootstrap".to_string(),
+            protocol: MembershipProtocol::StaticBootstrap.as_str().to_string(),
+            ready: true,
+            converged: true,
+            last_update_unix_ms: 1234,
+            warning: None,
+        };
+        let topology = RuntimeTopologySnapshot {
+            mode: RuntimeMode::Distributed,
+            node_id: "node-a".to_string(),
+            cluster_id: "cluster-a".to_string(),
+            cluster_peers: vec!["node-b".to_string()],
+            membership_nodes: vec!["node-a".to_string(), "node-b".to_string()],
+            membership_protocol: MembershipProtocol::StaticBootstrap,
+            membership_status: membership_status.clone(),
+            membership_view_id: "view-local".to_string(),
+            placement_epoch: 3,
+        };
+        let peer_probe = PeerConnectivityProbeResult {
+            ready: true,
+            warning: None,
+            peer_views: vec![PeerViewObservation {
+                peer: "node-b".to_string(),
+                membership_view_id: Some("view-local".to_string()),
+                placement_epoch: Some(9),
+                cluster_id: None,
+                cluster_peers: Vec::new(),
+            }],
+            failed_peers: Vec::new(),
+        };
+
+        let convergence = probe_membership_convergence(&topology, &membership_status, &peer_probe);
+        assert!(!convergence.converged);
+        assert_eq!(convergence.reason, "placement-epoch-mismatch");
+        assert!(
+            convergence
+                .warning
+                .as_deref()
+                .is_some_and(|warning| warning.contains("Placement epoch mismatch detected"))
+        );
     }
 
     #[test]
@@ -5104,6 +5295,10 @@ mod tests {
             RuntimeInternalHeaderRejectEndpoint::Healthz
         );
         assert_eq!(
+            RuntimeInternalHeaderRejectEndpoint::for_path("/internal/cluster/join"),
+            RuntimeInternalHeaderRejectEndpoint::Internal
+        );
+        assert_eq!(
             RuntimeInternalHeaderRejectEndpoint::for_path("/metrics"),
             RuntimeInternalHeaderRejectEndpoint::Metrics
         );
@@ -5347,7 +5542,10 @@ mod tests {
     #[test]
     fn pending_metadata_repair_replay_counters_track_success_and_failure_cycles() {
         let counters = PendingMetadataRepairReplayCounters::default();
-        counters.record_success(4, 3, 0, 3, 1);
+        counters.record_success(4, 3, 0, 3, 1, 0);
+        counters.record_terminal_failure_reason("target-view-mismatch");
+        counters.record_terminal_failure_reason("target-view-mismatch");
+        counters.record_terminal_failure_reason("invalid-repair-plan");
         counters.record_failure();
 
         let snapshot = counters.snapshot();
@@ -5358,7 +5556,15 @@ mod tests {
         assert_eq!(snapshot.leased_plans_total, 3);
         assert_eq!(snapshot.acknowledged_plans_total, 0);
         assert_eq!(snapshot.failed_plans_total, 3);
-        assert_eq!(snapshot.skipped_plans_total, 1);
+        assert_eq!(snapshot.dropped_plans_total, 1);
+        assert_eq!(snapshot.skipped_plans_total, 0);
+        assert_eq!(
+            snapshot.terminal_failure_reason_totals,
+            vec![
+                ("invalid-repair-plan".to_string(), 1),
+                ("target-view-mismatch".to_string(), 2),
+            ]
+        );
         assert!(snapshot.last_cycle_unix_ms > 0);
         assert!(snapshot.last_success_unix_ms > 0);
         assert!(snapshot.last_failure_unix_ms > 0);

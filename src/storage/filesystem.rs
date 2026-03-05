@@ -38,7 +38,7 @@ pub struct FilesystemStorage {
 
 #[cfg(test)]
 mod lifecycle_tests {
-    use super::{BucketMeta, ChecksumAlgorithm, FilesystemStorage, StorageError};
+    use super::{BucketMeta, ChecksumAlgorithm, ChunkKind, FilesystemStorage, StorageError};
     use crate::storage::lifecycle::LifecycleRule;
     use chrono::{TimeZone, Utc};
     use tempfile::TempDir;
@@ -262,6 +262,101 @@ mod lifecycle_tests {
                 .await
                 .unwrap()
         );
+    }
+
+    #[tokio::test]
+    async fn get_object_chunk_returns_verified_chunk_payload_for_chunked_object() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), true, 4, 0)
+            .await
+            .unwrap();
+        storage.create_bucket(&bucket_meta("chunks")).await.unwrap();
+
+        storage
+            .put_object(
+                "chunks",
+                "docs/chunked.bin",
+                "application/octet-stream",
+                Box::pin(std::io::Cursor::new(b"ABCDEFGH".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (payload, chunk, meta) = storage
+            .get_object_chunk("chunks", "docs/chunked.bin", 1)
+            .await
+            .unwrap();
+        assert_eq!(payload, b"EFGH");
+        assert_eq!(chunk.index, 1);
+        assert_eq!(chunk.size, 4);
+        assert_eq!(chunk.kind, ChunkKind::Data);
+        assert_eq!(meta.storage_format.as_deref(), Some("chunked-v1"));
+    }
+
+    #[tokio::test]
+    async fn get_object_chunk_rejects_non_chunked_object() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), false, 1024, 0)
+            .await
+            .unwrap();
+        storage.create_bucket(&bucket_meta("chunks")).await.unwrap();
+        storage
+            .put_object(
+                "chunks",
+                "docs/flat.bin",
+                "application/octet-stream",
+                Box::pin(std::io::Cursor::new(b"flat".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let err = storage
+            .get_object_chunk("chunks", "docs/flat.bin", 0)
+            .await
+            .expect_err("flat object must reject chunk reads");
+        match err {
+            StorageError::InvalidKey(reason) => {
+                assert!(
+                    reason.contains("not chunked"),
+                    "invalid key error should explain chunked requirement"
+                );
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_object_chunk_rejects_corrupted_chunk_payload() {
+        let tmp = TempDir::new().unwrap();
+        let storage = FilesystemStorage::new(tmp.path().to_str().unwrap(), true, 4, 0)
+            .await
+            .unwrap();
+        storage.create_bucket(&bucket_meta("chunks")).await.unwrap();
+        storage
+            .put_object(
+                "chunks",
+                "docs/chunked.bin",
+                "application/octet-stream",
+                Box::pin(std::io::Cursor::new(b"ABCDEFGH".to_vec())),
+                None,
+            )
+            .await
+            .unwrap();
+
+        fs::write(storage.chunk_path("chunks", "docs/chunked.bin", 1), b"XXXX")
+            .await
+            .unwrap();
+
+        let err = storage
+            .get_object_chunk("chunks", "docs/chunked.bin", 1)
+            .await
+            .expect_err("corrupted chunk must fail verification");
+        match err {
+            StorageError::Io(io_err) => assert_eq!(io_err.kind(), std::io::ErrorKind::InvalidData),
+            other => panic!("unexpected error: {other:?}"),
+        }
     }
 
     #[tokio::test]

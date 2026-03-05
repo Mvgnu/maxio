@@ -3,13 +3,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::cluster::authenticator::FORWARDED_BY_HEADER;
 use crate::cluster::constant_time::constant_time_str_eq;
 use crate::cluster::internal_transport::parse_forwarded_by_chain;
-use crate::cluster::peer_identity::is_valid_peer_identity;
+use crate::cluster::peer_identity::canonical_peer_identity;
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 
 pub const JOIN_CLUSTER_ID_HEADER: &str = "x-maxio-join-cluster-id";
@@ -143,7 +145,9 @@ impl InMemoryJoinNonceReplayGuard {
     }
 
     fn nonce_key(peer_node_id: &str, nonce: &str) -> String {
-        format!("{}:{}", peer_node_id.trim().to_ascii_lowercase(), nonce)
+        let peer_key = canonical_peer_identity(peer_node_id)
+            .unwrap_or_else(|| peer_node_id.trim().to_ascii_lowercase());
+        format!("{peer_key}:{nonce}")
     }
 
     fn evict_oldest(entries: &mut HashMap<String, u64>) {
@@ -236,15 +240,30 @@ impl DurableJoinNonceReplayGuard {
         };
         let payload = serde_json::to_vec_pretty(&snapshot)
             .map_err(|err| io::Error::new(io::ErrorKind::InvalidData, err.to_string()))?;
+        let nanos_since_epoch = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or_default();
         let tmp_file_name = self
             .state_path
             .file_name()
             .and_then(|value| value.to_str())
-            .map(|value| format!(".{value}.tmp"))
-            .unwrap_or_else(|| ".pending-join-nonce-replay.tmp".to_string());
+            .map(|value| format!(".{value}.tmp-{}-{nanos_since_epoch}", std::process::id()))
+            .unwrap_or_else(|| {
+                format!(
+                    ".pending-join-nonce-replay.tmp-{}-{nanos_since_epoch}",
+                    std::process::id()
+                )
+            });
         let tmp_path = self.state_path.with_file_name(tmp_file_name);
-        fs::write(tmp_path.as_path(), payload)?;
-        fs::rename(tmp_path.as_path(), self.state_path.as_path())?;
+        let mut tmp_file = fs::File::create(tmp_path.as_path())?;
+        tmp_file.write_all(payload.as_slice())?;
+        tmp_file.sync_all()?;
+        drop(tmp_file);
+        if let Err(error) = fs::rename(tmp_path.as_path(), self.state_path.as_path()) {
+            let _ = fs::remove_file(tmp_path.as_path());
+            return Err(error);
+        }
         Ok(())
     }
 }
@@ -356,12 +375,12 @@ pub fn authorize_join_request(
             JoinAuthorizationError::InvalidConfiguration,
         );
     };
-    if !is_valid_peer_identity(local_node_id.as_str()) {
+    let Some(local_node_id) = canonical_peer_identity(local_node_id.as_str()) else {
         return JoinAuthorizationResult::rejected(
             mode,
             JoinAuthorizationError::InvalidConfiguration,
         );
-    }
+    };
 
     let Some(cluster_id) = parse_single_non_empty_header(headers, JOIN_CLUSTER_ID_HEADER) else {
         return JoinAuthorizationResult::rejected(
@@ -379,13 +398,13 @@ pub fn authorize_join_request(
             JoinAuthorizationError::MissingOrMalformedNodeId,
         );
     };
-    if !is_valid_peer_identity(peer_node_id.as_str()) {
+    let Some(peer_node_id) = canonical_peer_identity(peer_node_id.as_str()) else {
         return JoinAuthorizationResult::rejected(
             mode,
             JoinAuthorizationError::InvalidNodeIdentity,
         );
-    }
-    if peer_node_id.eq_ignore_ascii_case(local_node_id.as_str()) {
+    };
+    if peer_node_id == local_node_id {
         return JoinAuthorizationResult::rejected(
             mode,
             JoinAuthorizationError::NodeMatchesLocalNode,
@@ -405,7 +424,7 @@ pub fn authorize_join_request(
                     JoinAuthorizationError::MissingOrMalformedForwardedBy,
                 );
             };
-            if !direct_sender.eq_ignore_ascii_case(peer_node_id.as_str()) {
+            if direct_sender != &peer_node_id {
                 return JoinAuthorizationResult::rejected(
                     mode,
                     JoinAuthorizationError::ForwardedByNodeIdMismatch,
@@ -885,6 +904,31 @@ mod tests {
     }
 
     #[test]
+    fn authorize_join_request_accepts_forwarded_sender_matching_canonical_ipv6_node_id() {
+        let mut headers = valid_join_headers();
+        headers.insert(
+            JOIN_NODE_ID_HEADER,
+            "[2001:0db8:0000:0000:0000:0000:0000:0001]:9000"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(FORWARDED_BY_HEADER, "[2001:db8::1]:9000".parse().unwrap());
+
+        let result = authorize_join_request(
+            &headers,
+            "cluster-main",
+            None,
+            "node-a:9000",
+            100000,
+            DEFAULT_JOIN_MAX_CLOCK_SKEW_MS,
+            None,
+        );
+
+        assert!(result.authorized);
+        assert_eq!(result.peer_node_id.as_deref(), Some("[2001:db8::1]:9000"));
+    }
+
+    #[test]
     fn authorize_join_request_rejects_forwarded_sender_node_id_mismatch() {
         let mut headers = valid_join_headers();
         headers.insert(FORWARDED_BY_HEADER, "node-c:9000".parse().unwrap());
@@ -1124,6 +1168,48 @@ mod tests {
     }
 
     #[test]
+    fn in_memory_join_nonce_replay_guard_rejects_equivalent_ipv6_peer_identity_replay() {
+        let mut headers = valid_join_headers();
+        headers.insert(
+            JOIN_NODE_ID_HEADER,
+            "[2001:0db8:0000:0000:0000:0000:0000:0001]:9000"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(INTERNAL_AUTH_TOKEN_HEADER, "secret".parse().unwrap());
+        let replay_guard = InMemoryJoinNonceReplayGuard::new(60_000, 64);
+
+        let first = authorize_join_request(
+            &headers,
+            "cluster-main",
+            Some("secret"),
+            "node-a:9000",
+            100000,
+            DEFAULT_JOIN_MAX_CLOCK_SKEW_MS,
+            Some(&replay_guard),
+        );
+        assert!(first.authorized);
+
+        let mut second_headers = valid_join_headers();
+        second_headers.insert(JOIN_NODE_ID_HEADER, "[2001:db8::1]:9000".parse().unwrap());
+        second_headers.insert(INTERNAL_AUTH_TOKEN_HEADER, "secret".parse().unwrap());
+        let second = authorize_join_request(
+            &second_headers,
+            "cluster-main",
+            Some("secret"),
+            "node-a:9000",
+            100001,
+            DEFAULT_JOIN_MAX_CLOCK_SKEW_MS,
+            Some(&replay_guard),
+        );
+        assert!(!second.authorized);
+        assert_eq!(
+            second.error,
+            Some(JoinAuthorizationError::JoinNonceReplayDetected)
+        );
+    }
+
+    #[test]
     fn durable_join_nonce_replay_guard_persists_replay_protection_across_restarts() {
         let dir = tempdir().expect("tempdir should be available");
         let state_path = dir.path().join("join-nonce-replay.json");
@@ -1160,5 +1246,29 @@ mod tests {
 
         let guard = DurableJoinNonceReplayGuard::new(state_path, 60_000, 64);
         assert!(!guard.register_nonce("node-b:9000", "nonce-123", 100000, 100000));
+    }
+
+    #[test]
+    fn durable_join_nonce_replay_guard_does_not_leave_temp_files_after_successful_persist() {
+        let dir = tempdir().expect("tempdir should be available");
+        let state_path = dir.path().join("join-nonce-replay.json");
+
+        let guard = DurableJoinNonceReplayGuard::new(state_path, 60_000, 64);
+        assert!(guard.register_nonce("node-b:9000", "nonce-123", 100000, 100000));
+
+        let mut leaked_temp_files = Vec::new();
+        for entry in fs::read_dir(dir.path()).expect("state directory should be readable") {
+            let entry = entry.expect("directory entry should be readable");
+            let file_name = entry.file_name();
+            let file_name = file_name.to_string_lossy();
+            if file_name.starts_with(".join-nonce-replay.json.tmp-") {
+                leaked_temp_files.push(file_name.to_string());
+            }
+        }
+
+        assert!(
+            leaked_temp_files.is_empty(),
+            "temporary replay-state files should not remain after successful persist: {leaked_temp_files:?}"
+        );
     }
 }

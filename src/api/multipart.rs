@@ -21,10 +21,11 @@ use crate::xml::{response::to_xml, types::*};
 
 use super::object::{
     add_write_quorum_headers, body_to_reader, enforce_write_quorum_contract,
-    ensure_local_write_owner, extract_checksum, forward_replica_put_to_target,
-    forward_write_to_target, object_path_and_query, object_write_routing_hint,
-    persist_current_object_metadata_state, persist_pending_replication_from_quorum_outcome,
-    write_forward_target, write_replica_count_for_membership_count,
+    ensure_consensus_bucket_authority, ensure_local_write_owner, extract_checksum,
+    forward_replica_put_to_target, forward_write_to_target, object_path_and_query,
+    object_write_routing_hint, persist_current_object_metadata_state,
+    persist_pending_replication_from_quorum_outcome, write_forward_target,
+    write_replica_count_for_membership_count,
 };
 use crate::api::object::peer_transport::internal_peer_transport_scheme;
 use parsing::{parse_complete_parts, parse_part_number};
@@ -78,6 +79,7 @@ pub async fn create_multipart_upload(
     ensure_local_write_owner(&routing_hint)?;
 
     ensure_bucket_exists(&state, &bucket).await?;
+    ensure_consensus_bucket_authority(&state, &placement, &bucket, "CreateMultipartUpload")?;
 
     let content_type = headers
         .get("content-type")
@@ -150,6 +152,7 @@ pub async fn upload_part(
     ensure_local_write_owner(&routing_hint)?;
 
     ensure_bucket_exists(&state, &bucket).await?;
+    ensure_consensus_bucket_authority(&state, &placement, &bucket, "UploadPart")?;
 
     let upload_id = params
         .get("uploadId")
@@ -223,6 +226,7 @@ pub async fn complete_multipart_upload(
     ensure_local_write_owner(&routing_hint)?;
 
     ensure_bucket_exists(&state, &bucket).await?;
+    ensure_consensus_bucket_authority(&state, &placement, &bucket, "CompleteMultipartUpload")?;
     let upload_id = params
         .get("uploadId")
         .ok_or_else(|| S3Error::invalid_argument("missing uploadId"))?;
@@ -528,6 +532,7 @@ pub async fn abort_multipart_upload(
     ensure_local_write_owner(&routing_hint)?;
 
     ensure_bucket_exists(&state, &bucket).await?;
+    ensure_consensus_bucket_authority(&state, &placement, &bucket, "AbortMultipartUpload")?;
     let upload_id = params
         .get("uploadId")
         .ok_or_else(|| S3Error::invalid_argument("missing uploadId"))?;
@@ -582,6 +587,7 @@ pub async fn list_parts(
     }
 
     ensure_bucket_exists(&state, &bucket).await?;
+    ensure_consensus_bucket_authority(&state, &placement, &bucket, "ListParts")?;
     let query = service::ListPartsQuery::from_params(&params)?;
 
     let (upload, parts) = state
@@ -619,7 +625,13 @@ pub async fn list_multipart_uploads(
     State(state): State<AppState>,
     Path(bucket): Path<String>,
 ) -> Result<Response<Body>, S3Error> {
+    let placement = PlacementViewState::from_membership(
+        state.placement_epoch(),
+        state.node_id.as_ref(),
+        state.active_cluster_peers().as_slice(),
+    );
     ensure_bucket_exists(&state, &bucket).await?;
+    ensure_consensus_bucket_authority(&state, &placement, &bucket, "ListMultipartUploads")?;
 
     let uploads = state
         .storage

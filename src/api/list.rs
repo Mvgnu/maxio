@@ -25,9 +25,9 @@ use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::error::S3Error;
 use crate::metadata::{
     ClusterMetadataListingStrategy, ClusterResponderMembershipView,
-    assess_cluster_metadata_fan_in_preflight_for_topology_responders,
-    assess_cluster_metadata_fan_in_preflight_for_topology_single_responder,
-    cluster_metadata_fan_in_preflight_reject_reason,
+    assess_cluster_metadata_fan_in_gate_for_topology_responders,
+    assess_cluster_metadata_fan_in_gate_for_topology_single_responder,
+    cluster_metadata_fan_in_gate_reject_details,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::ObjectMeta;
@@ -183,7 +183,7 @@ async fn list_objects_v2(
         is_trusted_internal_local_metadata_scope_request(&state, headers, &params);
     let prefix = params.get("prefix").cloned().unwrap_or_default();
     service::validate_prefix(&prefix)?;
-    service::ensure_consensus_index_peer_fan_in_transport_ready(
+    service::ensure_cluster_authoritative_peer_fan_in_transport_ready(
         &state,
         &topology,
         internal_local_only,
@@ -297,7 +297,7 @@ async fn list_objects_v1(
         is_trusted_internal_local_metadata_scope_request(&state, headers, &params);
     let prefix = params.get("prefix").cloned().unwrap_or_default();
     service::validate_prefix(&prefix)?;
-    service::ensure_consensus_index_peer_fan_in_transport_ready(
+    service::ensure_cluster_authoritative_peer_fan_in_transport_ready(
         &state,
         &topology,
         internal_local_only,
@@ -397,7 +397,7 @@ async fn list_object_versions(
         is_trusted_internal_local_metadata_scope_request(&state, headers, &params);
     let prefix = params.get("prefix").cloned().unwrap_or_default();
     service::validate_prefix(&prefix)?;
-    service::ensure_consensus_index_peer_fan_in_transport_ready(
+    service::ensure_cluster_authoritative_peer_fan_in_transport_ready(
         &state,
         &topology,
         internal_local_only,
@@ -573,6 +573,10 @@ async fn fetch_cluster_object_listing_fan_in(
         topology,
         "ListObjectsV2",
         responder_views.as_slice(),
+        state
+            .config
+            .cluster_auth_token()
+            .is_some_and(|value| !value.trim().is_empty()),
     )?;
 
     Ok(ClusterObjectListingFanIn {
@@ -720,6 +724,10 @@ async fn fetch_cluster_version_listing_fan_in(
         topology,
         "ListObjectVersions",
         responder_views.as_slice(),
+        state
+            .config
+            .cluster_auth_token()
+            .is_some_and(|value| !value.trim().is_empty()),
     )?;
 
     versions.sort_by(|a, b| {
@@ -935,33 +943,40 @@ fn ensure_metadata_fan_in_preflight_ready(
     topology: &crate::server::RuntimeTopologySnapshot,
     operation: &str,
     responders: &[ClusterResponderMembershipView],
+    has_cluster_auth_token: bool,
 ) -> Result<(), S3Error> {
-    let preflight = assess_cluster_metadata_fan_in_preflight_for_topology_responders(
+    let gate = assess_cluster_metadata_fan_in_gate_for_topology_responders(
         strategy,
         None,
         topology.node_id.as_str(),
         topology.membership_nodes.as_slice(),
         responders,
+        has_cluster_auth_token,
     )
     .unwrap_or_else(|_| {
-        assess_cluster_metadata_fan_in_preflight_for_topology_single_responder(
+        assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
             strategy,
             None,
             topology.node_id.as_str(),
             topology.membership_nodes.as_slice(),
             topology.node_id.as_str(),
             None,
+            has_cluster_auth_token,
         )
     });
-    if preflight.ready {
+    if gate.ready {
         return Ok(());
     }
 
-    let reason = cluster_metadata_fan_in_preflight_reject_reason(&preflight)
-        .map(|gap| gap.as_str())
-        .unwrap_or("unknown-fan-in-preflight-gap");
+    let reject_details = cluster_metadata_fan_in_gate_reject_details(&gate);
+    let reason = reject_details
+        .map(|details| details.reason)
+        .unwrap_or("unknown-fan-in-gate-gap");
+    let failure_class = reject_details
+        .map(|details| details.failure_class.as_str())
+        .unwrap_or("unknown-fan-in-gate-failure-class");
     Err(S3Error::service_unavailable(&format!(
-        "Distributed metadata fan-in for '{operation}' is not ready ({reason})",
+        "Distributed metadata fan-in for '{operation}' is not ready ({reason}; class={failure_class})",
     )))
 }
 
@@ -1116,6 +1131,7 @@ mod tests {
             &topology,
             "ListObjectsV2",
             responders.as_slice(),
+            true,
         )
         .expect_err("inconsistent responder views must fail");
         assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
@@ -1124,5 +1140,53 @@ mod tests {
             err.message
                 .contains("inconsistent-responder-membership-view-id")
         );
+        assert!(err.message.contains("class=membership-view-readiness"));
+    }
+
+    #[test]
+    fn ensure_metadata_fan_in_preflight_ready_rejects_missing_auth_token_for_consensus_index() {
+        let topology = crate::server::RuntimeTopologySnapshot {
+            mode: crate::server::RuntimeMode::Distributed,
+            node_id: "node-a:9000".to_string(),
+            cluster_id: "cluster".to_string(),
+            cluster_peers: vec!["node-b:9000".to_string()],
+            membership_nodes: vec!["node-a:9000".to_string(), "node-b:9000".to_string()],
+            membership_protocol: crate::config::MembershipProtocol::StaticBootstrap,
+            membership_status: crate::membership::MembershipEngineStatus {
+                engine: "static-bootstrap".to_string(),
+                protocol: "static-bootstrap".to_string(),
+                ready: true,
+                converged: true,
+                last_update_unix_ms: 1,
+                warning: None,
+            },
+            membership_view_id: "view-a".to_string(),
+            placement_epoch: 1,
+        };
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-a:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+        ];
+
+        let err = ensure_metadata_fan_in_preflight_ready(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            &topology,
+            "ListObjectsV2",
+            responders.as_slice(),
+            false,
+        )
+        .expect_err("consensus fan-in must fail closed without auth token");
+        assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
+        assert!(
+            err.message
+                .contains("cluster-peer-fan-in-auth-token-missing")
+        );
+        assert!(err.message.contains("class=auth-configuration"));
     }
 }

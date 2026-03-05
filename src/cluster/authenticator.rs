@@ -4,15 +4,17 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::cluster::internal_transport::parse_forwarded_by_chain;
-use crate::cluster::peer_identity::is_valid_peer_identity;
+use crate::cluster::peer_identity::canonical_peer_identity;
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::cluster::wire_auth::{InternalForwardTrustError, evaluate_internal_forward_trust};
 
 pub const FORWARDED_BY_HEADER: &str = "x-maxio-forwarded-by";
 pub const INTERNAL_MEMBERSHIP_PROPAGATED_HEADER: &str = "x-maxio-internal-membership-propagated";
+pub const INTERNAL_MEMBERSHIP_VIEW_ID_HEADER: &str = "x-maxio-internal-membership-view-id";
 pub const INTERNAL_FORWARDING_PROTOCOL_HEADERS: &[&str] = &[
     FORWARDED_BY_HEADER,
     INTERNAL_MEMBERSHIP_PROPAGATED_HEADER,
+    INTERNAL_MEMBERSHIP_VIEW_ID_HEADER,
     "x-maxio-forwarded-write-epoch",
     "x-maxio-forwarded-write-view-id",
     "x-maxio-forwarded-write-hop-count",
@@ -39,6 +41,7 @@ const LEGACY_INTERNAL_FORWARDING_PROTOCOL_HEADERS: &[&str] = &[
 const INTERNAL_FORWARDING_TRUST_HEADERS: &[&str] = &[
     FORWARDED_BY_HEADER,
     INTERNAL_MEMBERSHIP_PROPAGATED_HEADER,
+    INTERNAL_MEMBERSHIP_VIEW_ID_HEADER,
     "x-maxio-internal-forwarded-write-epoch",
     "x-maxio-internal-forwarded-write-view-id",
     "x-maxio-internal-forwarded-write-hop-count",
@@ -454,9 +457,6 @@ impl SharedTokenPeerAuthenticator {
     pub fn new(token: &str, local_node_id: &str, trusted_peers: &[String]) -> Option<Self> {
         let token = normalize_token(token)?;
         let local_node_id = normalize_peer_identity(local_node_id)?;
-        if !is_valid_peer_identity(local_node_id.as_str()) {
-            return None;
-        }
 
         Some(Self {
             token,
@@ -464,7 +464,6 @@ impl SharedTokenPeerAuthenticator {
             trusted_peers: normalize_peer_identity_set(trusted_peers)
                 .into_iter()
                 .filter(|peer| peer != &local_node_id)
-                .filter(|peer| is_valid_peer_identity(peer.as_str()))
                 .collect(),
         })
     }
@@ -484,14 +483,10 @@ impl SharedTokenPeerAuthenticator {
         let Some(local_node_id) = normalize_peer_identity(local_node_id) else {
             return SharedTokenBindingStatus::InvalidLocalNodeId;
         };
-        if !is_valid_peer_identity(local_node_id.as_str()) {
-            return SharedTokenBindingStatus::InvalidLocalNodeId;
-        }
 
         let trusted_peer_count = normalize_peer_identity_set(trusted_peers)
             .into_iter()
             .filter(|peer| peer != &local_node_id)
-            .filter(|peer| is_valid_peer_identity(peer.as_str()))
             .count();
 
         if trusted_peer_count == 0 {
@@ -593,9 +588,6 @@ fn forwarded_chain_identities(
     let mut canonical_chain = Vec::with_capacity(chain.len());
     for hop in chain {
         let canonical_hop = normalize_peer_identity(hop.as_str())?;
-        if !is_valid_peer_identity(canonical_hop.as_str()) {
-            return None;
-        }
         canonical_chain.push(canonical_hop);
     }
     if canonical_chain.is_empty() {
@@ -615,12 +607,7 @@ fn normalize_token(value: &str) -> Option<String> {
 }
 
 fn normalize_peer_identity(value: &str) -> Option<String> {
-    let normalized = value.trim();
-    if normalized.is_empty() {
-        None
-    } else {
-        Some(normalized.to_ascii_lowercase())
-    }
+    canonical_peer_identity(value)
 }
 
 fn normalize_peer_identity_set(values: &[String]) -> BTreeSet<String> {
@@ -636,8 +623,9 @@ mod tests {
 
     use super::{
         CompatibilityPeerAuthenticator, FORWARDED_BY_HEADER, INTERNAL_MEMBERSHIP_PROPAGATED_HEADER,
-        PeerAuthMode, PeerAuthenticationError, PeerAuthenticationResult, PeerAuthenticator,
-        SharedTokenBindingStatus, SharedTokenPeerAuthenticator, authenticate_forwarded_request,
+        INTERNAL_MEMBERSHIP_VIEW_ID_HEADER, PeerAuthMode, PeerAuthenticationError,
+        PeerAuthenticationResult, PeerAuthenticator, SharedTokenBindingStatus,
+        SharedTokenPeerAuthenticator, authenticate_forwarded_request,
         contains_internal_forwarding_protocol_headers, contains_legacy_internal_forwarding_headers,
         peer_auth_reject_counters_snapshot, record_peer_auth_rejection,
         strip_untrusted_internal_forwarding_headers,
@@ -720,6 +708,28 @@ mod tests {
         let result = authenticator.authenticate_forwarded_request(&headers, FORWARDED_BY_HEADER);
         assert!(result.trusted);
         assert_eq!(result.sender.as_deref(), Some("node-a:9000"));
+    }
+
+    #[test]
+    fn shared_token_authenticator_matches_sender_allowlist_with_canonical_ipv6_identity() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            FORWARDED_BY_HEADER,
+            "[2001:0db8:0000:0000:0000:0000:0000:0001]:9000"
+                .parse()
+                .unwrap(),
+        );
+        headers.insert(INTERNAL_AUTH_TOKEN_HEADER, "secret".parse().unwrap());
+        let authenticator = SharedTokenPeerAuthenticator::new(
+            "secret",
+            "node-c:9000",
+            &["[2001:db8::1]:9000".to_string()],
+        )
+        .expect("authenticator should be created");
+
+        let result = authenticator.authenticate_forwarded_request(&headers, FORWARDED_BY_HEADER);
+        assert!(result.trusted);
+        assert_eq!(result.sender.as_deref(), Some("[2001:db8::1]:9000"));
     }
 
     #[test]
@@ -1033,6 +1043,10 @@ mod tests {
         let mut headers = HeaderMap::new();
         headers.insert(FORWARDED_BY_HEADER, "node-z:9000".parse().unwrap());
         headers.insert(INTERNAL_MEMBERSHIP_PROPAGATED_HEADER, "1".parse().unwrap());
+        headers.insert(
+            INTERNAL_MEMBERSHIP_VIEW_ID_HEADER,
+            "view-a".parse().unwrap(),
+        );
         headers.insert(INTERNAL_AUTH_TOKEN_HEADER, "secret".parse().unwrap());
         headers.insert("x-maxio-forwarded-write-epoch", "7".parse().unwrap());
         headers.insert(
@@ -1052,6 +1066,7 @@ mod tests {
         assert_eq!(result.reject_reason(), "sender_not_in_allowlist");
         assert!(headers.get(FORWARDED_BY_HEADER).is_none());
         assert!(headers.get(INTERNAL_MEMBERSHIP_PROPAGATED_HEADER).is_none());
+        assert!(headers.get(INTERNAL_MEMBERSHIP_VIEW_ID_HEADER).is_none());
         assert!(headers.get(INTERNAL_AUTH_TOKEN_HEADER).is_none());
         assert!(headers.get("x-maxio-forwarded-write-epoch").is_none());
         assert!(
@@ -1114,6 +1129,13 @@ mod tests {
         assert!(contains_internal_forwarding_protocol_headers(&headers));
 
         headers.remove(INTERNAL_MEMBERSHIP_PROPAGATED_HEADER);
+        headers.insert(
+            INTERNAL_MEMBERSHIP_VIEW_ID_HEADER,
+            "view-a".parse().unwrap(),
+        );
+        assert!(contains_internal_forwarding_protocol_headers(&headers));
+
+        headers.remove(INTERNAL_MEMBERSHIP_VIEW_ID_HEADER);
         headers.insert(
             "x-maxio-internal-forwarded-write-operation",
             "replicate-put-object".parse().unwrap(),

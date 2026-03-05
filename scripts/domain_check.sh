@@ -36,12 +36,15 @@ run_domain() {
         runtime_tests::test_metrics_peer_auth_reject_reason_counter_increments_for_runtime_endpoint_headers \
         runtime_tests::test_metrics_runtime_internal_header_reject_dimensions_track_api_unknown_sender \
         runtime_tests::test_metrics_runtime_internal_header_reject_dimensions_track_api_known_sender_token_mismatch \
+        runtime_tests::test_metrics_runtime_internal_header_reject_dimensions_track_internal_unknown_sender \
         runtime_tests::test_metrics_endpoint_reports_distributed_gauges_when_cluster_peers_configured \
         runtime_tests::test_metrics_pending_replication_replay_counters_increment_in_distributed_mode \
         runtime_tests::test_metrics_pending_membership_propagation_replay_counters_increment_in_distributed_mode \
         runtime_tests::test_metrics_pending_rebalance_replay_counters_increment_in_distributed_mode \
         runtime_tests::test_pending_rebalance_replay_worker_forwards_due_send_transfer_and_drains_queue \
-        runtime_tests::test_pending_rebalance_replay_worker_drops_chunk_scope_without_forwarding \
+        runtime_tests::test_pending_rebalance_replay_worker_drops_send_transfer_when_target_bucket_missing \
+        runtime_tests::test_pending_rebalance_replay_worker_drops_receive_transfer_when_local_bucket_missing \
+        runtime_tests::test_pending_rebalance_replay_worker_forwards_chunk_scope_transfer_and_drains_queue \
         runtime_tests::test_pending_replication_replay_worker_drops_terminal_replica_failure_without_retry \
         runtime_tests::test_metrics_membership_converged_reflects_peer_probe_for_static_bootstrap \
         runtime_tests::test_healthz_endpoint_reports_runtime_status \
@@ -97,11 +100,18 @@ run_domain() {
         runtime_tests::test_healthz_reports_degraded_when_storage_data_path_probe_fails \
         runtime_tests::test_healthz_reports_degraded_when_pending_replication_queue_probe_fails_in_distributed_degraded_mode \
         runtime_tests::test_healthz_warns_when_pending_membership_propagation_due_backlog_exceeds_replay_batch_size \
+        runtime_tests::test_healthz_warns_when_pending_replication_due_backlog_exceeds_replay_batch_size \
+        runtime_tests::test_healthz_respects_pending_replication_due_warning_threshold_override \
+        runtime_tests::test_healthz_warns_when_pending_rebalance_due_backlog_exceeds_replay_batch_size \
+        runtime_tests::test_healthz_warns_when_pending_metadata_repair_due_backlog_exceeds_replay_batch_size \
         runtime_tests::test_healthz_reports_degraded_when_disk_headroom_threshold_not_met \
         runtime_tests::test_healthz_reports_degraded_when_static_peer_connectivity_probe_fails \
         runtime_tests::test_healthz_reports_degraded_when_cluster_peers_include_local_node_id \
         runtime_tests::test_healthz_reports_degraded_when_static_peer_membership_view_mismatches \
         runtime_tests::test_static_bootstrap_convergence_worker_applies_discovered_peers_from_peer_healthz \
+        runtime_tests::test_gossip_convergence_worker_applies_discovered_peer_when_join_authorize_preflight_succeeds \
+        runtime_tests::test_gossip_convergence_worker_skips_discovered_peer_when_join_authorize_preflight_rejected \
+        runtime_tests::test_gossip_convergence_worker_skips_discovered_peer_when_cluster_auth_token_not_configured \
         runtime_tests::test_static_bootstrap_convergence_worker_propagates_discovered_peers_to_control_plane \
         runtime_tests::test_gossip_convergence_worker_persists_retryable_stale_peer_reconciliation_failure \
         runtime_tests::test_gossip_convergence_worker_reconciles_same_view_peer_missing_local_node \
@@ -272,9 +282,18 @@ run_domain() {
         core_tests::test_delete_bucket_distributed_request_aggregation_converges_peer_state_when_ready \
         core_tests::test_bucket_versioning_distributed_request_aggregation_returns_service_unavailable_when_unready \
         core_tests::test_get_bucket_versioning_consensus_index_uses_persisted_metadata_state \
+        core_tests::test_put_bucket_versioning_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        core_tests::test_put_object_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        core_tests::test_copy_object_consensus_index_rejects_missing_persisted_destination_bucket_without_local_side_effect \
+        core_tests::test_copy_object_consensus_index_rejects_missing_persisted_source_object_without_local_side_effect \
+        core_tests::test_delete_object_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        core_tests::test_delete_object_version_consensus_index_rejects_missing_persisted_version_without_local_side_effect \
+        core_tests::test_delete_objects_batch_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
         core_tests::test_get_bucket_lifecycle_consensus_index_uses_persisted_metadata_state_for_disabled_state \
         core_tests::test_get_bucket_lifecycle_consensus_index_uses_persisted_lifecycle_configuration_payload \
         core_tests::test_get_bucket_lifecycle_consensus_index_persists_local_mutation_state \
+        core_tests::test_put_bucket_lifecycle_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        core_tests::test_delete_bucket_lifecycle_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
         core_tests::test_get_bucket_lifecycle_consensus_index_returns_service_unavailable_when_token_missing_for_enabled_rules \
         core_tests::test_get_bucket_lifecycle_consensus_index_merges_peer_state_when_token_configured \
         core_tests::test_bucket_versioning_distributed_request_aggregation_merges_peer_state_when_ready \
@@ -295,6 +314,7 @@ run_domain() {
         core_tests::test_list_objects_distributed_consensus_index_returns_service_unavailable_when_token_missing \
         core_tests::test_list_objects_distributed_consensus_index_returns_service_unavailable_when_peer_fan_in_incomplete \
         core_tests::test_list_objects_distributed_request_aggregation_returns_service_unavailable_when_unready \
+        core_tests::test_list_objects_distributed_request_aggregation_returns_service_unavailable_when_internal_peer_transport_mtls_not_ready \
         core_tests::test_list_object_versions_distributed_reports_metadata_coverage_headers \
         core_tests::test_list_object_versions_distributed_consensus_index_returns_service_unavailable_when_token_missing \
         core_tests::test_list_object_versions_distributed_consensus_index_returns_service_unavailable_when_peer_fan_in_incomplete \
@@ -302,6 +322,8 @@ run_domain() {
         core_tests::test_list_object_versions_distributed_consensus_index_merges_peer_state_when_token_configured \
         core_tests::test_list_object_versions_distributed_consensus_index_does_not_fallback_to_local_listing \
         core_tests::test_list_object_versions_distributed_request_aggregation_rejects_inconsistent_bucket_presence \
+        core_tests::test_get_object_distributed_consensus_index_rejects_missing_persisted_bucket \
+        core_tests::test_head_object_distributed_consensus_index_rejects_missing_persisted_bucket \
         core_tests::test_list_objects_invalid_prefix_returns_invalid_argument \
         core_tests::test_list_objects_invalid_max_keys_returns_invalid_argument \
         core_tests::test_list_objects_invalid_continuation_token_returns_invalid_argument \
@@ -373,6 +395,9 @@ run_domain() {
         core_tests::test_copy_object_missing_source_bucket_returns_no_such_bucket \
         core_tests::test_copy_object_missing_destination_bucket_returns_no_such_bucket \
         core_tests::test_multipart_create_upload_missing_bucket_returns_no_such_bucket \
+        core_tests::test_create_multipart_upload_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        core_tests::test_multipart_upload_part_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        core_tests::test_multipart_complete_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
         core_tests::test_create_multipart_distributed_non_owner_write_rejects_spoofed_internal_auth_headers_with_invalid_sender_identity \
         core_tests::test_copy_object_rejects_empty_source_key \
         core_tests::test_copy_object_rejects_empty_source_bucket \
@@ -415,6 +440,7 @@ run_domain() {
       cargo check
       cargo clippy --lib --bins -- -D clippy::unwrap_used -D clippy::expect_used -D clippy::panic
       cargo test api::console::auth::tests
+      cargo test api::console::objects::tests
       cargo test api::console::system::tests
       cargo test api::console::storage::tests
       cargo test api::console::response::tests
@@ -438,6 +464,10 @@ run_domain() {
         console_tests::test_console_presign_encodes_object_keys_with_spaces_and_utf8 \
         console_tests::test_console_presign_returns_not_found_for_missing_bucket \
         console_tests::test_console_presign_returns_not_found_for_missing_object \
+        console_tests::test_console_presign_consensus_index_does_not_fallback_to_local_object_storage \
+        console_tests::test_console_presign_consensus_index_rejects_missing_persisted_bucket \
+        console_tests::test_console_presign_consensus_index_uses_persisted_object_metadata_state \
+        console_tests::test_console_presign_consensus_index_rejects_persisted_view_mismatch \
         console_tests::test_console_lifecycle_roundtrip \
         console_tests::test_console_lifecycle_rejects_invalid_rules \
         console_tests::test_console_versioning_endpoints_return_not_found_for_missing_bucket \
@@ -447,9 +477,16 @@ run_domain() {
         console_tests::test_console_get_bucket_versioning_consensus_index_uses_persisted_metadata_state \
         console_tests::test_console_get_bucket_versioning_consensus_index_rejects_persisted_view_mismatch \
         console_tests::test_console_get_bucket_versioning_consensus_index_persists_local_mutation_state \
+        console_tests::test_console_set_bucket_versioning_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        console_tests::test_console_upload_object_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        console_tests::test_console_delete_object_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        console_tests::test_console_create_folder_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        console_tests::test_console_delete_version_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
         console_tests::test_console_get_bucket_lifecycle_consensus_index_returns_empty_rules_when_disabled \
         console_tests::test_console_get_bucket_lifecycle_consensus_index_uses_persisted_lifecycle_configuration_payload \
         console_tests::test_console_get_bucket_lifecycle_consensus_index_persists_local_mutation_state \
+        console_tests::test_console_set_bucket_lifecycle_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
+        console_tests::test_console_delete_bucket_lifecycle_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect \
         console_tests::test_console_get_bucket_lifecycle_consensus_index_returns_service_unavailable_when_token_missing_for_enabled_rules \
         console_tests::test_console_get_bucket_lifecycle_consensus_index_merges_peer_state_when_token_configured \
         console_tests::test_console_get_bucket_lifecycle_request_time_aggregation_merges_peer_state_when_ready \
@@ -483,19 +520,31 @@ run_domain() {
         console_tests::test_console_create_bucket_request_time_aggregation_succeeds_when_peer_already_has_bucket \
         console_tests::test_console_delete_bucket_request_time_aggregation_converges_peer_state_when_ready \
         console_tests::test_console_create_bucket_rejects_unready_authoritative_metadata_strategy \
+        console_tests::test_console_create_bucket_rejects_unready_authoritative_metadata_strategy_when_internal_peer_transport_mtls_not_ready_without_local_side_effect \
         console_tests::test_console_delete_bucket_rejects_unready_authoritative_metadata_strategy \
         console_tests::test_console_list_buckets_rejects_unready_authoritative_metadata_strategy \
+        console_tests::test_console_list_buckets_rejects_unready_authoritative_metadata_strategy_when_internal_peer_transport_mtls_not_ready \
         console_tests::test_console_list_objects_rejects_unready_authoritative_metadata_strategy \
+        console_tests::test_console_list_objects_rejects_unready_authoritative_metadata_strategy_when_internal_peer_transport_mtls_not_ready \
         console_tests::test_console_list_versions_reports_distributed_metadata_coverage \
         console_tests::test_console_list_versions_rejects_unready_authoritative_metadata_strategy \
+        console_tests::test_console_set_bucket_versioning_rejects_unready_authoritative_metadata_strategy_when_internal_peer_transport_mtls_not_ready_without_local_side_effect \
         console_tests::test_console_list_objects_returns_bad_request_for_invalid_prefix \
         console_tests::test_console_list_objects_returns_bad_request_for_empty_delimiter \
         console_tests::test_console_list_versions_returns_bad_request_for_invalid_key \
         console_tests::test_console_delete_version_returns_not_found_for_missing_version \
+        console_tests::test_console_delete_version_returns_not_found_for_missing_bucket \
         console_tests::test_console_create_folder_returns_not_found_for_missing_bucket \
         console_tests::test_console_delete_object_returns_not_found_for_missing_bucket \
         console_tests::test_console_download_object_returns_not_found_for_missing_bucket \
         console_tests::test_console_download_version_returns_not_found_for_missing_bucket \
+        console_tests::test_console_download_object_consensus_index_does_not_fallback_to_local_object_storage \
+        console_tests::test_console_download_object_consensus_index_rejects_missing_persisted_bucket \
+        console_tests::test_console_download_object_consensus_index_uses_persisted_object_metadata_state \
+        console_tests::test_console_download_object_consensus_index_rejects_persisted_view_mismatch \
+        console_tests::test_console_download_version_consensus_index_does_not_fallback_to_local_storage \
+        console_tests::test_console_download_version_consensus_index_uses_persisted_metadata_state \
+        console_tests::test_console_download_version_consensus_index_rejects_persisted_view_mismatch \
         console_tests::test_console_health_endpoint_requires_auth_and_returns_json \
         console_tests::test_console_health_endpoint_reports_distributed_mode_when_configured \
         console_tests::test_console_health_endpoint_reports_degraded_when_storage_data_path_probe_fails \

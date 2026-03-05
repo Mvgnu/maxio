@@ -31,6 +31,15 @@ pub(super) fn health_payload(
     } else {
         cluster_peer_auth_status.transport_ready
     };
+    let cluster_peer_auth_production = assess_cluster_peer_auth_production_readiness(
+        topology.is_distributed(),
+        cluster_peer_auth_status.configured,
+        cluster_peer_auth_status.sender_allowlist_bound,
+        &cluster_peer_transport_policy,
+        cluster_peer_auth_status.identity_bound,
+    );
+    let cluster_peer_auth_production_reason = cluster_peer_auth_production.reason.as_str();
+    let cluster_peer_auth_production_ready = cluster_peer_auth_production.ready;
     let metadata_snapshot =
         metadata_snapshot_for_topology(topology, state.metadata_listing_strategy);
     let metadata_readiness =
@@ -42,6 +51,20 @@ pub(super) fn health_payload(
         .snapshot();
     let pending_metadata_repair_replay_counters =
         state.pending_metadata_repair_replay_counters.snapshot();
+    let pending_replication_due_warning_threshold = state
+        .config
+        .pending_replication_due_warning_threshold(PENDING_REPLICATION_REPLAY_BATCH_SIZE);
+    let pending_rebalance_due_warning_threshold = state
+        .config
+        .pending_rebalance_due_warning_threshold(PENDING_REBALANCE_REPLAY_BATCH_SIZE);
+    let pending_membership_propagation_due_warning_threshold = state
+        .config
+        .pending_membership_propagation_due_warning_threshold(
+            PENDING_MEMBERSHIP_PROPAGATION_REPLAY_BATCH_SIZE,
+        );
+    let pending_metadata_repair_due_warning_threshold = state
+        .config
+        .pending_metadata_repair_due_warning_threshold(PENDING_METADATA_REPAIR_REPLAY_BATCH_SIZE);
 
     let self_peer_misconfigured = topology
         .cluster_peers
@@ -64,24 +87,56 @@ pub(super) fn health_payload(
     if let Some(warning) = pending_replication_queue_probe.warning.clone() {
         warnings.push(warning);
     }
+    if pending_replication_queue_probe.readable {
+        if let Some(warning_threshold) = pending_replication_due_warning_threshold {
+            if pending_replication_queue_probe.due_targets > warning_threshold {
+                warnings.push(format!(
+                    "Pending replication backlog has {} due targets, exceeding replay batch size {} (warning threshold {}).",
+                    pending_replication_queue_probe.due_targets, PENDING_REPLICATION_REPLAY_BATCH_SIZE, warning_threshold
+                ));
+            }
+        }
+    }
     if let Some(warning) = pending_rebalance_queue_probe.warning.clone() {
         warnings.push(warning);
+    }
+    if pending_rebalance_queue_probe.readable {
+        if let Some(warning_threshold) = pending_rebalance_due_warning_threshold {
+            if pending_rebalance_queue_probe.due_transfers > warning_threshold {
+                warnings.push(format!(
+                    "Pending rebalance backlog has {} due transfers, exceeding replay batch size {} (warning threshold {}).",
+                    pending_rebalance_queue_probe.due_transfers, PENDING_REBALANCE_REPLAY_BATCH_SIZE, warning_threshold
+                ));
+            }
+        }
     }
     if let Some(warning) = pending_membership_propagation_queue_probe.warning.clone() {
         warnings.push(warning);
     }
-    if pending_membership_propagation_queue_probe.readable
-        && pending_membership_propagation_queue_probe.due_operations
-            > PENDING_MEMBERSHIP_PROPAGATION_REPLAY_BATCH_SIZE
-    {
-        warnings.push(format!(
-            "Pending membership propagation backlog has {} due operations, exceeding replay batch size {}.",
-            pending_membership_propagation_queue_probe.due_operations,
-            PENDING_MEMBERSHIP_PROPAGATION_REPLAY_BATCH_SIZE
-        ));
+    if pending_membership_propagation_queue_probe.readable {
+        if let Some(warning_threshold) = pending_membership_propagation_due_warning_threshold {
+            if pending_membership_propagation_queue_probe.due_operations > warning_threshold {
+                warnings.push(format!(
+                    "Pending membership propagation backlog has {} due operations, exceeding replay batch size {} (warning threshold {}).",
+                    pending_membership_propagation_queue_probe.due_operations,
+                    PENDING_MEMBERSHIP_PROPAGATION_REPLAY_BATCH_SIZE,
+                    warning_threshold
+                ));
+            }
+        }
     }
     if let Some(warning) = pending_metadata_repair_queue_probe.warning.clone() {
         warnings.push(warning);
+    }
+    if pending_metadata_repair_queue_probe.readable {
+        if let Some(warning_threshold) = pending_metadata_repair_due_warning_threshold {
+            if pending_metadata_repair_queue_probe.due_plans > warning_threshold {
+                warnings.push(format!(
+                    "Pending metadata repair backlog has {} due plans, exceeding replay batch size {} (warning threshold {}).",
+                    pending_metadata_repair_queue_probe.due_plans, PENDING_METADATA_REPAIR_REPLAY_BATCH_SIZE, warning_threshold
+                ));
+            }
+        }
     }
     if let Some(warning) = persisted_metadata_state_probe.warning.clone() {
         warnings.push(warning);
@@ -93,11 +148,15 @@ pub(super) fn health_payload(
         warnings.push(warning);
     }
     if cluster_peer_auth_transport_required && !cluster_peer_auth_transport_ready {
-        let reason = peer_transport_policy_reject_reason(&cluster_peer_transport_policy)
-            .unwrap_or(cluster_peer_transport_policy.enforcement.reason);
+        let reason = peer_transport_policy_effective_reason(&cluster_peer_transport_policy);
         warnings.push(format!(
             "Cluster peer auth requires mTLS transport identity readiness under current runtime policy (reason: {}).",
             reason.as_str()
+        ));
+    }
+    if topology.is_distributed() && !cluster_peer_auth_production_ready {
+        warnings.push(format!(
+            "Cluster peer auth is not production-ready ({cluster_peer_auth_production_reason})."
         ));
     }
     if let Some(warning) = cluster_join_auth_status.warning.clone() {
@@ -116,8 +175,13 @@ pub(super) fn health_payload(
     }
     let membership_convergence_probe =
         probe_membership_convergence(topology, &membership_status, &peer_connectivity_probe);
+    let membership_protocol_reason = membership_protocol_readiness_reason(&membership_status);
     let membership_last_update_unix_ms =
         effective_membership_last_update_unix_ms(&membership_status, &membership_convergence_probe);
+    let membership_last_update_age_ms_value = membership_last_update_age_ms(
+        membership_convergence_probe.observed_at_unix_ms,
+        membership_status.last_update_unix_ms,
+    );
     record_membership_last_update(state, membership_last_update_unix_ms);
     record_membership_convergence(state, membership_convergence_probe.converged);
     if let Some(warning) = membership_convergence_probe.warning {
@@ -147,6 +211,7 @@ pub(super) fn health_payload(
         cluster_peer_auth_transport_ready,
         cluster_peer_auth_transport_required,
         cluster_peer_auth_sender_allowlist_bound: cluster_peer_auth_status.sender_allowlist_bound,
+        cluster_peer_auth_production_ready,
         cluster_join_auth_ready: cluster_join_auth_status.ready,
         metadata_list_cluster_authoritative: metadata_readiness.cluster_authoritative,
         metadata_list_ready: !metadata_listing_required || metadata_readiness.ready,
@@ -202,17 +267,17 @@ pub(super) fn health_payload(
             .transport_identity
             .as_str()
             .to_string(),
-        cluster_auth_transport_reason: if cluster_peer_transport_policy.required {
-            cluster_peer_transport_policy.enforcement.reason
-        } else {
-            cluster_peer_auth_status.transport_reason
-        }
+        cluster_auth_transport_reason: peer_transport_policy_effective_reason(
+            &cluster_peer_transport_policy,
+        )
         .as_str()
         .to_string(),
         cluster_auth_transport_required: cluster_peer_auth_transport_required,
+        cluster_auth_production_reason: cluster_peer_auth_production_reason.to_string(),
         cluster_join_auth_mode: cluster_join_auth_status.mode.to_string(),
         cluster_join_auth_reason: cluster_join_auth_status.reason.to_string(),
         membership_protocol: topology.membership_protocol.as_str().to_string(),
+        membership_protocol_reason: membership_protocol_reason.to_string(),
         write_durability_mode: state.write_durability_mode.as_str().to_string(),
         metadata_listing_strategy: state.metadata_listing_strategy.as_str().to_string(),
         metadata_listing_gap: metadata_readiness.gap.clone(),
@@ -224,6 +289,7 @@ pub(super) fn health_payload(
         membership_engine: membership_status.engine,
         membership_convergence_reason: membership_convergence_probe.reason.to_string(),
         membership_last_update_unix_ms,
+        membership_last_update_age_ms: membership_last_update_age_ms_value,
         membership_view_id: topology.membership_view_id.clone(),
         placement_epoch: topology.placement_epoch,
         pending_replication_backlog_operations: pending_replication_queue_probe.summary.operations,
@@ -398,13 +464,8 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
     let cluster_auth_mode = cluster_peer_auth_status.mode;
     let cluster_auth_trust_model = cluster_peer_auth_status.trust_model;
     let cluster_auth_transport_identity = cluster_peer_auth_status.transport_identity.as_str();
-    let cluster_auth_transport_reason = if cluster_peer_transport_policy.required {
-        peer_transport_policy_reject_reason(&cluster_peer_transport_policy)
-            .unwrap_or(cluster_peer_transport_policy.enforcement.reason)
-            .as_str()
-    } else {
-        cluster_peer_auth_status.transport_reason.as_str()
-    };
+    let cluster_auth_transport_reason =
+        peer_transport_policy_effective_reason(&cluster_peer_transport_policy).as_str();
     let cluster_join_auth_mode = cluster_join_auth_status.mode;
     let cluster_join_auth_ready = if cluster_join_auth_status.ready { 1 } else { 0 };
     let cluster_join_auth_reason = cluster_join_auth_status.reason;
@@ -439,11 +500,26 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
     } else {
         0
     };
+    let cluster_peer_auth_production = assess_cluster_peer_auth_production_readiness(
+        topology.is_distributed(),
+        cluster_peer_auth_status.configured,
+        cluster_peer_auth_status.sender_allowlist_bound,
+        &cluster_peer_transport_policy,
+        cluster_peer_auth_status.identity_bound,
+    );
+    let cluster_peer_auth_production_reason_label = cluster_peer_auth_production.reason.as_str();
+    let cluster_peer_auth_production_ready = if cluster_peer_auth_production.ready {
+        1
+    } else {
+        0
+    };
     let membership_protocol_ready = if topology.membership_status.ready {
         1
     } else {
         0
     };
+    let membership_protocol_reason =
+        membership_protocol_readiness_reason(&topology.membership_status);
     let peer_connectivity_probe = probe_peer_connectivity(
         topology.cluster_peers.as_slice(),
         Some(state.config.as_ref()),
@@ -457,6 +533,10 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
     let membership_last_update_unix_ms = effective_membership_last_update_unix_ms(
         &topology.membership_status,
         &membership_convergence_probe,
+    );
+    let membership_last_update_age_ms_value = membership_last_update_age_ms(
+        membership_convergence_probe.observed_at_unix_ms,
+        topology.membership_status.last_update_unix_ms,
     );
     record_membership_last_update(&state, membership_last_update_unix_ms);
     record_membership_convergence(&state, membership_convergence_probe.converged);
@@ -610,6 +690,12 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
          # HELP maxio_cluster_peer_auth_transport_reason_info Peer-transport identity readiness reason label for current runtime configuration.\n\
          # TYPE maxio_cluster_peer_auth_transport_reason_info gauge\n\
          maxio_cluster_peer_auth_transport_reason_info{{reason=\"{}\"}} 1\n\
+         # HELP maxio_cluster_peer_auth_production_ready Whether cluster peer auth posture is production-ready for distributed mode (1=true, 0=false).\n\
+         # TYPE maxio_cluster_peer_auth_production_ready gauge\n\
+         maxio_cluster_peer_auth_production_ready {}\n\
+         # HELP maxio_cluster_peer_auth_production_reason_info Cluster peer auth production-readiness reason for current runtime state.\n\
+         # TYPE maxio_cluster_peer_auth_production_reason_info gauge\n\
+         maxio_cluster_peer_auth_production_reason_info{{reason=\"{}\"}} 1\n\
          # HELP maxio_cluster_join_auth_mode_info Join authorization mode for membership control requests.\n\
          # TYPE maxio_cluster_join_auth_mode_info gauge\n\
          maxio_cluster_join_auth_mode_info{{mode=\"{}\"}} 1\n\
@@ -642,6 +728,7 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
          # HELP maxio_runtime_internal_header_reject_endpoint_total Runtime internal-header rejects grouped by endpoint family.\n\
          # TYPE maxio_runtime_internal_header_reject_endpoint_total counter\n\
          maxio_runtime_internal_header_reject_endpoint_total{{endpoint=\"api\"}} {}\n\
+         maxio_runtime_internal_header_reject_endpoint_total{{endpoint=\"internal\"}} {}\n\
          maxio_runtime_internal_header_reject_endpoint_total{{endpoint=\"healthz\"}} {}\n\
          maxio_runtime_internal_header_reject_endpoint_total{{endpoint=\"metrics\"}} {}\n\
          maxio_runtime_internal_header_reject_endpoint_total{{endpoint=\"ui\"}} {}\n\
@@ -676,6 +763,9 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
          # HELP maxio_membership_protocol_ready Membership protocol readiness (1=implemented/active, 0=placeholder/unimplemented).\n\
          # TYPE maxio_membership_protocol_ready gauge\n\
          maxio_membership_protocol_ready {}\n\
+         # HELP maxio_membership_protocol_readiness_reason_info Membership protocol readiness reason for current runtime state.\n\
+         # TYPE maxio_membership_protocol_readiness_reason_info gauge\n\
+         maxio_membership_protocol_readiness_reason_info{{reason=\"{}\"}} 1\n\
          # HELP maxio_membership_converged Membership convergence status (1=converged, 0=not converged).\n\
          # TYPE maxio_membership_converged gauge\n\
          maxio_membership_converged {}\n\
@@ -685,6 +775,9 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
          # HELP maxio_membership_last_update_unix_ms Membership status observation timestamp in Unix milliseconds.\n\
          # TYPE maxio_membership_last_update_unix_ms gauge\n\
          maxio_membership_last_update_unix_ms {}\n\
+         # HELP maxio_membership_last_update_age_ms Milliseconds since the last observed membership update timestamp.\n\
+         # TYPE maxio_membership_last_update_age_ms gauge\n\
+         maxio_membership_last_update_age_ms {}\n\
          # HELP maxio_placement_epoch Current placement epoch for the active runtime membership view.\n\
          # TYPE maxio_placement_epoch gauge\n\
          maxio_placement_epoch {}\n\
@@ -773,6 +866,8 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
         cluster_peer_auth_transport_ready,
         cluster_peer_auth_transport_required,
         cluster_auth_transport_reason,
+        cluster_peer_auth_production_ready,
+        cluster_peer_auth_production_reason_label,
         cluster_join_auth_mode,
         cluster_join_auth_ready,
         cluster_join_auth_reason,
@@ -791,6 +886,7 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
         peer_auth_reject_counters.unknown,
         runtime_internal_reject_dimensions.total,
         runtime_internal_reject_dimensions.endpoint_api,
+        runtime_internal_reject_dimensions.endpoint_internal,
         runtime_internal_reject_dimensions.endpoint_healthz,
         runtime_internal_reject_dimensions.endpoint_metrics,
         runtime_internal_reject_dimensions.endpoint_ui,
@@ -807,9 +903,11 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
         metadata_listing_gap,
         membership_engine,
         membership_protocol_ready,
+        membership_protocol_reason,
         membership_converged,
         membership_convergence_reason,
         membership_last_update_unix_ms,
+        membership_last_update_age_ms_value,
         placement_epoch,
         pending_replication_queue_readable,
         pending_replication_queue_probe.summary.operations,
@@ -1036,6 +1134,9 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
              # HELP maxio_pending_metadata_repair_replay_failed_plans_total Total pending metadata repair plans that failed replay attempts.\n\
              # TYPE maxio_pending_metadata_repair_replay_failed_plans_total counter\n\
              maxio_pending_metadata_repair_replay_failed_plans_total {}\n\
+             # HELP maxio_pending_metadata_repair_replay_dropped_plans_total Total pending metadata repair plans dropped as terminal/non-retryable during replay.\n\
+             # TYPE maxio_pending_metadata_repair_replay_dropped_plans_total counter\n\
+             maxio_pending_metadata_repair_replay_dropped_plans_total {}\n\
              # HELP maxio_pending_metadata_repair_replay_skipped_plans_total Total pending metadata repair plans skipped by replay worker.\n\
              # TYPE maxio_pending_metadata_repair_replay_skipped_plans_total counter\n\
              maxio_pending_metadata_repair_replay_skipped_plans_total {}\n\
@@ -1062,6 +1163,7 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
             pending_metadata_repair_replay_counters.leased_plans_total,
             pending_metadata_repair_replay_counters.acknowledged_plans_total,
             pending_metadata_repair_replay_counters.failed_plans_total,
+            pending_metadata_repair_replay_counters.dropped_plans_total,
             pending_metadata_repair_replay_counters.skipped_plans_total,
             pending_metadata_repair_replay_counters.last_cycle_unix_ms,
             pending_metadata_repair_replay_counters.last_success_unix_ms,
@@ -1069,6 +1171,19 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
         )
         .as_str(),
     );
+    body.push_str(
+        "# HELP maxio_pending_metadata_repair_replay_terminal_failure_reason_total Total terminal metadata-repair replay apply failures by canonical reason label.\n\
+         # TYPE maxio_pending_metadata_repair_replay_terminal_failure_reason_total counter\n",
+    );
+    for (reason, total) in &pending_metadata_repair_replay_counters.terminal_failure_reason_totals {
+        body.push_str(
+            format!(
+                "maxio_pending_metadata_repair_replay_terminal_failure_reason_total{{reason=\"{}\"}} {}\n",
+                reason, total
+            )
+            .as_str(),
+        );
+    }
 
     body.push_str(
         format!(

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::response;
 use crate::api::object::peer_transport::{
-    attest_internal_peer_target, build_internal_peer_http_client,
+    attest_internal_peer_target, build_internal_peer_http_client, internal_peer_transport_scheme,
 };
 use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
 use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_request};
@@ -16,32 +16,37 @@ use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::metadata::{
     BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
     BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
-    CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
-    ClusterBucketMetadataMutationPreconditionAssessment, ClusterBucketMetadataResponderSnapshot,
-    ClusterBucketMetadataResponderState, ClusterMetadataListingStrategy,
+    CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON,
+    ClusterBucketMetadataMutationPreconditionAssessment, ClusterBucketMetadataResponderState,
+    ClusterMetadataFanInGateFailureClass, ClusterMetadataListingStrategy,
     ClusterResponderMembershipView, MetadataQuery, MetadataVersionsQuery, ObjectMetadataOperation,
     ObjectMetadataOperationError, ObjectMetadataState, ObjectVersionMetadataOperation,
     ObjectVersionMetadataOperationError, ObjectVersionMetadataState,
     PersistedBucketLifecycleConfigurationOperationError,
-    PersistedBucketLifecycleConfigurationReadResolution, PersistedBucketMetadataOperationError,
+    PersistedBucketLifecycleConfigurationReadResolution,
+    PersistedBucketLifecycleMutationPreconditionResolution, PersistedBucketMetadataOperationError,
     PersistedBucketMetadataReadResolution, PersistedBucketMutationPreconditionResolution,
     PersistedMetadataQueryError, PersistedObjectMetadataOperationError,
-    PersistedObjectVersionMetadataOperationError,
+    PersistedObjectReadPreconditionResolution, PersistedObjectVersionMetadataOperationError,
+    PersistedObjectVersionReadPreconditionResolution,
     apply_bucket_lifecycle_configuration_operation_to_persisted_state,
     apply_bucket_metadata_operation_to_persisted_state,
     apply_object_metadata_operation_to_persisted_state,
     apply_object_version_metadata_operation_to_persisted_state,
-    assess_cluster_bucket_metadata_mutation_preconditions,
-    assess_cluster_metadata_fan_in_preflight_for_topology_responders,
+    assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states,
+    assess_cluster_metadata_fan_in_gate_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
     cluster_metadata_fan_in_auth_token_reject_reason, cluster_metadata_fan_in_execution_strategy,
-    cluster_metadata_fan_in_preflight_reject_reason, cluster_metadata_readiness_reject_reason,
+    cluster_metadata_fan_in_gate_reject_details, cluster_metadata_readiness_reject_reason,
     list_buckets_from_persisted_state_with_view_id, list_object_versions_page_from_persisted_state,
     list_objects_page_from_persisted_state, load_persisted_metadata_state,
     resolve_bucket_lifecycle_configuration_from_persisted_state,
+    resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state,
     resolve_bucket_metadata_from_persisted_state,
     resolve_bucket_mutation_preconditions_from_persisted_state,
+    resolve_object_read_preconditions_from_persisted_state,
+    resolve_object_version_read_preconditions_from_persisted_state,
 };
 use crate::server::{AppState, RuntimeTopologySnapshot, runtime_topology_snapshot};
 use crate::storage::StorageError;
@@ -226,33 +231,42 @@ pub(super) fn reject_unready_metadata_fan_in_preflight_for_responders(
     source_strategy: ClusterMetadataListingStrategy,
     operation: &str,
     responders: &[ClusterResponderMembershipView],
+    has_cluster_auth_token: bool,
 ) -> Option<Response> {
-    let preflight = assess_cluster_metadata_fan_in_preflight_for_topology_responders(
+    let gate = assess_cluster_metadata_fan_in_gate_for_topology_responders(
         source_strategy,
         None,
         topology.node_id.as_str(),
         topology.membership_nodes.as_slice(),
         responders,
+        has_cluster_auth_token,
     )
     .map_err(|err| {
         response::error(
             StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "Distributed metadata fan-in preflight failed for '{operation}': {err:?}"
-            ),
+            format!("Distributed metadata fan-in preflight failed for '{operation}': {err:?}"),
         )
     })
     .ok()?;
-    if preflight.ready {
+    if gate.ready {
         return None;
     }
 
-    let reason = cluster_metadata_fan_in_preflight_reject_reason(&preflight)
-        .map(|gap| gap.as_str())
-        .unwrap_or("unknown-fan-in-preflight-gap");
+    let details = cluster_metadata_fan_in_gate_reject_details(&gate);
+    let reason = details
+        .as_ref()
+        .map(|details| details.reason)
+        .unwrap_or("unknown-fan-in-gate-gap");
+    let failure_class = details
+        .as_ref()
+        .map(|details| details.failure_class)
+        .map(ClusterMetadataFanInGateFailureClass::as_str)
+        .unwrap_or("unknown-fan-in-gate-failure-class");
     Some(response::error(
         StatusCode::SERVICE_UNAVAILABLE,
-        format!("Distributed metadata fan-in for '{operation}' is not ready ({reason})"),
+        format!(
+            "Distributed metadata fan-in for '{operation}' is not ready ({reason}; class={failure_class})"
+        ),
     ))
 }
 
@@ -290,31 +304,19 @@ pub(super) fn assess_bucket_metadata_operation_preconditions<T: Clone + Eq>(
     responded_nodes: &[String],
     states: &[ClusterBucketMetadataResponderState<T>],
 ) -> Result<ClusterBucketMetadataMutationPreconditionAssessment<T>, String> {
-    if responded_nodes.len() != states.len() {
-        return Err(format!(
-            "Distributed bucket metadata operation '{}' responder/state fan-in cardinality mismatch",
-            operation
-        ));
-    }
-    let responder_states = responded_nodes
-        .iter()
-        .cloned()
-        .zip(states.iter().cloned())
-        .map(|(node_id, state)| ClusterBucketMetadataResponderSnapshot { node_id, state })
-        .collect::<Vec<_>>();
-
-    assess_cluster_bucket_metadata_mutation_preconditions(
+    assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states(
         state.metadata_listing_strategy,
         Some(topology.membership_view_id.as_str()),
         topology.node_id.as_str(),
         topology.membership_nodes.as_slice(),
-        responder_states.as_slice(),
+        responded_nodes,
+        states,
     )
     .map_err(|error| {
         format!(
             "Failed to assess distributed bucket metadata convergence for operation '{}' ({})",
             operation,
-            error.canonical_reason()
+            error.as_str()
         )
     })
 }
@@ -362,15 +364,12 @@ pub(super) fn should_attempt_cluster_object_listing_fan_in(
     )
 }
 
-pub(super) fn reject_consensus_index_peer_fan_in_transport_unready(
+pub(super) fn reject_cluster_authoritative_peer_fan_in_transport_unready(
     state: &AppState,
     topology: &RuntimeTopologySnapshot,
     internal_local_only: bool,
 ) -> Option<Response> {
-    if internal_local_only
-        || !topology.is_distributed()
-        || state.metadata_listing_strategy != ClusterMetadataListingStrategy::ConsensusIndex
-    {
+    if internal_local_only || !topology.is_distributed() {
         return None;
     }
 
@@ -379,7 +378,9 @@ pub(super) fn reject_consensus_index_peer_fan_in_transport_unready(
         .cluster_auth_token()
         .is_some_and(|value| !value.trim().is_empty());
     if has_cluster_auth_token {
-        return None;
+        return internal_peer_transport_scheme(state)
+            .err()
+            .map(|error| response::error(StatusCode::SERVICE_UNAVAILABLE, error.message));
     }
 
     let reason = cluster_metadata_fan_in_auth_token_reject_reason(
@@ -388,7 +389,7 @@ pub(super) fn reject_consensus_index_peer_fan_in_transport_unready(
     )?;
     debug_assert_eq!(
         reason,
-        CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON
+        CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON
     );
 
     Some(response::error(
@@ -478,6 +479,106 @@ pub(super) fn ensure_consensus_index_delete_bucket_preconditions(
             StatusCode::SERVICE_UNAVAILABLE,
             format!(
                 "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+                operation, err
+            ),
+        ))
+    })?;
+
+    match resolve_bucket_mutation_preconditions_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+        current_unix_ms_u64(),
+    ) {
+        Ok(PersistedBucketMutationPreconditionResolution::Present(_)) => Ok(()),
+        Ok(PersistedBucketMutationPreconditionResolution::Tombstoned { .. })
+        | Ok(PersistedBucketMutationPreconditionResolution::Missing) => Err(Box::new(
+            response::error(StatusCode::NOT_FOUND, "Bucket not found"),
+        )),
+        Err(err) => Err(map_persisted_bucket_metadata_query_error(operation, err)),
+    }
+}
+
+pub(super) fn ensure_consensus_index_lifecycle_mutation_preconditions(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    operation: &str,
+) -> Result<(), Box<Response>> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+                operation, err
+            ),
+        ))
+    })?;
+
+    match resolve_bucket_lifecycle_mutation_preconditions_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+        current_unix_ms_u64(),
+    ) {
+        Ok(PersistedBucketLifecycleMutationPreconditionResolution::Present { .. }) => Ok(()),
+        Ok(PersistedBucketLifecycleMutationPreconditionResolution::Tombstoned { .. })
+        | Ok(PersistedBucketLifecycleMutationPreconditionResolution::Missing) => Err(Box::new(
+            response::error(StatusCode::NOT_FOUND, "Bucket not found"),
+        )),
+        Err(err) => Err(map_persisted_bucket_metadata_query_error(operation, err)),
+    }
+}
+
+pub(super) fn ensure_consensus_index_versioning_mutation_preconditions(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    operation: &str,
+) -> Result<(), Box<Response>> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+                operation, err
+            ),
+        ))
+    })?;
+
+    match resolve_bucket_mutation_preconditions_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+        current_unix_ms_u64(),
+    ) {
+        Ok(PersistedBucketMutationPreconditionResolution::Present(_)) => Ok(()),
+        Ok(PersistedBucketMutationPreconditionResolution::Tombstoned { .. })
+        | Ok(PersistedBucketMutationPreconditionResolution::Missing) => Err(Box::new(
+            response::error(StatusCode::NOT_FOUND, "Bucket not found"),
+        )),
+        Err(err) => Err(map_persisted_bucket_metadata_query_error(operation, err)),
+    }
+}
+
+pub(super) fn ensure_consensus_index_object_mutation_preconditions(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    operation: &str,
+) -> Result<(), Box<Response>> {
+    if !should_persist_consensus_object_metadata(state, topology) {
+        return Ok(());
+    }
+
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed object metadata operation '{}' cannot load consensus metadata state: {}",
                 operation, err
             ),
         ))
@@ -1067,6 +1168,71 @@ pub(super) fn consensus_bucket_lifecycle_configuration_xml_for_bucket(
     }
 }
 
+pub(super) fn ensure_consensus_index_object_read_authority(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    key: &str,
+    requested_version_id: Option<&str>,
+    operation: &str,
+) -> Result<(), Box<Response>> {
+    if !topology.is_distributed()
+        || state.metadata_listing_strategy != ClusterMetadataListingStrategy::ConsensusIndex
+    {
+        return Ok(());
+    }
+
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed object metadata read '{}' cannot load consensus metadata state: {}",
+                operation, err
+            ),
+        ))
+    })?;
+
+    if let Some(version_id) = requested_version_id {
+        match resolve_object_version_read_preconditions_from_persisted_state(
+            &persisted_state,
+            bucket,
+            key,
+            version_id,
+            Some(topology.membership_view_id.as_str()),
+        )
+        .map_err(|err| map_persisted_object_read_query_error(operation, err))?
+        {
+            PersistedObjectVersionReadPreconditionResolution::Present(_) => Ok(()),
+            PersistedObjectVersionReadPreconditionResolution::MissingVersion => {
+                Err(Box::new(version_not_found()))
+            }
+            PersistedObjectVersionReadPreconditionResolution::MissingBucket
+            | PersistedObjectVersionReadPreconditionResolution::TombstonedBucket(_) => {
+                Err(Box::new(bucket_not_found()))
+            }
+        }
+    } else {
+        match resolve_object_read_preconditions_from_persisted_state(
+            &persisted_state,
+            bucket,
+            key,
+            Some(topology.membership_view_id.as_str()),
+        )
+        .map_err(|err| map_persisted_object_read_query_error(operation, err))?
+        {
+            PersistedObjectReadPreconditionResolution::Present(_) => Ok(()),
+            PersistedObjectReadPreconditionResolution::MissingObject => Err(Box::new(
+                response::error(StatusCode::NOT_FOUND, "Object not found"),
+            )),
+            PersistedObjectReadPreconditionResolution::MissingBucket
+            | PersistedObjectReadPreconditionResolution::TombstonedBucket(_) => {
+                Err(Box::new(bucket_not_found()))
+            }
+        }
+    }
+}
+
 fn map_persisted_bucket_metadata_query_error(
     operation: &str,
     err: PersistedMetadataQueryError,
@@ -1086,6 +1252,32 @@ fn map_persisted_bucket_metadata_query_error(
             StatusCode::SERVICE_UNAVAILABLE,
             format!(
                 "Distributed bucket metadata operation '{}' cannot query consensus metadata state ({})",
+                operation,
+                other.canonical_reason()
+            ),
+        )),
+    }
+}
+
+fn map_persisted_object_read_query_error(
+    operation: &str,
+    err: PersistedMetadataQueryError,
+) -> Box<Response> {
+    match err {
+        PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        } => Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed object metadata read '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
+                operation, expected_view_id, persisted_view_id
+            ),
+        )),
+        other => Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed object metadata read '{}' cannot query consensus metadata state ({})",
                 operation,
                 other.canonical_reason()
             ),
@@ -1281,6 +1473,10 @@ mod tests {
             chunk_size: 10 * 1024 * 1024,
             parity_shards: 0,
             min_disk_headroom_bytes: 0,
+            pending_replication_due_warning_threshold: None,
+            pending_rebalance_due_warning_threshold: None,
+            pending_membership_propagation_due_warning_threshold: None,
+            pending_metadata_repair_due_warning_threshold: None,
         }
     }
 
@@ -1586,6 +1782,7 @@ mod tests {
             ClusterMetadataListingStrategy::RequestTimeAggregation,
             "ListConsoleObjects",
             responders.as_slice(),
+            true,
         )
         .expect("inconsistent responder views must fail closed");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
@@ -1609,8 +1806,60 @@ mod tests {
             ClusterMetadataListingStrategy::RequestTimeAggregation,
             "ListConsoleObjects",
             responders.as_slice(),
+            true,
         );
         assert!(response.is_none());
+    }
+
+    #[test]
+    fn reject_unready_metadata_fan_in_preflight_rejects_missing_auth_token_for_consensus_index() {
+        let topology = distributed_test_topology();
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-b.internal:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-c.internal:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+        ];
+        let response = reject_unready_metadata_fan_in_preflight_for_responders(
+            &topology,
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            "ListConsoleObjects",
+            responders.as_slice(),
+            false,
+        )
+        .expect("consensus fan-in should fail closed without auth token");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn reject_unready_metadata_fan_in_preflight_includes_failure_class() {
+        let topology = distributed_test_topology();
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-b.internal:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-c.internal:9000".to_string(),
+                membership_view_id: Some("view-a".to_string()),
+            },
+        ];
+        let response = reject_unready_metadata_fan_in_preflight_for_responders(
+            &topology,
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            "ListConsoleObjects",
+            responders.as_slice(),
+            false,
+        )
+        .expect("consensus fan-in should fail closed without auth token");
+
+        let body = response_body(Box::new(response)).await;
+        assert!(body.contains(CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON));
+        assert!(body.contains("class=auth-configuration"));
     }
 
     #[tokio::test]
@@ -1637,7 +1886,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reject_consensus_index_peer_fan_in_transport_unready_returns_503_when_token_missing() {
+    async fn reject_cluster_authoritative_peer_fan_in_transport_unready_returns_503_when_token_missing()
+     {
         let tmp = TempDir::new().expect("tempdir");
         let data_dir = tmp.path().to_string_lossy().to_string();
         let mut config = test_config(data_dir);
@@ -1652,8 +1902,75 @@ mod tests {
             .expect("state should initialize");
         let topology = runtime_topology_snapshot(&state);
         let response =
-            reject_consensus_index_peer_fan_in_transport_unready(&state, &topology, false)
+            reject_cluster_authoritative_peer_fan_in_transport_unready(&state, &topology, false)
                 .expect("consensus listing should fail closed when token missing");
         assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn reject_cluster_authoritative_peer_fan_in_transport_unready_returns_503_for_request_aggregation_when_token_missing()
+     {
+        let tmp = TempDir::new().expect("tempdir");
+        let data_dir = tmp.path().to_string_lossy().to_string();
+        let mut config = test_config(data_dir);
+        config.node_id = "node-a.internal:9000".to_string();
+        config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+        config.membership_protocol = MembershipProtocol::StaticBootstrap;
+        config.metadata_listing_strategy = ClusterMetadataListingStrategy::RequestTimeAggregation;
+        config.cluster_auth_token = None;
+
+        let state = AppState::from_config(config)
+            .await
+            .expect("state should initialize");
+        let topology = runtime_topology_snapshot(&state);
+        let response =
+            reject_cluster_authoritative_peer_fan_in_transport_unready(&state, &topology, false)
+                .expect("request-time aggregation should fail closed when token missing");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_body(Box::new(response)).await;
+        assert!(body.contains("cluster-peer-fan-in-auth-token-missing"));
+    }
+
+    #[tokio::test]
+    async fn reject_cluster_authoritative_peer_fan_in_transport_unready_returns_503_when_internal_peer_transport_is_unready()
+     {
+        let tmp = TempDir::new().expect("tempdir");
+        let data_dir = tmp.path().to_string_lossy().to_string();
+        let mut config = test_config(data_dir);
+        config.node_id = "node-a.internal:9000".to_string();
+        config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+        config.membership_protocol = MembershipProtocol::StaticBootstrap;
+        config.metadata_listing_strategy = ClusterMetadataListingStrategy::RequestTimeAggregation;
+        config.cluster_auth_token = Some("shared-token".to_string());
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+        config.cluster_peer_tls_cert_path = Some(
+            tmp.path()
+                .join("missing-peer.crt")
+                .to_string_lossy()
+                .to_string(),
+        );
+        config.cluster_peer_tls_key_path = Some(
+            tmp.path()
+                .join("missing-peer.key")
+                .to_string_lossy()
+                .to_string(),
+        );
+        config.cluster_peer_tls_ca_path = Some(
+            tmp.path()
+                .join("missing-ca.pem")
+                .to_string_lossy()
+                .to_string(),
+        );
+
+        let state = AppState::from_config(config)
+            .await
+            .expect("state should initialize");
+        let topology = runtime_topology_snapshot(&state);
+        let response =
+            reject_cluster_authoritative_peer_fan_in_transport_unready(&state, &topology, false)
+                .expect("fan-in should fail closed when required peer transport is unready");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = response_body(Box::new(response)).await;
+        assert!(body.contains("Internal peer transport"));
     }
 }

@@ -1,4 +1,7 @@
+use std::cell::RefCell;
+use std::fs::File;
 use std::io::ErrorKind;
+use std::io::Write;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -341,18 +344,57 @@ pub fn replay_pending_metadata_repairs_once_with_persisted_state_apply(
     backoff_base_ms: u64,
     backoff_max_ms: u64,
 ) -> std::io::Result<PendingMetadataRepairReplayCycleOutcome> {
-    replay_pending_metadata_repairs_once_with_classified_apply_fn(
-        queue_path,
+    let replay = PendingMetadataRepairReplayExecutionConfig {
         now_unix_ms,
         max_candidates,
         lease_ms,
         backoff_base_ms,
         backoff_max_ms,
+    };
+    replay_pending_metadata_repairs_once_with_persisted_state_apply_and_observer(
+        queue_path,
+        metadata_state_path,
+        replay,
+        |_| {},
+    )
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PendingMetadataRepairReplayExecutionConfig {
+    pub now_unix_ms: u64,
+    pub max_candidates: usize,
+    pub lease_ms: u64,
+    pub backoff_base_ms: u64,
+    pub backoff_max_ms: u64,
+}
+
+pub fn replay_pending_metadata_repairs_once_with_persisted_state_apply_and_observer<ObserverFn>(
+    queue_path: &Path,
+    metadata_state_path: &Path,
+    replay: PendingMetadataRepairReplayExecutionConfig,
+    on_permanent_failure: ObserverFn,
+) -> std::io::Result<PendingMetadataRepairReplayCycleOutcome>
+where
+    ObserverFn: FnMut(&PendingMetadataRepairApplyFailure),
+{
+    let on_permanent_failure = RefCell::new(on_permanent_failure);
+    replay_pending_metadata_repairs_once_with_classified_apply_fn(
+        queue_path,
+        replay.now_unix_ms,
+        replay.max_candidates,
+        replay.lease_ms,
+        replay.backoff_base_ms,
+        replay.backoff_max_ms,
         |pending_plan| {
             apply_pending_metadata_repair_plan_to_persisted_state_classified(
                 metadata_state_path,
                 pending_plan,
             )
+            .inspect_err(|error| {
+                if error.is_permanent() {
+                    on_permanent_failure.borrow_mut()(error);
+                }
+            })
             .map(|_| ())
         },
     )
@@ -412,7 +454,10 @@ pub fn persist_pending_metadata_repair_queue(
         nanos_since_epoch
     );
     let temp_path = parent.join(temp_file_name);
-    std::fs::write(&temp_path, payload)?;
+    let mut temp_file = File::create(&temp_path)?;
+    temp_file.write_all(payload.as_slice())?;
+    temp_file.sync_all()?;
+    drop(temp_file);
     if let Err(error) = std::fs::rename(&temp_path, path) {
         let _ = std::fs::remove_file(&temp_path);
         return Err(error);

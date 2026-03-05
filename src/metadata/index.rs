@@ -1,16 +1,18 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use base64::Engine as _;
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::state::{BucketMetadataState, ObjectMetadataState, ObjectVersionMetadataState};
 
+mod tokens;
+
 const METADATA_CONTINUATION_TOKEN_PREFIX: &str = "v1:";
 const METADATA_VERSIONS_CONTINUATION_TOKEN_PREFIX: &str = "v1v:";
 const METADATA_LIST_MAX_KEYS: usize = 1000;
+pub const CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON: &str =
+    "cluster-peer-fan-in-auth-token-missing";
 pub const CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON: &str =
-    "consensus-index-peer-fan-in-auth-token-missing";
+    CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataQuery {
@@ -332,6 +334,88 @@ pub struct ClusterMetadataFanInPreflightAssessment {
     pub gap: Option<ClusterMetadataFanInPreflightGap>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterMetadataFanInGateGap {
+    AuthTokenMissing,
+    StrategyNotClusterAuthoritative,
+    MissingExpectedNodes,
+    UnexpectedResponderNodes,
+    MissingAndUnexpectedNodes,
+    MissingResponderMembershipViewId,
+    InconsistentResponderMembershipViewId,
+    MembershipViewIdMismatch,
+}
+
+impl ClusterMetadataFanInGateGap {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthTokenMissing => CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
+            Self::StrategyNotClusterAuthoritative => "strategy-not-cluster-authoritative",
+            Self::MissingExpectedNodes => "missing-expected-nodes",
+            Self::UnexpectedResponderNodes => "unexpected-responder-nodes",
+            Self::MissingAndUnexpectedNodes => "missing-and-unexpected-nodes",
+            Self::MissingResponderMembershipViewId => "missing-responder-membership-view-id",
+            Self::InconsistentResponderMembershipViewId => {
+                "inconsistent-responder-membership-view-id"
+            }
+            Self::MembershipViewIdMismatch => "membership-view-id-mismatch",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterMetadataFanInGateFailureClass {
+    AuthConfiguration,
+    StrategyReadiness,
+    CoverageReadiness,
+    MembershipViewReadiness,
+}
+
+impl ClusterMetadataFanInGateFailureClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::AuthConfiguration => "auth-configuration",
+            Self::StrategyReadiness => "strategy-readiness",
+            Self::CoverageReadiness => "coverage-readiness",
+            Self::MembershipViewReadiness => "membership-view-readiness",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterMetadataFanInGateAssessment {
+    pub ready: bool,
+    pub source_strategy: ClusterMetadataListingStrategy,
+    pub execution_strategy: ClusterMetadataListingStrategy,
+    pub auth_token_required: bool,
+    pub auth_token_present: bool,
+    pub preflight: ClusterMetadataFanInPreflightAssessment,
+    pub gap: Option<ClusterMetadataFanInGateGap>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterMetadataFanInGateDiagnostics {
+    pub ready: bool,
+    pub source_strategy: ClusterMetadataListingStrategy,
+    pub execution_strategy: ClusterMetadataListingStrategy,
+    pub auth_token_required: bool,
+    pub auth_token_present: bool,
+    pub reject_reason: Option<&'static str>,
+    pub failure_class: Option<ClusterMetadataFanInGateFailureClass>,
+    pub expected_nodes: usize,
+    pub responded_nodes: usize,
+    pub missing_nodes: usize,
+    pub unexpected_nodes: usize,
+    pub responders_with_missing_view_id: usize,
+    pub responders_with_mismatched_view_id: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClusterMetadataFanInGateRejectDetails {
+    pub reason: &'static str,
+    pub failure_class: ClusterMetadataFanInGateFailureClass,
+}
+
 pub fn cluster_metadata_readiness_reject_reason(
     readiness: &ClusterMetadataReadinessAssessment,
 ) -> Option<ClusterMetadataReadinessGap> {
@@ -406,6 +490,143 @@ pub fn cluster_metadata_fan_in_preflight_reject_reason(
     preflight: &ClusterMetadataFanInPreflightAssessment,
 ) -> Option<ClusterMetadataFanInPreflightGap> {
     if preflight.ready { None } else { preflight.gap }
+}
+
+pub fn cluster_metadata_fan_in_gate_reject_reason(
+    gate: &ClusterMetadataFanInGateAssessment,
+) -> Option<&'static str> {
+    if gate.ready {
+        None
+    } else {
+        gate.gap.map(ClusterMetadataFanInGateGap::as_str)
+    }
+}
+
+pub const fn cluster_metadata_fan_in_gate_gap_reject_details(
+    gap: ClusterMetadataFanInGateGap,
+) -> ClusterMetadataFanInGateRejectDetails {
+    ClusterMetadataFanInGateRejectDetails {
+        reason: gap.as_str(),
+        failure_class: cluster_metadata_fan_in_gate_gap_failure_class(gap),
+    }
+}
+
+pub fn cluster_metadata_fan_in_gate_reject_details(
+    gate: &ClusterMetadataFanInGateAssessment,
+) -> Option<ClusterMetadataFanInGateRejectDetails> {
+    if gate.ready {
+        None
+    } else {
+        gate.gap
+            .map(cluster_metadata_fan_in_gate_gap_reject_details)
+    }
+}
+
+pub const fn cluster_metadata_fan_in_gate_gap_failure_class(
+    gap: ClusterMetadataFanInGateGap,
+) -> ClusterMetadataFanInGateFailureClass {
+    match gap {
+        ClusterMetadataFanInGateGap::AuthTokenMissing => {
+            ClusterMetadataFanInGateFailureClass::AuthConfiguration
+        }
+        ClusterMetadataFanInGateGap::StrategyNotClusterAuthoritative => {
+            ClusterMetadataFanInGateFailureClass::StrategyReadiness
+        }
+        ClusterMetadataFanInGateGap::MissingExpectedNodes
+        | ClusterMetadataFanInGateGap::UnexpectedResponderNodes
+        | ClusterMetadataFanInGateGap::MissingAndUnexpectedNodes => {
+            ClusterMetadataFanInGateFailureClass::CoverageReadiness
+        }
+        ClusterMetadataFanInGateGap::MissingResponderMembershipViewId
+        | ClusterMetadataFanInGateGap::InconsistentResponderMembershipViewId
+        | ClusterMetadataFanInGateGap::MembershipViewIdMismatch => {
+            ClusterMetadataFanInGateFailureClass::MembershipViewReadiness
+        }
+    }
+}
+
+pub fn cluster_metadata_fan_in_gate_failure_class(
+    gate: &ClusterMetadataFanInGateAssessment,
+) -> Option<ClusterMetadataFanInGateFailureClass> {
+    if gate.ready {
+        None
+    } else {
+        gate.gap.map(cluster_metadata_fan_in_gate_gap_failure_class)
+    }
+}
+
+pub fn cluster_metadata_fan_in_gate_diagnostics(
+    gate: &ClusterMetadataFanInGateAssessment,
+) -> ClusterMetadataFanInGateDiagnostics {
+    let coverage = &gate.preflight.snapshot.coverage;
+    let membership_views = &gate.preflight.responder_membership_views;
+    let reject_details = cluster_metadata_fan_in_gate_reject_details(gate);
+
+    ClusterMetadataFanInGateDiagnostics {
+        ready: gate.ready,
+        source_strategy: gate.source_strategy,
+        execution_strategy: gate.execution_strategy,
+        auth_token_required: gate.auth_token_required,
+        auth_token_present: gate.auth_token_present,
+        reject_reason: reject_details.map(|details| details.reason),
+        failure_class: reject_details.map(|details| details.failure_class),
+        expected_nodes: coverage.expected_nodes.len(),
+        responded_nodes: coverage.responded_nodes.len(),
+        missing_nodes: coverage.missing_nodes.len(),
+        unexpected_nodes: coverage.unexpected_nodes.len(),
+        responders_with_missing_view_id: membership_views.missing_nodes.len(),
+        responders_with_mismatched_view_id: membership_views.mismatched_nodes.len(),
+    }
+}
+
+fn map_preflight_gap_to_gate_gap(
+    gap: ClusterMetadataFanInPreflightGap,
+) -> ClusterMetadataFanInGateGap {
+    match gap {
+        ClusterMetadataFanInPreflightGap::StrategyNotClusterAuthoritative => {
+            ClusterMetadataFanInGateGap::StrategyNotClusterAuthoritative
+        }
+        ClusterMetadataFanInPreflightGap::MissingExpectedNodes => {
+            ClusterMetadataFanInGateGap::MissingExpectedNodes
+        }
+        ClusterMetadataFanInPreflightGap::UnexpectedResponderNodes => {
+            ClusterMetadataFanInGateGap::UnexpectedResponderNodes
+        }
+        ClusterMetadataFanInPreflightGap::MissingAndUnexpectedNodes => {
+            ClusterMetadataFanInGateGap::MissingAndUnexpectedNodes
+        }
+        ClusterMetadataFanInPreflightGap::MissingResponderMembershipViewId => {
+            ClusterMetadataFanInGateGap::MissingResponderMembershipViewId
+        }
+        ClusterMetadataFanInPreflightGap::InconsistentResponderMembershipViewId => {
+            ClusterMetadataFanInGateGap::InconsistentResponderMembershipViewId
+        }
+        ClusterMetadataFanInPreflightGap::MembershipViewIdMismatch => {
+            ClusterMetadataFanInGateGap::MembershipViewIdMismatch
+        }
+    }
+}
+
+fn build_cluster_metadata_fan_in_gate_assessment(
+    source_strategy: ClusterMetadataListingStrategy,
+    has_cluster_auth_token: bool,
+    preflight: ClusterMetadataFanInPreflightAssessment,
+) -> ClusterMetadataFanInGateAssessment {
+    let auth_token_required = cluster_metadata_fan_in_requires_auth_token(source_strategy);
+    let auth_gap =
+        cluster_metadata_fan_in_auth_token_reject_reason(source_strategy, has_cluster_auth_token)
+            .map(|_| ClusterMetadataFanInGateGap::AuthTokenMissing);
+    let preflight_gap = preflight.gap.map(map_preflight_gap_to_gate_gap);
+    let gap = auth_gap.or(preflight_gap);
+    ClusterMetadataFanInGateAssessment {
+        ready: gap.is_none(),
+        source_strategy,
+        execution_strategy: cluster_metadata_fan_in_execution_strategy(source_strategy),
+        auth_token_required,
+        auth_token_present: has_cluster_auth_token,
+        preflight,
+        gap,
+    }
 }
 
 fn build_cluster_metadata_fan_in_preflight_assessment(
@@ -579,6 +800,12 @@ pub enum ClusterObjectMetadataReadResolution<T> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterObjectMetadataResponderSnapshot<T> {
+    pub node_id: String,
+    pub state: ClusterObjectMetadataResponderState<T>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClusterBucketMetadataResponderSnapshot<T> {
     pub node_id: String,
     pub state: ClusterBucketMetadataResponderState<T>,
@@ -618,6 +845,39 @@ pub struct ClusterBucketMetadataConvergenceAssessment<T> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterObjectMetadataConvergenceGap {
+    StrategyNotClusterAuthoritative,
+    MissingExpectedNodes,
+    UnexpectedResponderNodes,
+    MissingAndUnexpectedNodes,
+    MissingObjectOnResponder,
+    InconsistentResponderValues,
+    NoResponderValues,
+}
+
+impl ClusterObjectMetadataConvergenceGap {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StrategyNotClusterAuthoritative => "strategy-not-cluster-authoritative",
+            Self::MissingExpectedNodes => "missing-expected-nodes",
+            Self::UnexpectedResponderNodes => "unexpected-responder-nodes",
+            Self::MissingAndUnexpectedNodes => "missing-and-unexpected-nodes",
+            Self::MissingObjectOnResponder => "missing-object-on-responder",
+            Self::InconsistentResponderValues => "inconsistent-responder-values",
+            Self::NoResponderValues => "no-responder-values",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterObjectMetadataConvergenceAssessment<T> {
+    pub ready: bool,
+    pub snapshot: ClusterMetadataSnapshotAssessment,
+    pub consistency: ClusterObjectMetadataConsistencyAssessment<T>,
+    pub gap: Option<ClusterObjectMetadataConvergenceGap>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClusterBucketMetadataMutationPreconditionGap {
     StrategyNotClusterAuthoritative,
     MissingExpectedNodes,
@@ -638,6 +898,33 @@ impl ClusterBucketMetadataMutationPreconditionGap {
             Self::MissingAndUnexpectedNodes => "missing-and-unexpected-nodes",
             Self::BucketMissing => "bucket-missing",
             Self::MissingBucketOnResponder => "missing-bucket-on-responder",
+            Self::InconsistentResponderValues => "inconsistent-responder-values",
+            Self::NoResponderValues => "no-responder-values",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterObjectMetadataMutationPreconditionGap {
+    StrategyNotClusterAuthoritative,
+    MissingExpectedNodes,
+    UnexpectedResponderNodes,
+    MissingAndUnexpectedNodes,
+    ObjectMissing,
+    MissingObjectOnResponder,
+    InconsistentResponderValues,
+    NoResponderValues,
+}
+
+impl ClusterObjectMetadataMutationPreconditionGap {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StrategyNotClusterAuthoritative => "strategy-not-cluster-authoritative",
+            Self::MissingExpectedNodes => "missing-expected-nodes",
+            Self::UnexpectedResponderNodes => "unexpected-responder-nodes",
+            Self::MissingAndUnexpectedNodes => "missing-and-unexpected-nodes",
+            Self::ObjectMissing => "object-missing",
+            Self::MissingObjectOnResponder => "missing-object-on-responder",
             Self::InconsistentResponderValues => "inconsistent-responder-values",
             Self::NoResponderValues => "no-responder-values",
         }
@@ -676,6 +963,38 @@ pub const fn cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_v
     )
 }
 
+pub const fn cluster_object_metadata_mutation_precondition_gap_is_strategy_unready(
+    gap: ClusterObjectMetadataMutationPreconditionGap,
+) -> bool {
+    matches!(
+        gap,
+        ClusterObjectMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            | ClusterObjectMetadataMutationPreconditionGap::MissingExpectedNodes
+            | ClusterObjectMetadataMutationPreconditionGap::UnexpectedResponderNodes
+            | ClusterObjectMetadataMutationPreconditionGap::MissingAndUnexpectedNodes
+    )
+}
+
+pub const fn cluster_object_metadata_mutation_precondition_gap_is_responder_inconsistency(
+    gap: ClusterObjectMetadataMutationPreconditionGap,
+) -> bool {
+    matches!(
+        gap,
+        ClusterObjectMetadataMutationPreconditionGap::ObjectMissing
+            | ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder
+            | ClusterObjectMetadataMutationPreconditionGap::InconsistentResponderValues
+    )
+}
+
+pub const fn cluster_object_metadata_mutation_precondition_gap_is_no_responder_values(
+    gap: ClusterObjectMetadataMutationPreconditionGap,
+) -> bool {
+    matches!(
+        gap,
+        ClusterObjectMetadataMutationPreconditionGap::NoResponderValues
+    )
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClusterBucketMetadataMutationPreconditionFailureDisposition {
     NoSuchBucket,
@@ -699,9 +1018,186 @@ pub const fn cluster_bucket_metadata_mutation_precondition_failure_disposition(
         | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => {
             Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket)
         }
-        Some(_) => Some(
-            ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable,
-        ),
+        Some(_) => {
+            Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable)
+        }
+        None => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterObjectMetadataMutationPreconditionFailureDisposition {
+    NoSuchKey,
+    ServiceUnavailable,
+}
+
+impl ClusterObjectMetadataMutationPreconditionFailureDisposition {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::NoSuchKey => "no-such-key",
+            Self::ServiceUnavailable => "service-unavailable",
+        }
+    }
+}
+
+pub const fn cluster_object_metadata_mutation_precondition_failure_disposition(
+    gap: Option<ClusterObjectMetadataMutationPreconditionGap>,
+) -> Option<ClusterObjectMetadataMutationPreconditionFailureDisposition> {
+    match gap {
+        Some(ClusterObjectMetadataMutationPreconditionGap::ObjectMissing)
+        | Some(ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder) => {
+            Some(ClusterObjectMetadataMutationPreconditionFailureDisposition::NoSuchKey)
+        }
+        Some(_) => {
+            Some(ClusterObjectMetadataMutationPreconditionFailureDisposition::ServiceUnavailable)
+        }
+        None => None,
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterMetadataMutationPreconditionFailureClass {
+    StrategyReadiness,
+    CoverageReadiness,
+    ResourceMissing,
+    ResponderConsistency,
+}
+
+impl ClusterMetadataMutationPreconditionFailureClass {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StrategyReadiness => "strategy-readiness",
+            Self::CoverageReadiness => "coverage-readiness",
+            Self::ResourceMissing => "resource-missing",
+            Self::ResponderConsistency => "responder-consistency",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClusterBucketMetadataMutationPreconditionRejectDetails {
+    pub reason: &'static str,
+    pub failure_class: ClusterMetadataMutationPreconditionFailureClass,
+    pub failure_disposition: ClusterBucketMetadataMutationPreconditionFailureDisposition,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClusterObjectMetadataMutationPreconditionRejectDetails {
+    pub reason: &'static str,
+    pub failure_class: ClusterMetadataMutationPreconditionFailureClass,
+    pub failure_disposition: ClusterObjectMetadataMutationPreconditionFailureDisposition,
+}
+
+pub const fn cluster_bucket_metadata_mutation_precondition_gap_failure_class(
+    gap: ClusterBucketMetadataMutationPreconditionGap,
+) -> ClusterMetadataMutationPreconditionFailureClass {
+    match gap {
+        ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative => {
+            ClusterMetadataMutationPreconditionFailureClass::StrategyReadiness
+        }
+        ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes
+        | ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes
+        | ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes => {
+            ClusterMetadataMutationPreconditionFailureClass::CoverageReadiness
+        }
+        ClusterBucketMetadataMutationPreconditionGap::BucketMissing
+        | ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder => {
+            ClusterMetadataMutationPreconditionFailureClass::ResourceMissing
+        }
+        ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues
+        | ClusterBucketMetadataMutationPreconditionGap::NoResponderValues => {
+            ClusterMetadataMutationPreconditionFailureClass::ResponderConsistency
+        }
+    }
+}
+
+pub const fn cluster_object_metadata_mutation_precondition_gap_failure_class(
+    gap: ClusterObjectMetadataMutationPreconditionGap,
+) -> ClusterMetadataMutationPreconditionFailureClass {
+    match gap {
+        ClusterObjectMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative => {
+            ClusterMetadataMutationPreconditionFailureClass::StrategyReadiness
+        }
+        ClusterObjectMetadataMutationPreconditionGap::MissingExpectedNodes
+        | ClusterObjectMetadataMutationPreconditionGap::UnexpectedResponderNodes
+        | ClusterObjectMetadataMutationPreconditionGap::MissingAndUnexpectedNodes => {
+            ClusterMetadataMutationPreconditionFailureClass::CoverageReadiness
+        }
+        ClusterObjectMetadataMutationPreconditionGap::ObjectMissing
+        | ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder => {
+            ClusterMetadataMutationPreconditionFailureClass::ResourceMissing
+        }
+        ClusterObjectMetadataMutationPreconditionGap::InconsistentResponderValues
+        | ClusterObjectMetadataMutationPreconditionGap::NoResponderValues => {
+            ClusterMetadataMutationPreconditionFailureClass::ResponderConsistency
+        }
+    }
+}
+
+pub const fn cluster_bucket_metadata_mutation_precondition_gap_reject_details(
+    gap: ClusterBucketMetadataMutationPreconditionGap,
+) -> ClusterBucketMetadataMutationPreconditionRejectDetails {
+    let failure_disposition = match gap {
+        ClusterBucketMetadataMutationPreconditionGap::BucketMissing
+        | ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder => {
+            ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket
+        }
+        ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+        | ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes
+        | ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes
+        | ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes
+        | ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues
+        | ClusterBucketMetadataMutationPreconditionGap::NoResponderValues => {
+            ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+        }
+    };
+
+    ClusterBucketMetadataMutationPreconditionRejectDetails {
+        reason: gap.as_str(),
+        failure_class: cluster_bucket_metadata_mutation_precondition_gap_failure_class(gap),
+        failure_disposition,
+    }
+}
+
+pub const fn cluster_object_metadata_mutation_precondition_gap_reject_details(
+    gap: ClusterObjectMetadataMutationPreconditionGap,
+) -> ClusterObjectMetadataMutationPreconditionRejectDetails {
+    let failure_disposition = match gap {
+        ClusterObjectMetadataMutationPreconditionGap::ObjectMissing
+        | ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder => {
+            ClusterObjectMetadataMutationPreconditionFailureDisposition::NoSuchKey
+        }
+        ClusterObjectMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+        | ClusterObjectMetadataMutationPreconditionGap::MissingExpectedNodes
+        | ClusterObjectMetadataMutationPreconditionGap::UnexpectedResponderNodes
+        | ClusterObjectMetadataMutationPreconditionGap::MissingAndUnexpectedNodes
+        | ClusterObjectMetadataMutationPreconditionGap::InconsistentResponderValues
+        | ClusterObjectMetadataMutationPreconditionGap::NoResponderValues => {
+            ClusterObjectMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+        }
+    };
+
+    ClusterObjectMetadataMutationPreconditionRejectDetails {
+        reason: gap.as_str(),
+        failure_class: cluster_object_metadata_mutation_precondition_gap_failure_class(gap),
+        failure_disposition,
+    }
+}
+
+pub const fn cluster_bucket_metadata_mutation_precondition_reject_details(
+    gap: Option<ClusterBucketMetadataMutationPreconditionGap>,
+) -> Option<ClusterBucketMetadataMutationPreconditionRejectDetails> {
+    match gap {
+        Some(gap) => Some(cluster_bucket_metadata_mutation_precondition_gap_reject_details(gap)),
+        None => None,
+    }
+}
+
+pub const fn cluster_object_metadata_mutation_precondition_reject_details(
+    gap: Option<ClusterObjectMetadataMutationPreconditionGap>,
+) -> Option<ClusterObjectMetadataMutationPreconditionRejectDetails> {
+    match gap {
+        Some(gap) => Some(cluster_object_metadata_mutation_precondition_gap_reject_details(gap)),
         None => None,
     }
 }
@@ -714,6 +1210,14 @@ pub struct ClusterBucketMetadataMutationPreconditionAssessment<T> {
     pub gap: Option<ClusterBucketMetadataMutationPreconditionGap>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClusterObjectMetadataMutationPreconditionAssessment<T> {
+    pub ready: bool,
+    pub current_value: Option<T>,
+    pub convergence: ClusterObjectMetadataConvergenceAssessment<T>,
+    pub gap: Option<ClusterObjectMetadataMutationPreconditionGap>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ClusterBucketMetadataConvergenceInputError {
     ResponderStateCardinalityMismatch,
@@ -721,6 +1225,21 @@ pub enum ClusterBucketMetadataConvergenceInputError {
 }
 
 impl ClusterBucketMetadataConvergenceInputError {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ResponderStateCardinalityMismatch => "responder-state-cardinality-mismatch",
+            Self::InvalidResponderTopology(error) => error.canonical_reason(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClusterObjectMetadataConvergenceInputError {
+    ResponderStateCardinalityMismatch,
+    InvalidResponderTopology(MetadataQueryError),
+}
+
+impl ClusterObjectMetadataConvergenceInputError {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ResponderStateCardinalityMismatch => "responder-state-cardinality-mismatch",
@@ -1058,6 +1577,217 @@ pub fn assess_cluster_bucket_metadata_mutation_preconditions<T: Clone + Eq>(
     })
 }
 
+pub fn assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states<T: Clone + Eq>(
+    strategy: ClusterMetadataListingStrategy,
+    view_id: Option<&str>,
+    local_node_id: &str,
+    membership_nodes: &[String],
+    responded_nodes: &[String],
+    states: &[ClusterBucketMetadataResponderState<T>],
+) -> Result<
+    ClusterBucketMetadataMutationPreconditionAssessment<T>,
+    ClusterBucketMetadataConvergenceInputError,
+> {
+    if responded_nodes.len() != states.len() {
+        return Err(ClusterBucketMetadataConvergenceInputError::ResponderStateCardinalityMismatch);
+    }
+
+    let responder_states = responded_nodes
+        .iter()
+        .cloned()
+        .zip(states.iter().cloned())
+        .map(|(node_id, state)| ClusterBucketMetadataResponderSnapshot { node_id, state })
+        .collect::<Vec<_>>();
+    assess_cluster_bucket_metadata_mutation_preconditions(
+        strategy,
+        view_id,
+        local_node_id,
+        membership_nodes,
+        responder_states.as_slice(),
+    )
+    .map_err(ClusterBucketMetadataConvergenceInputError::InvalidResponderTopology)
+}
+
+pub fn assess_cluster_object_metadata_convergence<T: Clone + Eq>(
+    strategy: ClusterMetadataListingStrategy,
+    view_id: Option<&str>,
+    local_node_id: &str,
+    membership_nodes: &[String],
+    responder_states: &[ClusterObjectMetadataResponderSnapshot<T>],
+) -> Result<ClusterObjectMetadataConvergenceAssessment<T>, MetadataQueryError> {
+    let responder_node_ids = responder_states
+        .iter()
+        .map(|responder| responder.node_id.clone())
+        .collect::<Vec<_>>();
+    let snapshot = assess_cluster_metadata_snapshot_for_topology_responders(
+        strategy,
+        view_id,
+        local_node_id,
+        membership_nodes,
+        responder_node_ids.as_slice(),
+    )?;
+    let consistency_states = responder_states
+        .iter()
+        .map(|responder| responder.state.clone())
+        .collect::<Vec<_>>();
+    let consistency = assess_cluster_object_metadata_consistency(consistency_states.as_slice());
+
+    let gap = match snapshot.readiness_assessment.gap {
+        Some(ClusterMetadataReadinessGap::StrategyNotClusterAuthoritative) => {
+            Some(ClusterObjectMetadataConvergenceGap::StrategyNotClusterAuthoritative)
+        }
+        Some(ClusterMetadataReadinessGap::MissingExpectedNodes) => {
+            Some(ClusterObjectMetadataConvergenceGap::MissingExpectedNodes)
+        }
+        Some(ClusterMetadataReadinessGap::UnexpectedResponderNodes) => {
+            Some(ClusterObjectMetadataConvergenceGap::UnexpectedResponderNodes)
+        }
+        Some(ClusterMetadataReadinessGap::MissingAndUnexpectedNodes) => {
+            Some(ClusterObjectMetadataConvergenceGap::MissingAndUnexpectedNodes)
+        }
+        None => match consistency.gap {
+            Some(ClusterObjectMetadataConsistencyGap::MissingObjectOnResponder) => {
+                Some(ClusterObjectMetadataConvergenceGap::MissingObjectOnResponder)
+            }
+            Some(ClusterObjectMetadataConsistencyGap::InconsistentResponderValues) => {
+                Some(ClusterObjectMetadataConvergenceGap::InconsistentResponderValues)
+            }
+            Some(ClusterObjectMetadataConsistencyGap::NoResponderValues) => {
+                Some(ClusterObjectMetadataConvergenceGap::NoResponderValues)
+            }
+            None => None,
+        },
+    };
+
+    Ok(ClusterObjectMetadataConvergenceAssessment {
+        ready: gap.is_none(),
+        snapshot,
+        consistency,
+        gap,
+    })
+}
+
+pub fn assess_cluster_object_metadata_convergence_for_responder_states<T: Clone + Eq>(
+    strategy: ClusterMetadataListingStrategy,
+    view_id: Option<&str>,
+    local_node_id: &str,
+    membership_nodes: &[String],
+    responded_nodes: &[String],
+    states: &[ClusterObjectMetadataResponderState<T>],
+) -> Result<ClusterObjectMetadataConvergenceAssessment<T>, ClusterObjectMetadataConvergenceInputError>
+{
+    if responded_nodes.len() != states.len() {
+        return Err(ClusterObjectMetadataConvergenceInputError::ResponderStateCardinalityMismatch);
+    }
+
+    let responder_states = responded_nodes
+        .iter()
+        .cloned()
+        .zip(states.iter().cloned())
+        .map(|(node_id, state)| ClusterObjectMetadataResponderSnapshot { node_id, state })
+        .collect::<Vec<_>>();
+    assess_cluster_object_metadata_convergence(
+        strategy,
+        view_id,
+        local_node_id,
+        membership_nodes,
+        responder_states.as_slice(),
+    )
+    .map_err(ClusterObjectMetadataConvergenceInputError::InvalidResponderTopology)
+}
+
+pub fn assess_cluster_object_metadata_mutation_preconditions<T: Clone + Eq>(
+    strategy: ClusterMetadataListingStrategy,
+    view_id: Option<&str>,
+    local_node_id: &str,
+    membership_nodes: &[String],
+    responder_states: &[ClusterObjectMetadataResponderSnapshot<T>],
+) -> Result<ClusterObjectMetadataMutationPreconditionAssessment<T>, MetadataQueryError> {
+    let convergence = assess_cluster_object_metadata_convergence(
+        strategy,
+        view_id,
+        local_node_id,
+        membership_nodes,
+        responder_states,
+    )?;
+    let all_missing = convergence.gap
+        == Some(ClusterObjectMetadataConvergenceGap::MissingObjectOnResponder)
+        && !responder_states.is_empty()
+        && convergence.consistency.missing_object_responders == responder_states.len();
+
+    let gap = match convergence.gap {
+        Some(ClusterObjectMetadataConvergenceGap::StrategyNotClusterAuthoritative) => {
+            Some(ClusterObjectMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
+        }
+        Some(ClusterObjectMetadataConvergenceGap::MissingExpectedNodes) => {
+            Some(ClusterObjectMetadataMutationPreconditionGap::MissingExpectedNodes)
+        }
+        Some(ClusterObjectMetadataConvergenceGap::UnexpectedResponderNodes) => {
+            Some(ClusterObjectMetadataMutationPreconditionGap::UnexpectedResponderNodes)
+        }
+        Some(ClusterObjectMetadataConvergenceGap::MissingAndUnexpectedNodes) => {
+            Some(ClusterObjectMetadataMutationPreconditionGap::MissingAndUnexpectedNodes)
+        }
+        Some(ClusterObjectMetadataConvergenceGap::MissingObjectOnResponder) if all_missing => {
+            Some(ClusterObjectMetadataMutationPreconditionGap::ObjectMissing)
+        }
+        Some(ClusterObjectMetadataConvergenceGap::MissingObjectOnResponder) => {
+            Some(ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder)
+        }
+        Some(ClusterObjectMetadataConvergenceGap::InconsistentResponderValues) => {
+            Some(ClusterObjectMetadataMutationPreconditionGap::InconsistentResponderValues)
+        }
+        Some(ClusterObjectMetadataConvergenceGap::NoResponderValues) => {
+            Some(ClusterObjectMetadataMutationPreconditionGap::NoResponderValues)
+        }
+        None => None,
+    };
+
+    let ready = gap.is_none();
+    let current_value = if ready {
+        convergence.consistency.value.clone()
+    } else {
+        None
+    };
+    Ok(ClusterObjectMetadataMutationPreconditionAssessment {
+        ready,
+        current_value,
+        convergence,
+        gap,
+    })
+}
+
+pub fn assess_cluster_object_metadata_mutation_preconditions_for_responder_states<T: Clone + Eq>(
+    strategy: ClusterMetadataListingStrategy,
+    view_id: Option<&str>,
+    local_node_id: &str,
+    membership_nodes: &[String],
+    responded_nodes: &[String],
+    states: &[ClusterObjectMetadataResponderState<T>],
+) -> Result<
+    ClusterObjectMetadataMutationPreconditionAssessment<T>,
+    ClusterObjectMetadataConvergenceInputError,
+> {
+    if responded_nodes.len() != states.len() {
+        return Err(ClusterObjectMetadataConvergenceInputError::ResponderStateCardinalityMismatch);
+    }
+
+    let responder_states = responded_nodes
+        .iter()
+        .cloned()
+        .zip(states.iter().cloned())
+        .map(|(node_id, state)| ClusterObjectMetadataResponderSnapshot { node_id, state })
+        .collect::<Vec<_>>();
+    assess_cluster_object_metadata_mutation_preconditions(
+        strategy,
+        view_id,
+        local_node_id,
+        membership_nodes,
+        responder_states.as_slice(),
+    )
+    .map_err(ClusterObjectMetadataConvergenceInputError::InvalidResponderTopology)
+}
+
 pub fn build_cluster_metadata_snapshot_id(
     strategy: ClusterMetadataListingStrategy,
     view_id: Option<&str>,
@@ -1114,15 +1844,11 @@ pub const fn cluster_metadata_fan_in_execution_strategy(
 
 /// Determine whether a source strategy requires shared-token transport auth for fan-in.
 ///
-/// `consensus-index` keeps persisted metadata as canonical source-of-truth and uses
-/// authenticated peer fan-in for payload hydration.
+/// All cluster-authoritative fan-in strategies require authenticated peer transport.
 pub const fn cluster_metadata_fan_in_requires_auth_token(
     source_strategy: ClusterMetadataListingStrategy,
 ) -> bool {
-    matches!(
-        source_strategy,
-        ClusterMetadataListingStrategy::ConsensusIndex
-    )
+    source_strategy.is_cluster_authoritative()
 }
 
 /// Return canonical transport reject reason for metadata fan-in auth-token readiness.
@@ -1239,6 +1965,58 @@ pub fn assess_cluster_metadata_fan_in_preflight_for_topology_single_responder(
     build_cluster_metadata_fan_in_preflight_assessment(snapshot, std::slice::from_ref(&responder))
 }
 
+/// Build a canonical fan-in execution gate from topology + responder-view + auth-token inputs.
+///
+/// This composes transport auth-token requirements with fan-in preflight readiness so
+/// runtime/S3/console callers can consume one typed gate contract.
+pub fn assess_cluster_metadata_fan_in_gate_for_topology_responders(
+    source_strategy: ClusterMetadataListingStrategy,
+    view_id: Option<&str>,
+    local_node_id: &str,
+    membership_nodes: &[String],
+    responders: &[ClusterResponderMembershipView],
+    has_cluster_auth_token: bool,
+) -> Result<ClusterMetadataFanInGateAssessment, MetadataQueryError> {
+    let preflight = assess_cluster_metadata_fan_in_preflight_for_topology_responders(
+        source_strategy,
+        view_id,
+        local_node_id,
+        membership_nodes,
+        responders,
+    )?;
+    Ok(build_cluster_metadata_fan_in_gate_assessment(
+        source_strategy,
+        has_cluster_auth_token,
+        preflight,
+    ))
+}
+
+/// Build a canonical single-responder fan-in execution gate from topology + responder-view +
+/// auth-token inputs.
+pub fn assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
+    source_strategy: ClusterMetadataListingStrategy,
+    view_id: Option<&str>,
+    local_node_id: &str,
+    membership_nodes: &[String],
+    responder_node_id: &str,
+    responder_membership_view_id: Option<&str>,
+    has_cluster_auth_token: bool,
+) -> ClusterMetadataFanInGateAssessment {
+    let preflight = assess_cluster_metadata_fan_in_preflight_for_topology_single_responder(
+        source_strategy,
+        view_id,
+        local_node_id,
+        membership_nodes,
+        responder_node_id,
+        responder_membership_view_id,
+    );
+    build_cluster_metadata_fan_in_gate_assessment(
+        source_strategy,
+        has_cluster_auth_token,
+        preflight,
+    )
+}
+
 /// Build a canonical single-responder metadata snapshot assessment from topology inputs.
 ///
 /// Expected-node projection is strategy-driven with a deterministic membership fallback when the
@@ -1287,27 +2065,6 @@ pub fn assess_cluster_metadata_snapshot_for_topology_responders(
         expected_nodes.as_slice(),
         responder_node_ids,
     )
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct ContinuationTokenPayload {
-    version: u8,
-    bucket: String,
-    prefix: Option<String>,
-    view_id: Option<String>,
-    snapshot_id: Option<String>,
-    key: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct VersionsContinuationTokenPayload {
-    version: u8,
-    bucket: String,
-    prefix: Option<String>,
-    view_id: Option<String>,
-    snapshot_id: Option<String>,
-    key_marker: String,
-    version_id_marker: String,
 }
 
 pub trait MetadataIndex {
@@ -1523,7 +2280,7 @@ pub fn merge_cluster_list_objects_page_with_topology_snapshot_and_marker(
         return Err(MetadataQueryError::InvalidContinuationToken);
     }
     if let Some(key_marker) = key_marker {
-        snapshot_bound_query.continuation_token = encode_continuation_token(
+        snapshot_bound_query.continuation_token = tokens::encode_continuation_token(
             snapshot_bound_query.bucket.as_str(),
             snapshot_bound_query.prefix.as_deref(),
             snapshot_bound_query.view_id.as_deref(),
@@ -1836,7 +2593,7 @@ fn paginate_objects_for_query(
     mut objects: Vec<ObjectMetadataState>,
 ) -> Result<MetadataListPage, MetadataQueryError> {
     let prefix = query.prefix.as_deref();
-    let continuation_key = decode_continuation_token(
+    let continuation_key = tokens::decode_continuation_token(
         query.continuation_token.as_deref(),
         query.bucket.as_str(),
         prefix,
@@ -1863,7 +2620,7 @@ fn paginate_objects_for_query(
     objects.truncate(max_keys);
     let next_continuation_token = if is_truncated {
         objects.last().and_then(|object| {
-            encode_continuation_token(
+            tokens::encode_continuation_token(
                 query.bucket.as_str(),
                 prefix,
                 query.view_id.as_deref(),
@@ -1925,7 +2682,7 @@ fn paginate_versions_for_query(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
-    let token_markers = decode_versions_continuation_token(
+    let token_markers = tokens::decode_versions_continuation_token(
         query.continuation_token.as_deref(),
         query.bucket.as_str(),
         prefix,
@@ -1977,7 +2734,7 @@ fn paginate_versions_for_query(
             .last()
             .map(|entry| {
                 (
-                    encode_versions_continuation_token(
+                    tokens::encode_versions_continuation_token(
                         query.bucket.as_str(),
                         prefix,
                         query.view_id.as_deref(),
@@ -2135,164 +2892,33 @@ fn update_snapshot_nodes(hasher: &mut Sha256, label: &[u8], nodes: &[String]) {
     }
 }
 
-fn encode_continuation_token(
-    bucket: &str,
-    prefix: Option<&str>,
-    view_id: Option<&str>,
-    snapshot_id: Option<&str>,
-    key: &str,
-) -> Option<String> {
-    let normalized = key.trim();
-    if normalized.is_empty() {
-        return None;
-    }
-    let payload = ContinuationTokenPayload {
-        version: 1,
-        bucket: bucket.trim().to_string(),
-        prefix: prefix.map(ToOwned::to_owned),
-        view_id: view_id.map(ToOwned::to_owned),
-        snapshot_id: snapshot_id.map(ToOwned::to_owned),
-        key: normalized.to_string(),
-    };
-    let payload = serde_json::to_vec(&payload).ok()?;
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.as_slice());
-    Some(format!("{METADATA_CONTINUATION_TOKEN_PREFIX}{encoded}"))
-}
-
-fn decode_continuation_token(
-    token: Option<&str>,
-    bucket: &str,
-    prefix: Option<&str>,
-    view_id: Option<&str>,
-    snapshot_id: Option<&str>,
-) -> Result<Option<String>, MetadataQueryError> {
-    let Some(raw_token) = token.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
-    let token_body = raw_token
-        .strip_prefix(METADATA_CONTINUATION_TOKEN_PREFIX)
-        .ok_or(MetadataQueryError::InvalidContinuationToken)?;
-
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(token_body.as_bytes())
-        .map_err(|_| MetadataQueryError::InvalidContinuationToken)?;
-    let payload = serde_json::from_slice::<ContinuationTokenPayload>(decoded.as_slice())
-        .map_err(|_| MetadataQueryError::InvalidContinuationToken)?;
-    if payload.version != 1 {
-        return Err(MetadataQueryError::InvalidContinuationToken);
-    }
-    if payload.bucket != bucket.trim() {
-        return Err(MetadataQueryError::InvalidContinuationToken);
-    }
-    if payload.prefix.as_deref() != prefix {
-        return Err(MetadataQueryError::InvalidContinuationToken);
-    }
-    if payload.view_id.as_deref() != view_id {
-        return Err(MetadataQueryError::InvalidContinuationToken);
-    }
-    if payload.snapshot_id.as_deref() != snapshot_id {
-        return Err(MetadataQueryError::InvalidContinuationToken);
-    }
-    let key = payload.key.trim();
-    if key.is_empty() {
-        return Err(MetadataQueryError::InvalidContinuationToken);
-    }
-    Ok(Some(key.to_string()))
-}
-
-fn encode_versions_continuation_token(
-    bucket: &str,
-    prefix: Option<&str>,
-    view_id: Option<&str>,
-    snapshot_id: Option<&str>,
-    key_marker: &str,
-    version_id_marker: &str,
-) -> Option<String> {
-    let normalized_key = key_marker.trim();
-    let normalized_version = version_id_marker.trim();
-    if normalized_key.is_empty() || normalized_version.is_empty() {
-        return None;
-    }
-    let payload = VersionsContinuationTokenPayload {
-        version: 1,
-        bucket: bucket.trim().to_string(),
-        prefix: prefix.map(ToOwned::to_owned),
-        view_id: view_id.map(ToOwned::to_owned),
-        snapshot_id: snapshot_id.map(ToOwned::to_owned),
-        key_marker: normalized_key.to_string(),
-        version_id_marker: normalized_version.to_string(),
-    };
-    let payload = serde_json::to_vec(&payload).ok()?;
-    let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(payload.as_slice());
-    Some(format!(
-        "{METADATA_VERSIONS_CONTINUATION_TOKEN_PREFIX}{encoded}"
-    ))
-}
-
-fn decode_versions_continuation_token(
-    token: Option<&str>,
-    bucket: &str,
-    prefix: Option<&str>,
-    view_id: Option<&str>,
-    snapshot_id: Option<&str>,
-) -> Result<Option<(String, String)>, MetadataQueryError> {
-    let Some(raw_token) = token.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
-    let token_body = raw_token
-        .strip_prefix(METADATA_VERSIONS_CONTINUATION_TOKEN_PREFIX)
-        .ok_or(MetadataQueryError::InvalidVersionsMarker)?;
-    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(token_body.as_bytes())
-        .map_err(|_| MetadataQueryError::InvalidVersionsMarker)?;
-    let payload = serde_json::from_slice::<VersionsContinuationTokenPayload>(decoded.as_slice())
-        .map_err(|_| MetadataQueryError::InvalidVersionsMarker)?;
-    if payload.version != 1 {
-        return Err(MetadataQueryError::InvalidVersionsMarker);
-    }
-    if payload.bucket != bucket.trim() {
-        return Err(MetadataQueryError::InvalidVersionsMarker);
-    }
-    if payload.prefix.as_deref() != prefix {
-        return Err(MetadataQueryError::InvalidVersionsMarker);
-    }
-    if payload.view_id.as_deref() != view_id {
-        return Err(MetadataQueryError::InvalidVersionsMarker);
-    }
-    if payload.snapshot_id.as_deref() != snapshot_id {
-        return Err(MetadataQueryError::InvalidVersionsMarker);
-    }
-    let key_marker = payload.key_marker.trim();
-    let version_id_marker = payload.version_id_marker.trim();
-    if key_marker.is_empty() || version_id_marker.is_empty() {
-        return Err(MetadataQueryError::InvalidVersionsMarker);
-    }
-    Ok(Some((
-        key_marker.to_string(),
-        version_id_marker.to_string(),
-    )))
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
         CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
+        CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON,
         ClusterBucketMetadataConsistencyGap, ClusterBucketMetadataConvergenceGap,
         ClusterBucketMetadataConvergenceInputError, ClusterBucketMetadataMutationPreconditionGap,
         ClusterBucketMetadataReadResolution, ClusterBucketMetadataResponderSnapshot,
         ClusterBucketMetadataResponderState, ClusterBucketPresenceConvergenceExpectation,
         ClusterBucketPresenceConvergenceGap, ClusterBucketPresenceReadResolution,
-        ClusterMetadataCoverageGap, ClusterMetadataFanInPreflightGap,
-        ClusterMetadataListingStrategy, ClusterMetadataReadinessGap,
-        ClusterObjectMetadataConsistencyGap, ClusterObjectMetadataReadResolution,
-        ClusterObjectMetadataResponderState, ClusterResponderMembershipView,
-        ClusterResponderMembershipViewGap, InMemoryMetadataIndex, MetadataIndex,
-        MetadataNodeBucketsPage, MetadataNodeObjectsPage, MetadataNodeVersionsPage, MetadataQuery,
-        MetadataQueryError, MetadataVersionsQuery, assess_cluster_bucket_metadata_consistency,
-        assess_cluster_bucket_metadata_convergence,
+        ClusterMetadataCoverageGap, ClusterMetadataFanInGateFailureClass,
+        ClusterMetadataFanInGateGap, ClusterMetadataFanInGateRejectDetails,
+        ClusterMetadataFanInPreflightGap, ClusterMetadataListingStrategy,
+        ClusterMetadataReadinessGap, ClusterObjectMetadataConsistencyGap,
+        ClusterObjectMetadataConvergenceGap, ClusterObjectMetadataConvergenceInputError,
+        ClusterObjectMetadataMutationPreconditionGap, ClusterObjectMetadataReadResolution,
+        ClusterObjectMetadataResponderSnapshot, ClusterObjectMetadataResponderState,
+        ClusterResponderMembershipView, ClusterResponderMembershipViewGap, InMemoryMetadataIndex,
+        MetadataIndex, MetadataNodeBucketsPage, MetadataNodeObjectsPage, MetadataNodeVersionsPage,
+        MetadataQuery, MetadataQueryError, MetadataVersionsQuery,
+        assess_cluster_bucket_metadata_consistency, assess_cluster_bucket_metadata_convergence,
         assess_cluster_bucket_metadata_convergence_for_responder_states,
         assess_cluster_bucket_metadata_mutation_preconditions,
+        assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states,
         assess_cluster_bucket_presence_convergence, assess_cluster_metadata_coverage,
+        assess_cluster_metadata_fan_in_gate_for_topology_responders,
+        assess_cluster_metadata_fan_in_gate_for_topology_single_responder,
         assess_cluster_metadata_fan_in_preflight_for_topology_responders,
         assess_cluster_metadata_fan_in_preflight_for_topology_single_responder,
         assess_cluster_metadata_fan_in_snapshot_for_topology_responders,
@@ -2301,13 +2927,24 @@ mod tests {
         assess_cluster_metadata_snapshot_for_single_responder,
         assess_cluster_metadata_snapshot_for_topology_responders,
         assess_cluster_metadata_snapshot_for_topology_single_responder,
-        assess_cluster_object_metadata_consistency, assess_cluster_responder_membership_views,
+        assess_cluster_object_metadata_consistency, assess_cluster_object_metadata_convergence,
+        assess_cluster_object_metadata_convergence_for_responder_states,
+        assess_cluster_object_metadata_mutation_preconditions,
+        assess_cluster_object_metadata_mutation_preconditions_for_responder_states,
+        assess_cluster_responder_membership_views,
         build_cluster_metadata_coverage_for_single_responder,
         build_cluster_metadata_coverage_from_responses, build_cluster_metadata_expected_nodes,
         build_cluster_metadata_snapshot_id, cluster_metadata_fan_in_auth_token_reject_reason,
-        cluster_metadata_fan_in_execution_strategy,
+        cluster_metadata_fan_in_execution_strategy, cluster_metadata_fan_in_gate_diagnostics,
+        cluster_metadata_fan_in_gate_failure_class, cluster_metadata_fan_in_gate_gap_failure_class,
+        cluster_metadata_fan_in_gate_gap_reject_details,
+        cluster_metadata_fan_in_gate_reject_details, cluster_metadata_fan_in_gate_reject_reason,
         cluster_metadata_fan_in_preflight_reject_reason,
         cluster_metadata_fan_in_requires_auth_token, cluster_metadata_readiness_reject_reason,
+        cluster_object_metadata_mutation_precondition_failure_disposition,
+        cluster_object_metadata_mutation_precondition_gap_is_no_responder_values,
+        cluster_object_metadata_mutation_precondition_gap_is_responder_inconsistency,
+        cluster_object_metadata_mutation_precondition_gap_is_strategy_unready,
         merge_cluster_list_buckets, merge_cluster_list_buckets_page_with_coverage,
         merge_cluster_list_buckets_page_with_topology_snapshot,
         merge_cluster_list_object_versions_page,
@@ -4090,6 +4727,103 @@ mod tests {
     }
 
     #[test]
+    fn assess_cluster_object_metadata_convergence_reports_ready_when_snapshot_and_state_converge() {
+        let responders = vec![
+            ClusterObjectMetadataResponderSnapshot {
+                node_id: "node-a:9000".to_string(),
+                state: ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            },
+            ClusterObjectMetadataResponderSnapshot {
+                node_id: "node-b:9000".to_string(),
+                state: ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            },
+        ];
+
+        let assessment = assess_cluster_object_metadata_convergence(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-1"),
+            "node-a:9000",
+            &["node-b:9000".to_string()],
+            responders.as_slice(),
+        )
+        .expect("convergence should succeed");
+
+        assert!(assessment.ready);
+        assert_eq!(assessment.gap, None);
+        assert!(assessment.consistency.consistent);
+        assert_eq!(assessment.consistency.value, Some("etag-a".to_string()));
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_convergence_reports_missing_expected_nodes_gap() {
+        let responders = vec![ClusterObjectMetadataResponderSnapshot {
+            node_id: "node-a:9000".to_string(),
+            state: ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+        }];
+
+        let assessment = assess_cluster_object_metadata_convergence(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-1"),
+            "node-a:9000",
+            &["node-b:9000".to_string()],
+            responders.as_slice(),
+        )
+        .expect("convergence should succeed");
+
+        assert!(!assessment.ready);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterObjectMetadataConvergenceGap::MissingExpectedNodes)
+        );
+        assert_eq!(
+            assessment
+                .gap
+                .map(ClusterObjectMetadataConvergenceGap::as_str),
+            Some("missing-expected-nodes")
+        );
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_convergence_for_responder_states_rejects_cardinality_mismatch()
+     {
+        let outcome = assess_cluster_object_metadata_convergence_for_responder_states(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-1"),
+            "node-a:9000",
+            &["node-b:9000".to_string()],
+            &["node-a:9000".to_string(), "node-b:9000".to_string()],
+            &[ClusterObjectMetadataResponderState::Present(
+                "etag-a".to_string(),
+            )],
+        );
+        assert_eq!(
+            outcome.expect_err("cardinality mismatch must fail"),
+            ClusterObjectMetadataConvergenceInputError::ResponderStateCardinalityMismatch
+        );
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_convergence_for_responder_states_rejects_duplicate_nodes() {
+        let outcome = assess_cluster_object_metadata_convergence_for_responder_states(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-1"),
+            "node-a:9000",
+            &["node-b:9000".to_string()],
+            &["node-a:9000".to_string(), "node-a:9000".to_string()],
+            &[
+                ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+                ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            ],
+        );
+        match outcome.expect_err("duplicate responders must fail") {
+            ClusterObjectMetadataConvergenceInputError::InvalidResponderTopology(error) => {
+                assert_eq!(error.canonical_reason(), "duplicate-coverage-node-response");
+            }
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
     fn assess_cluster_metadata_readiness_rejects_local_only_strategy_even_with_full_coverage() {
         let expected = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
         let responded = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
@@ -4190,14 +4924,14 @@ mod tests {
     }
 
     #[test]
-    fn cluster_metadata_fan_in_requires_auth_token_only_for_consensus_index() {
+    fn cluster_metadata_fan_in_requires_auth_token_for_cluster_authoritative_strategies() {
         assert!(cluster_metadata_fan_in_requires_auth_token(
             ClusterMetadataListingStrategy::ConsensusIndex
         ));
-        assert!(!cluster_metadata_fan_in_requires_auth_token(
+        assert!(cluster_metadata_fan_in_requires_auth_token(
             ClusterMetadataListingStrategy::RequestTimeAggregation
         ));
-        assert!(!cluster_metadata_fan_in_requires_auth_token(
+        assert!(cluster_metadata_fan_in_requires_auth_token(
             ClusterMetadataListingStrategy::FullReplication
         ));
         assert!(!cluster_metadata_fan_in_requires_auth_token(
@@ -4206,13 +4940,13 @@ mod tests {
     }
 
     #[test]
-    fn cluster_metadata_fan_in_auth_token_reject_reason_matches_consensus_contract() {
+    fn cluster_metadata_fan_in_auth_token_reject_reason_matches_cluster_authoritative_contract() {
         assert_eq!(
             cluster_metadata_fan_in_auth_token_reject_reason(
                 ClusterMetadataListingStrategy::ConsensusIndex,
                 false,
             ),
-            Some(CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON)
+            Some(CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON)
         );
         assert_eq!(
             cluster_metadata_fan_in_auth_token_reject_reason(
@@ -4226,7 +4960,14 @@ mod tests {
                 ClusterMetadataListingStrategy::RequestTimeAggregation,
                 false,
             ),
-            None
+            Some(CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON)
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_auth_token_reject_reason(
+                ClusterMetadataListingStrategy::FullReplication,
+                false,
+            ),
+            Some(CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON)
         );
     }
 
@@ -4856,6 +5597,444 @@ mod tests {
     }
 
     #[test]
+    fn assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states_reports_ready_snapshot()
+     {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responded_nodes = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let states = vec![
+            ClusterBucketMetadataResponderState::Present(true),
+            ClusterBucketMetadataResponderState::Present(true),
+        ];
+        let assessment =
+            assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states(
+                ClusterMetadataListingStrategy::RequestTimeAggregation,
+                Some("view-a"),
+                "node-a:9000",
+                membership.as_slice(),
+                responded_nodes.as_slice(),
+                states.as_slice(),
+            )
+            .expect("mutation preconditions should build");
+
+        assert!(assessment.ready);
+        assert_eq!(assessment.current_value, Some(true));
+        assert_eq!(assessment.gap, None);
+    }
+
+    #[test]
+    fn assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states_rejects_cardinality_mismatch()
+     {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responded_nodes = vec!["node-a:9000".to_string()];
+        let states = vec![
+            ClusterBucketMetadataResponderState::Present(true),
+            ClusterBucketMetadataResponderState::Present(true),
+        ];
+        let error = assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responded_nodes.as_slice(),
+            states.as_slice(),
+        )
+        .expect_err("cardinality mismatch should fail");
+
+        assert_eq!(
+            error,
+            ClusterBucketMetadataConvergenceInputError::ResponderStateCardinalityMismatch
+        );
+    }
+
+    #[test]
+    fn assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states_surfaces_topology_errors()
+     {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responded_nodes = vec!["node-a:9000".to_string(), "node-a:9000".to_string()];
+        let states = vec![
+            ClusterBucketMetadataResponderState::Present(true),
+            ClusterBucketMetadataResponderState::Present(true),
+        ];
+        let error = assess_cluster_bucket_metadata_mutation_preconditions_for_responder_states(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responded_nodes.as_slice(),
+            states.as_slice(),
+        )
+        .expect_err("duplicate responders should fail");
+
+        assert_eq!(
+            error,
+            ClusterBucketMetadataConvergenceInputError::InvalidResponderTopology(
+                MetadataQueryError::DuplicateCoverageNodeResponse
+            )
+        );
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_mutation_preconditions_reports_ready_with_current_value() {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders = vec![
+            ClusterObjectMetadataResponderSnapshot {
+                node_id: "node-a:9000".to_string(),
+                state: ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            },
+            ClusterObjectMetadataResponderSnapshot {
+                node_id: "node-b:9000".to_string(),
+                state: ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            },
+        ];
+        let assessment = assess_cluster_object_metadata_mutation_preconditions(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+        )
+        .expect("mutation preconditions should build");
+
+        assert!(assessment.ready);
+        assert_eq!(assessment.current_value, Some("etag-a".to_string()));
+        assert_eq!(assessment.gap, None);
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_mutation_preconditions_reports_object_missing_when_all_missing()
+     {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders: Vec<ClusterObjectMetadataResponderSnapshot<String>> = vec![
+            ClusterObjectMetadataResponderSnapshot {
+                node_id: "node-a:9000".to_string(),
+                state: ClusterObjectMetadataResponderState::MissingObject,
+            },
+            ClusterObjectMetadataResponderSnapshot {
+                node_id: "node-b:9000".to_string(),
+                state: ClusterObjectMetadataResponderState::MissingObject,
+            },
+        ];
+        let assessment = assess_cluster_object_metadata_mutation_preconditions(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+        )
+        .expect("mutation preconditions should build");
+
+        assert!(!assessment.ready);
+        assert_eq!(assessment.current_value, None);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterObjectMetadataMutationPreconditionGap::ObjectMissing)
+        );
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_mutation_preconditions_reports_partial_missing_gap() {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders = vec![
+            ClusterObjectMetadataResponderSnapshot {
+                node_id: "node-a:9000".to_string(),
+                state: ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            },
+            ClusterObjectMetadataResponderSnapshot {
+                node_id: "node-b:9000".to_string(),
+                state: ClusterObjectMetadataResponderState::MissingObject,
+            },
+        ];
+        let assessment = assess_cluster_object_metadata_mutation_preconditions(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+        )
+        .expect("mutation preconditions should build");
+
+        assert!(!assessment.ready);
+        assert_eq!(assessment.current_value, None);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder)
+        );
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_mutation_preconditions_for_responder_states_reports_ready_snapshot()
+     {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responded_nodes = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let states = vec![
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+        ];
+        let assessment =
+            assess_cluster_object_metadata_mutation_preconditions_for_responder_states(
+                ClusterMetadataListingStrategy::RequestTimeAggregation,
+                Some("view-a"),
+                "node-a:9000",
+                membership.as_slice(),
+                responded_nodes.as_slice(),
+                states.as_slice(),
+            )
+            .expect("mutation preconditions should build");
+
+        assert!(assessment.ready);
+        assert_eq!(assessment.current_value, Some("etag-a".to_string()));
+        assert_eq!(assessment.gap, None);
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_mutation_preconditions_for_responder_states_rejects_cardinality_mismatch()
+     {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responded_nodes = vec!["node-a:9000".to_string()];
+        let states = vec![
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+        ];
+        let error = assess_cluster_object_metadata_mutation_preconditions_for_responder_states(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responded_nodes.as_slice(),
+            states.as_slice(),
+        )
+        .expect_err("cardinality mismatch should fail");
+
+        assert_eq!(
+            error,
+            ClusterObjectMetadataConvergenceInputError::ResponderStateCardinalityMismatch
+        );
+    }
+
+    #[test]
+    fn assess_cluster_object_metadata_mutation_preconditions_for_responder_states_surfaces_topology_errors()
+     {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responded_nodes = vec!["node-a:9000".to_string(), "node-a:9000".to_string()];
+        let states = vec![
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+            ClusterObjectMetadataResponderState::Present("etag-a".to_string()),
+        ];
+        let error = assess_cluster_object_metadata_mutation_preconditions_for_responder_states(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-a"),
+            "node-a:9000",
+            membership.as_slice(),
+            responded_nodes.as_slice(),
+            states.as_slice(),
+        )
+        .expect_err("duplicate responders should fail");
+
+        assert_eq!(
+            error,
+            ClusterObjectMetadataConvergenceInputError::InvalidResponderTopology(
+                MetadataQueryError::DuplicateCoverageNodeResponse
+            )
+        );
+    }
+
+    #[test]
+    fn object_mutation_precondition_gap_strategy_unready_classification_matches_expected_gaps() {
+        assert!(
+            cluster_object_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterObjectMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            )
+        );
+        assert!(
+            cluster_object_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterObjectMetadataMutationPreconditionGap::MissingExpectedNodes
+            )
+        );
+        assert!(
+            cluster_object_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterObjectMetadataMutationPreconditionGap::UnexpectedResponderNodes
+            )
+        );
+        assert!(
+            cluster_object_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterObjectMetadataMutationPreconditionGap::MissingAndUnexpectedNodes
+            )
+        );
+        assert!(
+            !cluster_object_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterObjectMetadataMutationPreconditionGap::ObjectMissing
+            )
+        );
+        assert!(
+            !cluster_object_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder
+            )
+        );
+        assert!(
+            !cluster_object_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterObjectMetadataMutationPreconditionGap::InconsistentResponderValues
+            )
+        );
+        assert!(
+            !cluster_object_metadata_mutation_precondition_gap_is_strategy_unready(
+                ClusterObjectMetadataMutationPreconditionGap::NoResponderValues
+            )
+        );
+    }
+
+    #[test]
+    fn object_mutation_precondition_gap_responder_inconsistency_classification_matches_expected_gaps()
+     {
+        assert!(
+            cluster_object_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterObjectMetadataMutationPreconditionGap::ObjectMissing
+            )
+        );
+        assert!(
+            cluster_object_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder
+            )
+        );
+        assert!(
+            cluster_object_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterObjectMetadataMutationPreconditionGap::InconsistentResponderValues
+            )
+        );
+        assert!(
+            !cluster_object_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterObjectMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            )
+        );
+        assert!(
+            !cluster_object_metadata_mutation_precondition_gap_is_responder_inconsistency(
+                ClusterObjectMetadataMutationPreconditionGap::NoResponderValues
+            )
+        );
+    }
+
+    #[test]
+    fn object_mutation_precondition_gap_no_responder_values_classification_matches_expected_gaps() {
+        assert!(
+            cluster_object_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterObjectMetadataMutationPreconditionGap::NoResponderValues
+            )
+        );
+        assert!(
+            !cluster_object_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterObjectMetadataMutationPreconditionGap::ObjectMissing
+            )
+        );
+        assert!(
+            !cluster_object_metadata_mutation_precondition_gap_is_no_responder_values(
+                ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder
+            )
+        );
+    }
+
+    #[test]
+    fn object_mutation_precondition_failure_disposition_maps_missing_object_gaps_to_no_such_key() {
+        assert_eq!(
+            cluster_object_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterObjectMetadataMutationPreconditionGap::ObjectMissing
+            )),
+            Some(super::ClusterObjectMetadataMutationPreconditionFailureDisposition::NoSuchKey)
+        );
+        assert_eq!(
+            cluster_object_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterObjectMetadataMutationPreconditionGap::MissingObjectOnResponder
+            )),
+            Some(super::ClusterObjectMetadataMutationPreconditionFailureDisposition::NoSuchKey)
+        );
+    }
+
+    #[test]
+    fn object_mutation_precondition_failure_disposition_maps_non_missing_gaps_to_service_unavailable()
+     {
+        assert_eq!(
+            cluster_object_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterObjectMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            )),
+            Some(
+                super::ClusterObjectMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+            )
+        );
+        assert_eq!(
+            cluster_object_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterObjectMetadataMutationPreconditionGap::InconsistentResponderValues
+            )),
+            Some(
+                super::ClusterObjectMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+            )
+        );
+        assert_eq!(
+            cluster_object_metadata_mutation_precondition_failure_disposition(Some(
+                ClusterObjectMetadataMutationPreconditionGap::NoResponderValues
+            )),
+            Some(
+                super::ClusterObjectMetadataMutationPreconditionFailureDisposition::ServiceUnavailable
+            )
+        );
+    }
+
+    #[test]
+    fn object_mutation_precondition_failure_disposition_returns_none_when_no_gap_is_present() {
+        assert_eq!(
+            cluster_object_metadata_mutation_precondition_failure_disposition(None),
+            None
+        );
+    }
+
+    #[test]
+    fn object_mutation_precondition_gap_failure_class_maps_strategy_coverage_and_consistency() {
+        assert_eq!(
+            super::cluster_object_metadata_mutation_precondition_gap_failure_class(
+                ClusterObjectMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            ),
+            super::ClusterMetadataMutationPreconditionFailureClass::StrategyReadiness
+        );
+        assert_eq!(
+            super::cluster_object_metadata_mutation_precondition_gap_failure_class(
+                ClusterObjectMetadataMutationPreconditionGap::MissingExpectedNodes
+            ),
+            super::ClusterMetadataMutationPreconditionFailureClass::CoverageReadiness
+        );
+        assert_eq!(
+            super::cluster_object_metadata_mutation_precondition_gap_failure_class(
+                ClusterObjectMetadataMutationPreconditionGap::ObjectMissing
+            ),
+            super::ClusterMetadataMutationPreconditionFailureClass::ResourceMissing
+        );
+        assert_eq!(
+            super::cluster_object_metadata_mutation_precondition_gap_failure_class(
+                ClusterObjectMetadataMutationPreconditionGap::InconsistentResponderValues
+            ),
+            super::ClusterMetadataMutationPreconditionFailureClass::ResponderConsistency
+        );
+    }
+
+    #[test]
+    fn object_mutation_precondition_reject_details_include_reason_class_and_disposition() {
+        let details = super::cluster_object_metadata_mutation_precondition_gap_reject_details(
+            ClusterObjectMetadataMutationPreconditionGap::ObjectMissing,
+        );
+
+        assert_eq!(details.reason, "object-missing");
+        assert_eq!(
+            details.failure_class,
+            super::ClusterMetadataMutationPreconditionFailureClass::ResourceMissing
+        );
+        assert_eq!(
+            details.failure_disposition,
+            super::ClusterObjectMetadataMutationPreconditionFailureDisposition::NoSuchKey
+        );
+
+        assert_eq!(
+            super::cluster_object_metadata_mutation_precondition_reject_details(None),
+            None
+        );
+    }
+
+    #[test]
     fn mutation_precondition_gap_strategy_unready_classification_matches_expected_gaps() {
         assert!(
             super::cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready(
@@ -4993,17 +6172,13 @@ mod tests {
             super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
                 ClusterBucketMetadataMutationPreconditionGap::BucketMissing
             )),
-            Some(
-                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket
-            )
+            Some(super::ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket)
         );
         assert_eq!(
             super::cluster_bucket_metadata_mutation_precondition_failure_disposition(Some(
                 ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder
             )),
-            Some(
-                super::ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket
-            )
+            Some(super::ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket)
         );
     }
 
@@ -5063,6 +6238,56 @@ mod tests {
     fn mutation_precondition_failure_disposition_returns_none_when_no_gap_is_present() {
         assert_eq!(
             super::cluster_bucket_metadata_mutation_precondition_failure_disposition(None),
+            None
+        );
+    }
+
+    #[test]
+    fn bucket_mutation_precondition_gap_failure_class_maps_strategy_coverage_and_consistency() {
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_failure_class(
+                ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative
+            ),
+            super::ClusterMetadataMutationPreconditionFailureClass::StrategyReadiness
+        );
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_failure_class(
+                ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes
+            ),
+            super::ClusterMetadataMutationPreconditionFailureClass::CoverageReadiness
+        );
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_failure_class(
+                ClusterBucketMetadataMutationPreconditionGap::BucketMissing
+            ),
+            super::ClusterMetadataMutationPreconditionFailureClass::ResourceMissing
+        );
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_gap_failure_class(
+                ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues
+            ),
+            super::ClusterMetadataMutationPreconditionFailureClass::ResponderConsistency
+        );
+    }
+
+    #[test]
+    fn bucket_mutation_precondition_reject_details_include_reason_class_and_disposition() {
+        let details = super::cluster_bucket_metadata_mutation_precondition_gap_reject_details(
+            ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder,
+        );
+
+        assert_eq!(details.reason, "missing-bucket-on-responder");
+        assert_eq!(
+            details.failure_class,
+            super::ClusterMetadataMutationPreconditionFailureClass::ResourceMissing
+        );
+        assert_eq!(
+            details.failure_disposition,
+            super::ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket
+        );
+
+        assert_eq!(
+            super::cluster_bucket_metadata_mutation_precondition_reject_details(None),
             None
         );
     }
@@ -5333,5 +6558,344 @@ mod tests {
             cluster_metadata_fan_in_preflight_reject_reason(&assessment),
             Some(ClusterMetadataFanInPreflightGap::MembershipViewIdMismatch)
         );
+    }
+
+    #[test]
+    fn assess_cluster_metadata_fan_in_gate_is_ready_when_preflight_ready_and_token_present() {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders = vec![
+            ClusterResponderMembershipView {
+                node_id: "node-a:9000".to_string(),
+                membership_view_id: Some("view-1".to_string()),
+            },
+            ClusterResponderMembershipView {
+                node_id: "node-b:9000".to_string(),
+                membership_view_id: Some("view-1".to_string()),
+            },
+        ];
+        let assessment = assess_cluster_metadata_fan_in_gate_for_topology_responders(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+            true,
+        )
+        .expect("fan-in gate should build");
+
+        assert!(assessment.ready);
+        assert_eq!(assessment.gap, None);
+        assert!(assessment.auth_token_required);
+        assert!(assessment.auth_token_present);
+        assert_eq!(
+            cluster_metadata_fan_in_gate_reject_reason(&assessment),
+            None
+        );
+    }
+
+    #[test]
+    fn assess_cluster_metadata_fan_in_gate_reports_auth_token_missing_before_preflight_gap() {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders = vec![ClusterResponderMembershipView {
+            node_id: "node-a:9000".to_string(),
+            membership_view_id: Some("view-1".to_string()),
+        }];
+        let assessment = assess_cluster_metadata_fan_in_gate_for_topology_responders(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+            false,
+        )
+        .expect("fan-in gate should build");
+
+        assert!(!assessment.ready);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterMetadataFanInGateGap::AuthTokenMissing)
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_reject_reason(&assessment),
+            Some(CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON)
+        );
+        assert_eq!(
+            assessment.preflight.gap,
+            Some(ClusterMetadataFanInPreflightGap::MissingExpectedNodes)
+        );
+    }
+
+    #[test]
+    fn assess_cluster_metadata_fan_in_gate_reports_auth_token_missing_for_request_time_aggregation()
+    {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders = vec![ClusterResponderMembershipView {
+            node_id: "node-a:9000".to_string(),
+            membership_view_id: Some("view-1".to_string()),
+        }];
+        let assessment = assess_cluster_metadata_fan_in_gate_for_topology_responders(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+            false,
+        )
+        .expect("fan-in gate should build");
+
+        assert!(!assessment.ready);
+        assert!(assessment.auth_token_required);
+        assert_eq!(
+            assessment.gap,
+            Some(ClusterMetadataFanInGateGap::AuthTokenMissing)
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_reject_reason(&assessment),
+            Some(CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON)
+        );
+        assert_eq!(
+            assessment.preflight.gap,
+            Some(ClusterMetadataFanInPreflightGap::MissingExpectedNodes)
+        );
+    }
+
+    #[test]
+    fn assess_cluster_metadata_fan_in_gate_single_responder_honors_auth_and_preflight() {
+        let membership = vec!["node-a:9000".to_string()];
+        let ready = assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            "node-a:9000",
+            Some("view-1"),
+            true,
+        );
+        assert!(ready.ready);
+        assert_eq!(ready.gap, None);
+
+        let missing_token = assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            "node-a:9000",
+            Some("view-1"),
+            false,
+        );
+        assert!(!missing_token.ready);
+        assert_eq!(
+            missing_token.gap,
+            Some(ClusterMetadataFanInGateGap::AuthTokenMissing)
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_reject_reason(&missing_token),
+            Some(CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON)
+        );
+    }
+
+    #[test]
+    fn cluster_metadata_fan_in_gate_gap_failure_class_maps_auth_and_preflight_gaps() {
+        assert_eq!(
+            cluster_metadata_fan_in_gate_gap_failure_class(
+                ClusterMetadataFanInGateGap::AuthTokenMissing
+            ),
+            ClusterMetadataFanInGateFailureClass::AuthConfiguration
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_gap_failure_class(
+                ClusterMetadataFanInGateGap::StrategyNotClusterAuthoritative
+            ),
+            ClusterMetadataFanInGateFailureClass::StrategyReadiness
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_gap_failure_class(
+                ClusterMetadataFanInGateGap::MissingExpectedNodes
+            ),
+            ClusterMetadataFanInGateFailureClass::CoverageReadiness
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_gap_failure_class(
+                ClusterMetadataFanInGateGap::UnexpectedResponderNodes
+            ),
+            ClusterMetadataFanInGateFailureClass::CoverageReadiness
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_gap_failure_class(
+                ClusterMetadataFanInGateGap::MissingAndUnexpectedNodes
+            ),
+            ClusterMetadataFanInGateFailureClass::CoverageReadiness
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_gap_failure_class(
+                ClusterMetadataFanInGateGap::MissingResponderMembershipViewId
+            ),
+            ClusterMetadataFanInGateFailureClass::MembershipViewReadiness
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_gap_failure_class(
+                ClusterMetadataFanInGateGap::InconsistentResponderMembershipViewId
+            ),
+            ClusterMetadataFanInGateFailureClass::MembershipViewReadiness
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_gap_failure_class(
+                ClusterMetadataFanInGateGap::MembershipViewIdMismatch
+            ),
+            ClusterMetadataFanInGateFailureClass::MembershipViewReadiness
+        );
+    }
+
+    #[test]
+    fn cluster_metadata_fan_in_gate_failure_class_uses_ready_state() {
+        let membership = vec!["node-a:9000".to_string()];
+        let ready = assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            "node-a:9000",
+            Some("view-1"),
+            true,
+        );
+        assert_eq!(cluster_metadata_fan_in_gate_failure_class(&ready), None);
+
+        let missing_token = assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            "node-a:9000",
+            Some("view-1"),
+            false,
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_failure_class(&missing_token),
+            Some(ClusterMetadataFanInGateFailureClass::AuthConfiguration)
+        );
+    }
+
+    #[test]
+    fn cluster_metadata_fan_in_gate_gap_reject_details_match_gap_contracts() {
+        let details = cluster_metadata_fan_in_gate_gap_reject_details(
+            ClusterMetadataFanInGateGap::MissingExpectedNodes,
+        );
+        assert_eq!(details.reason, "missing-expected-nodes");
+        assert_eq!(
+            details.failure_class,
+            ClusterMetadataFanInGateFailureClass::CoverageReadiness
+        );
+    }
+
+    #[test]
+    fn cluster_metadata_fan_in_gate_reject_details_respects_ready_state() {
+        let membership = vec!["node-a:9000".to_string()];
+        let ready = assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            "node-a:9000",
+            Some("view-1"),
+            true,
+        );
+        assert_eq!(cluster_metadata_fan_in_gate_reject_details(&ready), None);
+
+        let missing_token = assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            "node-a:9000",
+            Some("view-1"),
+            false,
+        );
+        assert_eq!(
+            cluster_metadata_fan_in_gate_reject_details(&missing_token),
+            Some(ClusterMetadataFanInGateRejectDetails {
+                reason: CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON,
+                failure_class: ClusterMetadataFanInGateFailureClass::AuthConfiguration,
+            })
+        );
+    }
+
+    #[test]
+    fn cluster_metadata_fan_in_gate_diagnostics_reports_ready_gate_state() {
+        let membership = vec!["node-a:9000".to_string()];
+        let gate = assess_cluster_metadata_fan_in_gate_for_topology_single_responder(
+            ClusterMetadataListingStrategy::ConsensusIndex,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            "node-a:9000",
+            Some("view-1"),
+            true,
+        );
+
+        let diagnostics = cluster_metadata_fan_in_gate_diagnostics(&gate);
+        assert!(diagnostics.ready);
+        assert_eq!(diagnostics.reject_reason, None);
+        assert_eq!(diagnostics.failure_class, None);
+        assert_eq!(
+            diagnostics.source_strategy,
+            ClusterMetadataListingStrategy::ConsensusIndex
+        );
+        assert_eq!(
+            diagnostics.execution_strategy,
+            ClusterMetadataListingStrategy::RequestTimeAggregation
+        );
+        assert!(diagnostics.auth_token_required);
+        assert!(diagnostics.auth_token_present);
+        assert_eq!(diagnostics.expected_nodes, 1);
+        assert_eq!(diagnostics.responded_nodes, 1);
+        assert_eq!(diagnostics.missing_nodes, 0);
+        assert_eq!(diagnostics.unexpected_nodes, 0);
+        assert_eq!(diagnostics.responders_with_missing_view_id, 0);
+        assert_eq!(diagnostics.responders_with_mismatched_view_id, 0);
+    }
+
+    #[test]
+    fn cluster_metadata_fan_in_gate_diagnostics_reports_failure_reason_and_class() {
+        let membership = vec!["node-a:9000".to_string(), "node-b:9000".to_string()];
+        let responders = vec![ClusterResponderMembershipView {
+            node_id: "node-a:9000".to_string(),
+            membership_view_id: Some("view-1".to_string()),
+        }];
+        let gate = assess_cluster_metadata_fan_in_gate_for_topology_responders(
+            ClusterMetadataListingStrategy::RequestTimeAggregation,
+            Some("view-1"),
+            "node-a:9000",
+            membership.as_slice(),
+            responders.as_slice(),
+            false,
+        )
+        .expect("fan-in gate should build");
+
+        let diagnostics = cluster_metadata_fan_in_gate_diagnostics(&gate);
+        assert!(!diagnostics.ready);
+        assert_eq!(
+            diagnostics.reject_reason,
+            Some(CLUSTER_METADATA_PEER_FAN_IN_AUTH_TOKEN_MISSING_REASON)
+        );
+        assert_eq!(
+            diagnostics.failure_class,
+            Some(ClusterMetadataFanInGateFailureClass::AuthConfiguration)
+        );
+        assert_eq!(
+            diagnostics.source_strategy,
+            ClusterMetadataListingStrategy::RequestTimeAggregation
+        );
+        assert_eq!(
+            diagnostics.execution_strategy,
+            ClusterMetadataListingStrategy::RequestTimeAggregation
+        );
+        assert!(diagnostics.auth_token_required);
+        assert!(!diagnostics.auth_token_present);
+        assert_eq!(diagnostics.expected_nodes, 2);
+        assert_eq!(diagnostics.responded_nodes, 1);
+        assert_eq!(diagnostics.missing_nodes, 1);
+        assert_eq!(diagnostics.unexpected_nodes, 0);
+        assert_eq!(diagnostics.responders_with_missing_view_id, 0);
+        assert_eq!(diagnostics.responders_with_mismatched_view_id, 0);
     }
 }
