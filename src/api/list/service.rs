@@ -734,7 +734,11 @@ pub(super) fn paginate_objects_v2_for_topology(
         topology.membership_nodes.as_slice(),
         node_pages.as_slice(),
     )
-    .map_err(|_| S3Error::internal("Failed to merge distributed metadata listing page"))?;
+    .map_err(|err| {
+        S3Error::internal(format!(
+            "Failed to merge distributed metadata listing page: {err:?}"
+        ))
+    })?;
 
     let object_lookup = all_objects
         .iter()
@@ -791,7 +795,11 @@ pub(super) fn paginate_objects_v1_for_topology(
         topology.membership_nodes.as_slice(),
         node_pages.as_slice(),
     )
-    .map_err(|_| S3Error::internal("Failed to merge distributed metadata listing page"))?;
+    .map_err(|err| {
+        S3Error::internal(format!(
+            "Failed to merge distributed metadata listing page: {err:?}"
+        ))
+    })?;
 
     let object_lookup = all_objects
         .iter()
@@ -865,7 +873,11 @@ pub(super) fn paginate_versions_for_topology(
         topology.membership_nodes.as_slice(),
         node_pages.as_slice(),
     )
-    .map_err(|_| S3Error::internal("Failed to merge distributed metadata versions page"))?;
+    .map_err(|err| {
+        S3Error::internal(format!(
+            "Failed to merge distributed metadata versions page: {err:?}"
+        ))
+    })?;
 
     let version_lookup = all_versions
         .iter()
