@@ -26,6 +26,7 @@ use crate::metadata::index::MetadataQueryError;
 use crate::metadata::{
     BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
     BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
+    ClusterBucketMetadataMutationPreconditionFailureDisposition,
     ClusterBucketMetadataMutationPreconditionAssessment,
     ClusterBucketMetadataMutationPreconditionGap, ClusterBucketMetadataResponderSnapshot,
     ClusterBucketMetadataResponderState, ClusterBucketPresenceConvergenceExpectation,
@@ -43,6 +44,7 @@ use crate::metadata::{
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
     assess_cluster_responder_membership_views,
+    cluster_bucket_metadata_mutation_precondition_failure_disposition,
     cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values,
     cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready,
     cluster_metadata_fan_in_preflight_reject_reason, cluster_metadata_readiness_reject_reason,
@@ -1007,25 +1009,32 @@ fn resolve_cluster_bucket_versioning_state(
         ));
     }
 
-    match assessment.gap {
-        Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => {
-            Err(S3Error::service_unavailable(&format!(
+    match cluster_bucket_metadata_mutation_precondition_failure_disposition(assessment.gap) {
+        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket) => Err(
+            S3Error::service_unavailable(&format!(
                 "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
                 bucket
-            )))
+            )),
+        ),
+        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable) => {
+            match assessment.gap {
+                Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
+                    Err(S3Error::service_unavailable(&format!(
+                        "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
+                        bucket
+                    )))
+                }
+                Some(gap) => Err(S3Error::service_unavailable(&format!(
+                    "Distributed bucket metadata fan-in for '{}' is not ready ({})",
+                    operation,
+                    gap.as_str()
+                ))),
+                None => Err(S3Error::service_unavailable(&format!(
+                    "Distributed bucket metadata fan-in for '{}' is not ready",
+                    operation
+                ))),
+            }
         }
-        Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
-            Err(S3Error::service_unavailable(&format!(
-                "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
-                bucket
-            )))
-        }
-        Some(gap) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata fan-in for '{}' is not ready ({})",
-            operation,
-            gap.as_str()
-        ))),
         None => assessment.current_value.ok_or_else(|| {
             S3Error::service_unavailable(
                 "Distributed bucket metadata fan-in did not include any versioning responders",
@@ -1244,25 +1253,32 @@ fn resolve_cluster_bucket_lifecycle_state(
         ));
     }
 
-    match assessment.gap {
-        Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => {
-            Err(S3Error::service_unavailable(&format!(
+    match cluster_bucket_metadata_mutation_precondition_failure_disposition(assessment.gap) {
+        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket) => Err(
+            S3Error::service_unavailable(&format!(
                 "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
                 bucket
-            )))
+            )),
+        ),
+        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable) => {
+            match assessment.gap {
+                Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
+                    Err(S3Error::service_unavailable(&format!(
+                        "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}'",
+                        bucket
+                    )))
+                }
+                Some(gap) => Err(S3Error::service_unavailable(&format!(
+                    "Distributed bucket metadata fan-in for '{}' is not ready ({})",
+                    operation,
+                    gap.as_str()
+                ))),
+                None => Err(S3Error::service_unavailable(&format!(
+                    "Distributed bucket metadata fan-in for '{}' is not ready",
+                    operation
+                ))),
+            }
         }
-        Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
-            Err(S3Error::service_unavailable(&format!(
-                "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}'",
-                bucket
-            )))
-        }
-        Some(gap) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata fan-in for '{}' is not ready ({})",
-            operation,
-            gap.as_str()
-        ))),
         None => match assessment.current_value {
             Some(BucketLifecycleResponderValue::NoLifecycleConfiguration) => {
                 Err(S3Error::no_such_lifecycle_configuration(bucket))
