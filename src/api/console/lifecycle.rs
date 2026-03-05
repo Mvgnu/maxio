@@ -380,10 +380,10 @@ async fn fan_out_bucket_lifecycle_mutation_to_peers(
             body.clone(),
         )
         .await
-        .map_err(|_| {
+        .map_err(|err| {
             format!(
-                "Distributed bucket metadata mutation 'SetBucketLifecycle' failed while contacting responder node '{}'",
-                peer
+                "Distributed bucket metadata mutation 'SetBucketLifecycle' failed while contacting responder node '{}': {}",
+                peer, err
             )
         })?;
         let status = response.status();

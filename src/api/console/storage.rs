@@ -235,10 +235,12 @@ pub(super) fn reject_unready_metadata_fan_in_preflight_for_responders(
         topology.membership_nodes.as_slice(),
         responders,
     )
-    .map_err(|_| {
+    .map_err(|err| {
         response::error(
             StatusCode::SERVICE_UNAVAILABLE,
-            format!("Distributed metadata fan-in preflight failed for '{operation}'"),
+            format!(
+                "Distributed metadata fan-in preflight failed for '{operation}': {err:?}"
+            ),
         )
     })
     .ok()?;

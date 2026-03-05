@@ -370,10 +370,10 @@ async fn fan_out_bucket_versioning_mutation_to_peers(
             Some(body.clone()),
         )
         .await
-        .map_err(|_| {
+        .map_err(|err| {
             format!(
-                "Distributed bucket metadata mutation 'SetBucketVersioning' failed while contacting responder node '{}'",
-                peer
+                "Distributed bucket metadata mutation 'SetBucketVersioning' failed while contacting responder node '{}': {}",
+                peer, err
             )
         })?;
         let status = response.status();

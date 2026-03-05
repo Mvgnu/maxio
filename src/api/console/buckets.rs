@@ -695,10 +695,10 @@ async fn fan_out_create_bucket_mutation_to_peers(
         let response =
             storage::send_internal_peer_request(state, peer, Method::PUT, path.as_str(), &query, None)
                 .await
-                .map_err(|_| {
+                .map_err(|err| {
                     format!(
-                        "Distributed bucket metadata mutation 'CreateBucket' failed while contacting responder node '{}'",
-                        peer
+                        "Distributed bucket metadata mutation 'CreateBucket' failed while contacting responder node '{}': {}",
+                        peer, err
                     )
                 })?;
         let status = response.status();
@@ -739,10 +739,10 @@ async fn fan_out_delete_bucket_mutation_to_peers(
             None,
         )
         .await
-        .map_err(|_| {
+        .map_err(|err| {
             format!(
-                "Distributed bucket metadata mutation 'DeleteBucket' failed while contacting responder node '{}'",
-                peer
+                "Distributed bucket metadata mutation 'DeleteBucket' failed while contacting responder node '{}': {}",
+                peer, err
             )
         })?;
         let status = response.status();
