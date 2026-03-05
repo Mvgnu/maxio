@@ -1,8 +1,8 @@
 use super::*;
 use hmac::{Hmac, Mac};
 use maxio::metadata::{
-    BucketMetadataState, BucketMetadataTombstoneState, ClusterMetadataListingStrategy,
-    ObjectMetadataState, ObjectVersionMetadataState,
+    BucketLifecycleConfigurationState, BucketMetadataState, BucketMetadataTombstoneState,
+    ClusterMetadataListingStrategy, ObjectMetadataState, ObjectVersionMetadataState,
 };
 use maxio::storage::placement::membership_view_id_with_self;
 use sha2::Sha256;
@@ -751,12 +751,10 @@ async fn test_console_lifecycle_rejects_invalid_rules() {
         .unwrap();
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("expiration_days > 0")
-    );
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("expiration_days > 0"));
 }
 
 #[tokio::test]
@@ -856,11 +854,9 @@ async fn test_console_health_endpoint_requires_auth_and_returns_json() {
     assert_eq!(body["clusterPeerCount"], 0);
     assert_eq!(body["clusterPeers"], serde_json::json!([]));
     assert_eq!(body["membershipProtocol"], "static-bootstrap");
-    assert!(
-        body["membershipViewId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["membershipViewId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     assert_eq!(body["placementEpoch"], 0);
 }
 
@@ -888,11 +884,9 @@ async fn test_console_health_endpoint_reports_distributed_mode_when_configured()
     assert_eq!(body["clusterPeerCount"], 1);
     assert_eq!(body["clusterPeers"], serde_json::json!(["127.0.0.1:1"]));
     assert_eq!(body["membershipProtocol"], "static-bootstrap");
-    assert!(
-        body["membershipViewId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["membershipViewId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     assert_eq!(body["placementEpoch"], 0);
     assert_eq!(body["checks"]["peerConnectivityReady"], false);
 }
@@ -924,15 +918,13 @@ async fn test_console_health_endpoint_reports_degraded_when_storage_data_path_pr
     assert_eq!(body["checks"]["storageDataPathReadable"], false);
     assert_eq!(body["checks"]["diskHeadroomSufficient"], true);
     assert_eq!(body["checks"]["peerConnectivityReady"], true);
-    assert!(
-        body["warnings"]
-            .as_array()
-            .is_some_and(|warnings| warnings.iter().any(|entry| {
-                entry
-                    .as_str()
-                    .is_some_and(|msg| msg.contains("Storage data-path probe failed"))
-            }))
-    );
+    assert!(body["warnings"]
+        .as_array()
+        .is_some_and(|warnings| warnings.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|msg| msg.contains("Storage data-path probe failed"))
+        })));
 }
 
 #[tokio::test]
@@ -957,15 +949,13 @@ async fn test_console_health_endpoint_reports_degraded_when_disk_headroom_thresh
     assert_eq!(body["status"], "degraded");
     assert_eq!(body["checks"]["storageDataPathReadable"], true);
     assert_eq!(body["checks"]["diskHeadroomSufficient"], false);
-    assert!(
-        body["warnings"]
-            .as_array()
-            .is_some_and(|warnings| warnings.iter().any(|entry| {
-                entry
-                    .as_str()
-                    .is_some_and(|msg| msg.contains("Disk headroom below threshold"))
-            }))
-    );
+    assert!(body["warnings"]
+        .as_array()
+        .is_some_and(|warnings| warnings.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|msg| msg.contains("Disk headroom below threshold"))
+        })));
 }
 
 #[tokio::test]
@@ -991,15 +981,13 @@ async fn test_console_health_endpoint_reports_degraded_when_cluster_peers_includ
     assert_eq!(body["status"], "degraded");
     assert_eq!(body["checks"]["membershipProtocolReady"], true);
     assert_eq!(body["checks"]["peerConnectivityReady"], false);
-    assert!(
-        body["warnings"]
-            .as_array()
-            .is_some_and(|warnings| warnings.iter().any(|entry| {
-                entry
-                    .as_str()
-                    .is_some_and(|msg| msg.contains("includes local node id"))
-            }))
-    );
+    assert!(body["warnings"]
+        .as_array()
+        .is_some_and(|warnings| warnings.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|msg| msg.contains("includes local node id"))
+        })));
 }
 
 #[tokio::test]
@@ -1084,11 +1072,9 @@ async fn test_console_membership_endpoint_requires_auth_and_returns_json() {
     assert_eq!(body["protocol"], "static-bootstrap");
     assert!(body["viewId"].as_str().is_some_and(|v| !v.is_empty()));
     assert!(body["leaderNodeId"].as_str().is_some_and(|v| !v.is_empty()));
-    assert!(
-        body["coordinatorNodeId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["coordinatorNodeId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     let nodes = body["nodes"]
         .as_array()
         .expect("membership response should include nodes array");
@@ -1119,28 +1105,22 @@ async fn test_console_membership_endpoint_reports_distributed_mode_when_configur
     assert_eq!(body["protocol"], "static-bootstrap");
     assert!(body["viewId"].as_str().is_some_and(|v| !v.is_empty()));
     assert_eq!(body["leaderNodeId"], serde_json::Value::Null);
-    assert!(
-        body["coordinatorNodeId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["coordinatorNodeId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
 
     let nodes = body["nodes"]
         .as_array()
         .expect("membership response should include nodes array");
     assert_eq!(nodes.len(), 2);
-    assert!(
-        nodes
-            .iter()
-            .any(|node| node["nodeId"] == "node-b.internal:9000"
-                && node["role"] == "peer"
-                && node["status"] == "configured")
-    );
-    assert!(
-        nodes
-            .iter()
-            .any(|node| node["role"] == "self" && node["status"] == "alive")
-    );
+    assert!(nodes
+        .iter()
+        .any(|node| node["nodeId"] == "node-b.internal:9000"
+            && node["role"] == "peer"
+            && node["status"] == "configured"));
+    assert!(nodes
+        .iter()
+        .any(|node| node["role"] == "self" && node["status"] == "alive"));
 }
 
 #[tokio::test]
@@ -1179,11 +1159,9 @@ async fn test_console_placement_endpoint_requires_auth_and_returns_json() {
     assert_eq!(body["clusterPeers"], serde_json::json!([]));
     assert_eq!(body["membershipProtocol"], "static-bootstrap");
     assert!(body["nodeId"].as_str().is_some_and(|v| !v.is_empty()));
-    assert!(
-        body["membershipViewId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["membershipViewId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     assert_eq!(body["owners"].as_array().map(Vec::len), Some(1));
     assert_eq!(body["primaryOwner"], body["nodeId"]);
     assert_eq!(body["forwardTarget"], serde_json::Value::Null);
@@ -1269,28 +1247,22 @@ async fn test_console_placement_endpoint_reports_distributed_chunk_owners() {
         serde_json::json!(["node-b.internal:9000"])
     );
     assert_eq!(body["membershipProtocol"], "static-bootstrap");
-    assert!(
-        body["membershipViewId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["membershipViewId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     let owners = body["owners"]
         .as_array()
         .expect("placement response should include owners array");
     assert_eq!(owners.len(), 2);
-    assert!(
-        owners
-            .iter()
-            .any(|owner| owner.as_str() == Some("node-b.internal:9000"))
-    );
+    assert!(owners
+        .iter()
+        .any(|owner| owner.as_str() == Some("node-b.internal:9000")));
     let primary_owner = body["primaryOwner"]
         .as_str()
         .expect("placement response should include primary owner");
-    assert!(
-        owners
-            .iter()
-            .any(|owner| owner.as_str() == Some(primary_owner))
-    );
+    assert!(owners
+        .iter()
+        .any(|owner| owner.as_str() == Some(primary_owner)));
 
     let node_id = body["nodeId"]
         .as_str()
@@ -1330,11 +1302,9 @@ async fn test_console_placement_endpoint_rejects_invalid_query() {
         .unwrap();
     assert_eq!(missing_key.status(), 400);
     let missing_key_body: serde_json::Value = missing_key.json().await.unwrap();
-    assert!(
-        missing_key_body["error"]
-            .as_str()
-            .is_some_and(|msg| msg.contains("key"))
-    );
+    assert!(missing_key_body["error"]
+        .as_str()
+        .is_some_and(|msg| msg.contains("key")));
 
     let invalid_replica = client()
         .get(format!(
@@ -1347,11 +1317,9 @@ async fn test_console_placement_endpoint_rejects_invalid_query() {
         .unwrap();
     assert_eq!(invalid_replica.status(), 400);
     let invalid_replica_body: serde_json::Value = invalid_replica.json().await.unwrap();
-    assert!(
-        invalid_replica_body["error"]
-            .as_str()
-            .is_some_and(|msg| msg.contains("replicaCount"))
-    );
+    assert!(invalid_replica_body["error"]
+        .as_str()
+        .is_some_and(|msg| msg.contains("replicaCount")));
 
     let invalid_key = client()
         .get(format!(
@@ -1364,11 +1332,9 @@ async fn test_console_placement_endpoint_rejects_invalid_query() {
         .unwrap();
     assert_eq!(invalid_key.status(), 400);
     let invalid_key_body: serde_json::Value = invalid_key.json().await.unwrap();
-    assert!(
-        invalid_key_body["error"]
-            .as_str()
-            .is_some_and(|msg| msg.contains("Invalid key"))
-    );
+    assert!(invalid_key_body["error"]
+        .as_str()
+        .is_some_and(|msg| msg.contains("Invalid key")));
 
     let invalid_chunk_index = client()
         .get(format!(
@@ -1381,11 +1347,9 @@ async fn test_console_placement_endpoint_rejects_invalid_query() {
         .unwrap();
     assert_eq!(invalid_chunk_index.status(), 400);
     let invalid_chunk_index_body: serde_json::Value = invalid_chunk_index.json().await.unwrap();
-    assert!(
-        invalid_chunk_index_body["error"]
-            .as_str()
-            .is_some_and(|msg| msg.contains("chunkIndex"))
-    );
+    assert!(invalid_chunk_index_body["error"]
+        .as_str()
+        .is_some_and(|msg| msg.contains("chunkIndex")));
 }
 
 #[tokio::test]
@@ -1475,11 +1439,9 @@ async fn test_console_rebalance_endpoint_requires_auth_and_reports_join_preview(
         serde_json::json!(["node-b.internal:9000"])
     );
     assert_eq!(body["target"]["clusterPeerCount"], 1);
-    assert!(
-        body["target"]["membershipViewId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["target"]["membershipViewId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     let transfers = body["plan"]["transfers"]
         .as_array()
         .expect("rebalance response should include transfers array");
@@ -1558,11 +1520,9 @@ async fn test_console_rebalance_endpoint_rejects_invalid_query() {
         .unwrap();
     assert_eq!(missing_operation.status(), 400);
     let missing_operation_body: serde_json::Value = missing_operation.json().await.unwrap();
-    assert!(
-        missing_operation_body["error"]
-            .as_str()
-            .is_some_and(|msg| msg.contains("addPeer or removePeer"))
-    );
+    assert!(missing_operation_body["error"]
+        .as_str()
+        .is_some_and(|msg| msg.contains("addPeer or removePeer")));
 
     let conflicting_operation = client()
         .get(format!(
@@ -1575,11 +1535,9 @@ async fn test_console_rebalance_endpoint_rejects_invalid_query() {
         .unwrap();
     assert_eq!(conflicting_operation.status(), 400);
     let conflicting_operation_body: serde_json::Value = conflicting_operation.json().await.unwrap();
-    assert!(
-        conflicting_operation_body["error"]
-            .as_str()
-            .is_some_and(|msg| msg.contains("only one"))
-    );
+    assert!(conflicting_operation_body["error"]
+        .as_str()
+        .is_some_and(|msg| msg.contains("only one")));
 }
 
 #[tokio::test]
@@ -1706,50 +1664,38 @@ async fn test_console_summary_endpoint_requires_auth_and_returns_json() {
     assert_eq!(body["health"]["version"], env!("CARGO_PKG_VERSION"));
     assert!(body["health"]["uptimeSeconds"].as_f64().is_some());
     assert_eq!(body["health"]["mode"], "standalone");
-    assert!(
-        body["health"]["nodeId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["health"]["nodeId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     assert_eq!(body["health"]["clusterPeerCount"], 0);
     assert_eq!(body["health"]["clusterPeers"], serde_json::json!([]));
     assert_eq!(body["health"]["membershipProtocol"], "static-bootstrap");
-    assert!(
-        body["health"]["membershipViewId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["health"]["membershipViewId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     assert_eq!(body["health"]["placementEpoch"], 0);
     assert!(body["metrics"]["requestsTotal"].as_u64().is_some());
     assert_eq!(body["metrics"]["version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(body["metrics"]["membershipProtocolReady"], true);
     assert_eq!(body["topology"]["mode"], "standalone");
-    assert!(
-        body["topology"]["nodeId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["topology"]["nodeId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     assert_eq!(body["topology"]["clusterPeerCount"], 0);
     assert_eq!(body["topology"]["clusterPeers"], serde_json::json!([]));
     assert_eq!(body["topology"]["membershipProtocol"], "static-bootstrap");
     assert_eq!(body["topology"]["placementEpoch"], 0);
     assert_eq!(body["membership"]["mode"], "standalone");
     assert_eq!(body["membership"]["protocol"], "static-bootstrap");
-    assert!(
-        body["membership"]["viewId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
-    assert!(
-        body["membership"]["coordinatorNodeId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
-    assert!(
-        body["membership"]["leaderNodeId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["membership"]["viewId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
+    assert!(body["membership"]["coordinatorNodeId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
+    assert!(body["membership"]["leaderNodeId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     assert_eq!(
         body["membership"]["nodes"].as_array().map(Vec::len),
         Some(1)
@@ -1783,11 +1729,9 @@ async fn test_console_summary_endpoint_reports_distributed_mode_when_configured(
         serde_json::json!(["127.0.0.1:1"])
     );
     assert_eq!(body["health"]["membershipProtocol"], "static-bootstrap");
-    assert!(
-        body["health"]["membershipViewId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["health"]["membershipViewId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     assert_eq!(body["health"]["placementEpoch"], 0);
     assert_eq!(body["health"]["checks"]["peerConnectivityReady"], false);
     assert_eq!(body["metrics"]["membershipProtocolReady"], true);
@@ -1807,11 +1751,9 @@ async fn test_console_summary_endpoint_reports_distributed_mode_when_configured(
     assert_eq!(body["membership"]["mode"], "distributed");
     assert_eq!(body["membership"]["protocol"], "static-bootstrap");
     assert_eq!(body["membership"]["leaderNodeId"], serde_json::Value::Null);
-    assert!(
-        body["membership"]["coordinatorNodeId"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(body["membership"]["coordinatorNodeId"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     assert_eq!(
         body["membership"]["nodes"].as_array().map(Vec::len),
         Some(2)
@@ -1846,20 +1788,18 @@ async fn test_console_summary_endpoint_reports_degraded_health_when_storage_data
     assert_eq!(body["health"]["checks"]["storageDataPathReadable"], false);
     assert_eq!(body["health"]["checks"]["diskHeadroomSufficient"], true);
     assert_eq!(body["health"]["checks"]["peerConnectivityReady"], true);
-    assert!(
-        body["health"]["warnings"]
-            .as_array()
-            .is_some_and(|warnings| warnings.iter().any(|entry| {
-                entry
-                    .as_str()
-                    .is_some_and(|msg| msg.contains("Storage data-path probe failed"))
-            }))
-    );
+    assert!(body["health"]["warnings"]
+        .as_array()
+        .is_some_and(|warnings| warnings.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|msg| msg.contains("Storage data-path probe failed"))
+        })));
 }
 
 #[tokio::test]
-async fn test_console_summary_endpoint_reports_degraded_health_when_cluster_peers_include_local_node_id()
- {
+async fn test_console_summary_endpoint_reports_degraded_health_when_cluster_peers_include_local_node_id(
+) {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
@@ -1881,15 +1821,13 @@ async fn test_console_summary_endpoint_reports_degraded_health_when_cluster_peer
     assert_eq!(body["health"]["status"], "degraded");
     assert_eq!(body["health"]["checks"]["membershipProtocolReady"], true);
     assert_eq!(body["health"]["checks"]["peerConnectivityReady"], false);
-    assert!(
-        body["health"]["warnings"]
-            .as_array()
-            .is_some_and(|warnings| warnings.iter().any(|entry| {
-                entry
-                    .as_str()
-                    .is_some_and(|msg| msg.contains("includes local node id"))
-            }))
-    );
+    assert!(body["health"]["warnings"]
+        .as_array()
+        .is_some_and(|warnings| warnings.iter().any(|entry| {
+            entry
+                .as_str()
+                .is_some_and(|msg| msg.contains("includes local node id"))
+        })));
 }
 
 #[tokio::test]
@@ -2114,11 +2052,9 @@ async fn test_console_buckets_and_objects_json_contract_shapes() {
     assert_eq!(files[0]["key"], "docs/readme.txt");
     assert_eq!(files[0]["size"], 22);
     assert!(files[0]["etag"].as_str().is_some_and(|v| !v.is_empty()));
-    assert!(
-        files[0]["lastModified"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(files[0]["lastModified"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
     let prefixes = list_objects_body["prefixes"]
         .as_array()
         .expect("prefixes should be an array");
@@ -2474,8 +2410,8 @@ async fn test_console_list_objects_consensus_index_returns_service_unavailable_w
 }
 
 #[tokio::test]
-async fn test_console_list_objects_consensus_index_returns_service_unavailable_when_peer_fan_in_incomplete()
- {
+async fn test_console_list_objects_consensus_index_returns_service_unavailable_when_peer_fan_in_incomplete(
+) {
     let shared_token = "console-consensus-object-list-incomplete-shared-token";
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
@@ -2588,8 +2524,8 @@ async fn test_console_list_buckets_request_time_aggregation_merges_peer_bucket_s
 }
 
 #[tokio::test]
-async fn test_console_list_buckets_request_time_aggregation_rejects_inconsistent_peer_versioning_state()
- {
+async fn test_console_list_buckets_request_time_aggregation_rejects_inconsistent_peer_versioning_state(
+) {
     let shared_token = "console-bucket-listing-versioning-inconsistent-token";
     let coordinator_node_id = "node-a.internal:9000";
 
@@ -2760,8 +2696,8 @@ async fn test_console_list_buckets_consensus_index_persists_local_create_into_co
 }
 
 #[tokio::test]
-async fn test_console_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect()
- {
+async fn test_console_create_bucket_consensus_index_rejects_existing_persisted_bucket_without_local_side_effect(
+) {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
     let node_id = "node-a.internal:9000";
@@ -2812,8 +2748,8 @@ async fn test_console_create_bucket_consensus_index_rejects_existing_persisted_b
 }
 
 #[tokio::test]
-async fn test_console_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect()
- {
+async fn test_console_create_bucket_consensus_index_rejects_active_tombstone_without_local_side_effect(
+) {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
     let node_id = "node-a.internal:9000";
@@ -2871,8 +2807,8 @@ async fn test_console_create_bucket_consensus_index_rejects_active_tombstone_wit
 }
 
 #[tokio::test]
-async fn test_console_delete_bucket_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect()
- {
+async fn test_console_delete_bucket_consensus_index_rejects_missing_persisted_bucket_without_local_side_effect(
+) {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
     let node_id = "node-a.internal:9000";
@@ -2915,8 +2851,8 @@ async fn test_console_delete_bucket_consensus_index_rejects_missing_persisted_bu
 }
 
 #[tokio::test]
-async fn test_console_delete_bucket_consensus_index_rejects_tombstoned_persisted_bucket_without_local_side_effect()
- {
+async fn test_console_delete_bucket_consensus_index_rejects_tombstoned_persisted_bucket_without_local_side_effect(
+) {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
     let node_id = "node-a.internal:9000";
@@ -3393,8 +3329,8 @@ async fn test_console_list_versions_consensus_index_returns_service_unavailable_
 }
 
 #[tokio::test]
-async fn test_console_list_versions_consensus_index_returns_service_unavailable_when_peer_fan_in_incomplete()
- {
+async fn test_console_list_versions_consensus_index_returns_service_unavailable_when_peer_fan_in_incomplete(
+) {
     let shared_token = "console-consensus-versions-list-incomplete-shared-token";
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
@@ -3640,8 +3576,8 @@ async fn test_console_get_bucket_versioning_request_time_aggregation_merges_peer
 }
 
 #[tokio::test]
-async fn test_console_get_bucket_versioning_request_time_aggregation_rejects_inconsistent_peer_state()
- {
+async fn test_console_get_bucket_versioning_request_time_aggregation_rejects_inconsistent_peer_state(
+) {
     let shared_token = "console-versioning-inconsistent-shared-token";
 
     let owner_tmp = TempDir::new().unwrap();
@@ -3805,8 +3741,8 @@ async fn test_console_get_bucket_lifecycle_request_time_aggregation_merges_peer_
 }
 
 #[tokio::test]
-async fn test_console_get_bucket_lifecycle_request_time_aggregation_rejects_inconsistent_peer_state()
- {
+async fn test_console_get_bucket_lifecycle_request_time_aggregation_rejects_inconsistent_peer_state(
+) {
     let shared_token = "console-lifecycle-inconsistent-shared-token";
 
     let owner_tmp = TempDir::new().unwrap();
@@ -3893,8 +3829,8 @@ async fn test_console_get_bucket_lifecycle_request_time_aggregation_rejects_inco
 }
 
 #[tokio::test]
-async fn test_console_set_bucket_versioning_request_time_aggregation_converges_peer_state_when_ready()
- {
+async fn test_console_set_bucket_versioning_request_time_aggregation_converges_peer_state_when_ready(
+) {
     let shared_token = "console-versioning-write-shared-token";
 
     let owner_tmp = TempDir::new().unwrap();
@@ -3956,8 +3892,8 @@ async fn test_console_set_bucket_versioning_request_time_aggregation_converges_p
 }
 
 #[tokio::test]
-async fn test_console_set_bucket_versioning_request_time_aggregation_returns_service_unavailable_when_peer_missing_bucket()
- {
+async fn test_console_set_bucket_versioning_request_time_aggregation_returns_service_unavailable_when_peer_missing_bucket(
+) {
     let shared_token = "console-versioning-write-missing-bucket-shared-token";
 
     let owner_tmp = TempDir::new().unwrap();
@@ -4020,8 +3956,8 @@ async fn test_console_set_bucket_versioning_request_time_aggregation_returns_ser
 }
 
 #[tokio::test]
-async fn test_console_set_bucket_lifecycle_request_time_aggregation_converges_peer_state_when_ready()
- {
+async fn test_console_set_bucket_lifecycle_request_time_aggregation_converges_peer_state_when_ready(
+) {
     let shared_token = "console-lifecycle-write-shared-token";
 
     let owner_tmp = TempDir::new().unwrap();
@@ -4096,8 +4032,8 @@ async fn test_console_set_bucket_lifecycle_request_time_aggregation_converges_pe
 }
 
 #[tokio::test]
-async fn test_console_set_bucket_lifecycle_request_time_aggregation_delete_converges_peer_state_when_ready()
- {
+async fn test_console_set_bucket_lifecycle_request_time_aggregation_delete_converges_peer_state_when_ready(
+) {
     let shared_token = "console-lifecycle-delete-write-shared-token";
 
     let owner_tmp = TempDir::new().unwrap();
@@ -4353,6 +4289,64 @@ async fn test_console_get_bucket_lifecycle_consensus_index_returns_empty_rules_w
 }
 
 #[tokio::test]
+async fn test_console_get_bucket_lifecycle_consensus_index_uses_persisted_lifecycle_configuration_payload(
+) {
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let bucket = "console-consensus-lifecycle-persisted-payload";
+    let node_id = "node-a.internal:9000";
+    let cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let membership_view_id = consensus_membership_view_id(node_id, cluster_peers.as_slice());
+    let lifecycle_xml = r#"
+<LifecycleConfiguration>
+  <Rule>
+    <ID>console-persisted-expiration</ID>
+    <Status>Enabled</Status>
+    <Filter>
+      <Prefix>logs/</Prefix>
+    </Filter>
+    <Expiration>
+      <Days>3</Days>
+    </Expiration>
+  </Rule>
+</LifecycleConfiguration>
+"#;
+    seed_consensus_metadata_bucket_state_with_lifecycle_configurations(
+        &data_dir,
+        membership_view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: true,
+        }],
+        &[],
+        &[BucketLifecycleConfigurationState {
+            bucket: bucket.to_string(),
+            configuration_xml: lifecycle_xml.to_string(),
+            updated_at_unix_ms: 1,
+        }],
+    );
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = node_id.to_string();
+    config.cluster_peers = cluster_peers;
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let cookie = console_login_cookie(&base_url).await;
+
+    let get = client()
+        .get(format!("{}/api/buckets/{}/lifecycle", base_url, bucket))
+        .header("cookie", &cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(get.status(), 200);
+    let body: serde_json::Value = get.json().await.unwrap();
+    let rules = body["rules"].as_array().expect("rules should be an array");
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["id"], "console-persisted-expiration");
+}
+
+#[tokio::test]
 async fn test_console_get_bucket_lifecycle_consensus_index_persists_local_mutation_state() {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
@@ -4403,19 +4397,16 @@ async fn test_console_get_bucket_lifecycle_consensus_index_persists_local_mutati
         .send()
         .await
         .unwrap();
-    assert_eq!(get.status(), 503);
+    assert_eq!(get.status(), 200);
     let body: serde_json::Value = get.json().await.unwrap();
-    assert!(
-        body["error"].as_str().is_some_and(
-            |message| message.contains("consensus-index-peer-fan-in-auth-token-missing")
-        ),
-        "unexpected body: {body}"
-    );
+    let rules = body["rules"].as_array().expect("rules should be an array");
+    assert_eq!(rules.len(), 1);
+    assert_eq!(rules[0]["id"], "expire-local");
 }
 
 #[tokio::test]
-async fn test_console_get_bucket_lifecycle_consensus_index_returns_service_unavailable_when_token_missing_for_enabled_rules()
- {
+async fn test_console_get_bucket_lifecycle_consensus_index_returns_service_unavailable_when_token_missing_for_enabled_rules(
+) {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
     let bucket = "console-consensus-lifecycle-enabled";
@@ -4447,9 +4438,9 @@ async fn test_console_get_bucket_lifecycle_consensus_index_returns_service_unava
     assert_eq!(get.status(), 503);
     let body: serde_json::Value = get.json().await.unwrap();
     assert!(
-        body["error"].as_str().is_some_and(
-            |message| message.contains("consensus-index-peer-fan-in-auth-token-missing")
-        ),
+        body["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("missing persisted lifecycle configuration")),
         "unexpected body: {body}"
     );
 }
@@ -5165,12 +5156,10 @@ async fn test_console_list_objects_returns_bad_request_for_invalid_prefix() {
         .unwrap();
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Key must not contain '..'")
-    );
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Key must not contain '..'"));
 }
 
 #[tokio::test]
@@ -5210,12 +5199,10 @@ async fn test_console_list_versions_returns_bad_request_for_invalid_key() {
         .unwrap();
     assert_eq!(resp.status(), 400);
     let body: serde_json::Value = resp.json().await.unwrap();
-    assert!(
-        body["error"]
-            .as_str()
-            .unwrap_or_default()
-            .contains("Key must not contain '..'")
-    );
+    assert!(body["error"]
+        .as_str()
+        .unwrap_or_default()
+        .contains("Key must not contain '..'"));
 }
 
 #[tokio::test]
@@ -5350,11 +5337,9 @@ async fn test_console_error_contract_shape_for_auth_failures() {
         .unwrap();
     assert_eq!(invalid_login.status(), 401);
     let invalid_login_body: serde_json::Value = invalid_login.json().await.unwrap();
-    assert!(
-        invalid_login_body["error"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(invalid_login_body["error"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
 
     let protected_without_cookie = http
         .get(format!("{}/api/buckets", base_url))
@@ -5364,9 +5349,7 @@ async fn test_console_error_contract_shape_for_auth_failures() {
     assert_eq!(protected_without_cookie.status(), 401);
     let protected_without_cookie_body: serde_json::Value =
         protected_without_cookie.json().await.unwrap();
-    assert!(
-        protected_without_cookie_body["error"]
-            .as_str()
-            .is_some_and(|v| !v.is_empty())
-    );
+    assert!(protected_without_cookie_body["error"]
+        .as_str()
+        .is_some_and(|v| !v.is_empty()));
 }

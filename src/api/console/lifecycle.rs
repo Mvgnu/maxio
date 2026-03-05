@@ -1,21 +1,22 @@
 use axum::{
-    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
+    Json,
 };
+use chrono::Utc;
 use quick_xml::de::from_str;
 use quick_xml::se::to_string as to_xml_string;
 use std::collections::HashMap;
 
 use crate::api::console::{response, storage};
 use crate::metadata::{
+    resolve_cluster_bucket_metadata_for_read, BucketLifecycleConfigurationOperation,
     BucketMetadataOperation, ClusterBucketMetadataConvergenceGap,
     ClusterBucketMetadataReadResolution, ClusterBucketMetadataResponderState,
-    resolve_cluster_bucket_metadata_for_read,
 };
-use crate::server::{AppState, runtime_topology_snapshot};
-use crate::storage::{StorageError, lifecycle::LifecycleRule};
+use crate::server::{runtime_topology_snapshot, AppState};
+use crate::storage::{lifecycle::LifecycleRule, StorageError};
 use crate::xml::types::{LifecycleConfiguration, LifecycleExpiration, LifecycleFilter};
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -142,38 +143,36 @@ pub(super) async fn get_lifecycle(
             if !bucket_state.lifecycle_enabled {
                 Vec::new()
             } else {
-                let has_cluster_auth_token = state
-                    .config
-                    .cluster_auth_token()
-                    .is_some_and(|value| !value.trim().is_empty());
-                if !has_cluster_auth_token {
-                    return response::error(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "Distributed metadata strategy is not ready for bucket metadata operation 'GetBucketLifecycle' (consensus-index-peer-fan-in-auth-token-missing)",
-                    );
-                }
-                let fan_in =
-                    match fetch_cluster_bucket_lifecycle_fan_in(&state, &topology, &bucket).await {
-                        Ok(fan_in) => fan_in,
-                        Err(err) => return storage::map_bucket_storage_err(err),
+                let persisted_xml =
+                    match storage::consensus_bucket_lifecycle_configuration_xml_for_bucket(
+                        &state,
+                        &topology,
+                        &bucket,
+                        "GetBucketLifecycle",
+                    ) {
+                        Ok(Some(xml)) => xml,
+                        Ok(None) => {
+                            return response::error(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                format!(
+                                    "Distributed bucket metadata operation 'GetBucketLifecycle' cannot query consensus metadata state: missing persisted lifecycle configuration for '{}'",
+                                    bucket
+                                ),
+                            )
+                        }
+                        Err(err) => return *err,
                     };
-                if let Some(err) = storage::reject_unready_bucket_metadata_operation_for_responders(
-                    &state,
-                    "GetBucketLifecycle",
-                    fan_in.responded_nodes.as_slice(),
-                ) {
-                    return err;
-                }
-                match resolve_cluster_bucket_lifecycle_state(
-                    &state,
-                    &topology,
-                    "GetBucketLifecycle",
-                    &bucket,
-                    fan_in.responded_nodes.as_slice(),
-                    fan_in.lifecycle_states.as_slice(),
-                ) {
-                    Ok(rules) => rules,
-                    Err(err) => return response::error(StatusCode::SERVICE_UNAVAILABLE, err),
+                match parse_lifecycle_rules_from_xml(persisted_xml.as_str()) {
+                    Ok(rules) => canonicalize_lifecycle_rules(rules),
+                    Err(err) => {
+                        return response::error(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            format!(
+                                "Distributed bucket metadata operation 'GetBucketLifecycle' cannot decode persisted lifecycle state for '{}': {}",
+                                bucket, err
+                            ),
+                        )
+                    }
                 }
             }
         } else {
@@ -240,6 +239,29 @@ pub(super) async fn set_lifecycle(
             bucket: bucket.clone(),
             enabled: !rules.is_empty(),
         },
+    ) {
+        return *err;
+    }
+    let lifecycle_persist_operation = if rules.is_empty() {
+        BucketLifecycleConfigurationOperation::DeleteConfiguration {
+            bucket: bucket.clone(),
+        }
+    } else {
+        let lifecycle_xml = match lifecycle_rules_to_xml(rules.as_slice()) {
+            Ok(xml) => xml,
+            Err(err) => return response::error(StatusCode::BAD_REQUEST, err),
+        };
+        BucketLifecycleConfigurationOperation::UpsertConfiguration {
+            bucket: bucket.clone(),
+            configuration_xml: lifecycle_xml,
+            updated_at_unix_ms: u64::try_from(Utc::now().timestamp_millis()).map_or(0, |v| v),
+        }
+    };
+    if let Err(err) = storage::persist_bucket_lifecycle_configuration_operation(
+        &state,
+        &topology,
+        "SetBucketLifecycle",
+        &lifecycle_persist_operation,
     ) {
         return *err;
     }

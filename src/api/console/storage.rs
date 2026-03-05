@@ -10,19 +10,11 @@ use super::response;
 use crate::api::object::peer_transport::{
     attest_internal_peer_target, build_internal_peer_http_client,
 };
-use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
-use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_request};
+use crate::auth::signature_v4::{generate_presigned_url, PresignRequest};
+use crate::cluster::authenticator::{authenticate_forwarded_request, FORWARDED_BY_HEADER};
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::metadata::{
-    BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
-    ClusterBucketMetadataConvergenceAssessment, ClusterBucketMetadataConvergenceInputError,
-    ClusterBucketMetadataResponderState, ClusterMetadataListingStrategy,
-    ClusterResponderMembershipView, MetadataQuery, MetadataVersionsQuery, ObjectMetadataOperation,
-    ObjectMetadataOperationError, ObjectMetadataState, ObjectVersionMetadataOperation,
-    ObjectVersionMetadataOperationError, ObjectVersionMetadataState,
-    PersistedBucketMetadataOperationError, PersistedBucketMetadataReadResolution,
-    PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError,
-    PersistedObjectMetadataOperationError, PersistedObjectVersionMetadataOperationError,
+    apply_bucket_lifecycle_configuration_operation_to_persisted_state,
     apply_bucket_metadata_operation_to_persisted_state,
     apply_object_metadata_operation_to_persisted_state,
     apply_object_version_metadata_operation_to_persisted_state,
@@ -33,10 +25,23 @@ use crate::metadata::{
     cluster_metadata_fan_in_execution_strategy, cluster_metadata_fan_in_preflight_reject_reason,
     cluster_metadata_readiness_reject_reason, list_buckets_from_persisted_state_with_view_id,
     list_object_versions_page_from_persisted_state, list_objects_page_from_persisted_state,
-    load_persisted_metadata_state, resolve_bucket_metadata_from_persisted_state,
+    load_persisted_metadata_state, resolve_bucket_lifecycle_configuration_from_persisted_state,
+    resolve_bucket_metadata_from_persisted_state,
     resolve_bucket_mutation_preconditions_from_persisted_state,
+    BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
+    BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
+    ClusterBucketMetadataConvergenceAssessment, ClusterBucketMetadataConvergenceInputError,
+    ClusterBucketMetadataResponderState, ClusterMetadataListingStrategy,
+    ClusterResponderMembershipView, MetadataQuery, MetadataVersionsQuery, ObjectMetadataOperation,
+    ObjectMetadataOperationError, ObjectMetadataState, ObjectVersionMetadataOperation,
+    ObjectVersionMetadataOperationError, ObjectVersionMetadataState,
+    PersistedBucketLifecycleConfigurationOperationError,
+    PersistedBucketLifecycleConfigurationReadResolution, PersistedBucketMetadataOperationError,
+    PersistedBucketMetadataReadResolution, PersistedBucketMutationPreconditionResolution,
+    PersistedMetadataQueryError, PersistedObjectMetadataOperationError,
+    PersistedObjectVersionMetadataOperationError,
 };
-use crate::server::{AppState, RuntimeTopologySnapshot, runtime_topology_snapshot};
+use crate::server::{runtime_topology_snapshot, AppState, RuntimeTopologySnapshot};
 use crate::storage::StorageError;
 
 pub(super) const INTERNAL_METADATA_SCOPE_QUERY_PARAM: &str = "x-maxio-internal-metadata-scope";
@@ -566,6 +571,69 @@ pub(super) fn persist_bucket_metadata_operation(
     })
 }
 
+pub(super) fn persist_bucket_lifecycle_configuration_operation(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    operation_name: &str,
+    operation: &BucketLifecycleConfigurationOperation,
+) -> Result<(), Box<Response>> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let apply_result = apply_bucket_lifecycle_configuration_operation_to_persisted_state(
+        state_path.as_path(),
+        topology.membership_view_id.as_str(),
+        operation,
+    );
+    if matches!(
+        (&apply_result, operation),
+        (
+            Err(
+                PersistedBucketLifecycleConfigurationOperationError::Operation(
+                    BucketLifecycleConfigurationOperationError::ConfigurationNotFound
+                )
+            ),
+            BucketLifecycleConfigurationOperation::DeleteConfiguration { .. }
+        )
+    ) {
+        return Ok(());
+    }
+
+    apply_result.map(|_| ()).map_err(|error| {
+        let message = match error {
+            PersistedBucketLifecycleConfigurationOperationError::InvalidExpectedViewId => format!(
+                "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: invalid expected metadata view id",
+                operation_name
+            ),
+            PersistedBucketLifecycleConfigurationOperationError::StateLoad(io_error) => format!(
+                "Distributed bucket metadata operation '{}' cannot load persisted lifecycle state: {}",
+                operation_name, io_error
+            ),
+            PersistedBucketLifecycleConfigurationOperationError::StatePersist(io_error) => format!(
+                "Distributed bucket metadata operation '{}' cannot persist lifecycle state: {}",
+                operation_name, io_error
+            ),
+            PersistedBucketLifecycleConfigurationOperationError::ViewIdMismatch {
+                expected_view_id,
+                persisted_view_id,
+            } => format!(
+                "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: persisted metadata view mismatch (expected='{}', persisted='{}')",
+                operation_name, expected_view_id, persisted_view_id
+            ),
+            PersistedBucketLifecycleConfigurationOperationError::InvalidPersistedState(reason) => {
+                format!(
+                    "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: invalid persisted metadata state ({:?})",
+                    operation_name, reason
+                )
+            }
+            PersistedBucketLifecycleConfigurationOperationError::Operation(reason) => format!(
+                "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: {}",
+                operation_name,
+                reason.as_str()
+            ),
+        };
+        Box::new(response::error(StatusCode::SERVICE_UNAVAILABLE, message))
+    })
+}
+
 fn should_persist_consensus_object_metadata(
     state: &AppState,
     topology: &RuntimeTopologySnapshot,
@@ -993,6 +1061,52 @@ pub(super) fn consensus_bucket_metadata_state_for_bucket(
     ) {
         Ok(PersistedBucketMetadataReadResolution::Present(bucket_state)) => Ok(bucket_state),
         Ok(PersistedBucketMetadataReadResolution::Missing) => Err(Box::new(bucket_not_found())),
+        Err(PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        }) => Err(Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
+                operation, expected_view_id, persisted_view_id
+            ),
+        ))),
+        Err(err) => Err(Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
+                operation, err
+            ),
+        ))),
+    }
+}
+
+pub(super) fn consensus_bucket_lifecycle_configuration_xml_for_bucket(
+    state: &AppState,
+    topology: &RuntimeTopologySnapshot,
+    bucket: &str,
+    operation: &str,
+) -> Result<Option<String>, Box<Response>> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        Box::new(response::error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!(
+                "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+                operation, err
+            ),
+        ))
+    })?;
+
+    match resolve_bucket_lifecycle_configuration_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+    ) {
+        Ok(PersistedBucketLifecycleConfigurationReadResolution::Present(configuration_state)) => {
+            Ok(Some(configuration_state.configuration_xml))
+        }
+        Ok(PersistedBucketLifecycleConfigurationReadResolution::Missing) => Ok(None),
         Err(PersistedMetadataQueryError::ViewIdMismatch {
             expected_view_id,
             persisted_view_id,
