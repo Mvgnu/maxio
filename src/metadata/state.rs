@@ -30,6 +30,49 @@ impl BucketMetadataTombstoneState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketLifecycleConfigurationState {
+    pub bucket: String,
+    pub configuration_xml: String,
+    pub updated_at_unix_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BucketLifecycleConfigurationOperation {
+    UpsertConfiguration {
+        bucket: String,
+        configuration_xml: String,
+        updated_at_unix_ms: u64,
+    },
+    DeleteConfiguration {
+        bucket: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BucketLifecycleConfigurationOperationError {
+    InvalidBucketName,
+    InvalidLifecycleConfiguration,
+    BucketNotFound,
+    ConfigurationNotFound,
+}
+
+impl BucketLifecycleConfigurationOperationError {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::InvalidBucketName => "invalid-bucket-name",
+            Self::InvalidLifecycleConfiguration => "invalid-lifecycle-configuration",
+            Self::BucketNotFound => "bucket-not-found",
+            Self::ConfigurationNotFound => "lifecycle-configuration-not-found",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BucketLifecycleConfigurationOperationOutcome {
+    pub configuration_state: Option<BucketLifecycleConfigurationState>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BucketMetadataOperation {
     CreateBucket {
@@ -102,6 +145,63 @@ fn ensure_matching_bucket_name(
         return Err(BucketMetadataOperationError::InvalidBucketName);
     }
     Ok(bucket)
+}
+
+pub fn apply_bucket_lifecycle_configuration_operation(
+    current_state: Option<&BucketLifecycleConfigurationState>,
+    bucket_exists: bool,
+    operation: &BucketLifecycleConfigurationOperation,
+) -> Result<
+    BucketLifecycleConfigurationOperationOutcome,
+    BucketLifecycleConfigurationOperationError,
+> {
+    match operation {
+        BucketLifecycleConfigurationOperation::UpsertConfiguration {
+            bucket,
+            configuration_xml,
+            updated_at_unix_ms,
+        } => {
+            let bucket = normalized_bucket_name(bucket)
+                .ok_or(BucketLifecycleConfigurationOperationError::InvalidBucketName)?;
+            if current_state.is_some_and(|state| state.bucket != bucket) {
+                return Err(BucketLifecycleConfigurationOperationError::InvalidBucketName);
+            }
+            if !bucket_exists {
+                return Err(BucketLifecycleConfigurationOperationError::BucketNotFound);
+            }
+            let configuration_xml = configuration_xml.trim();
+            if configuration_xml.is_empty() {
+                return Err(
+                    BucketLifecycleConfigurationOperationError::InvalidLifecycleConfiguration,
+                );
+            }
+
+            Ok(BucketLifecycleConfigurationOperationOutcome {
+                configuration_state: Some(BucketLifecycleConfigurationState {
+                    bucket,
+                    configuration_xml: configuration_xml.to_string(),
+                    updated_at_unix_ms: *updated_at_unix_ms,
+                }),
+            })
+        }
+        BucketLifecycleConfigurationOperation::DeleteConfiguration { bucket } => {
+            let bucket = normalized_bucket_name(bucket)
+                .ok_or(BucketLifecycleConfigurationOperationError::InvalidBucketName)?;
+            if current_state.is_some_and(|state| state.bucket != bucket) {
+                return Err(BucketLifecycleConfigurationOperationError::InvalidBucketName);
+            }
+            if !bucket_exists {
+                return Err(BucketLifecycleConfigurationOperationError::BucketNotFound);
+            }
+            if current_state.is_none() {
+                return Err(BucketLifecycleConfigurationOperationError::ConfigurationNotFound);
+            }
+
+            Ok(BucketLifecycleConfigurationOperationOutcome {
+                configuration_state: None,
+            })
+        }
+    }
 }
 
 pub fn apply_bucket_metadata_operation(
@@ -440,11 +540,14 @@ pub fn apply_object_version_metadata_operation(
 #[cfg(test)]
 mod tests {
     use super::{
+        BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
+        BucketLifecycleConfigurationState,
         BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
         BucketMetadataTombstoneState, ObjectMetadataOperation, ObjectMetadataOperationError,
         ObjectMetadataState, ObjectVersionMetadataOperation, ObjectVersionMetadataOperationError,
-        ObjectVersionMetadataState, apply_bucket_metadata_operation,
-        apply_object_metadata_operation, apply_object_version_metadata_operation,
+        ObjectVersionMetadataState, apply_bucket_lifecycle_configuration_operation,
+        apply_bucket_metadata_operation, apply_object_metadata_operation,
+        apply_object_version_metadata_operation,
     };
 
     #[test]
@@ -857,6 +960,109 @@ mod tests {
         assert_eq!(
             set_result,
             Err(BucketMetadataOperationError::BucketNotFound)
+        );
+    }
+
+    #[test]
+    fn lifecycle_configuration_upsert_requires_bucket_and_non_empty_xml() {
+        let missing_bucket = apply_bucket_lifecycle_configuration_operation(
+            None,
+            false,
+            &BucketLifecycleConfigurationOperation::UpsertConfiguration {
+                bucket: "photos".to_string(),
+                configuration_xml: "<LifecycleConfiguration/>".to_string(),
+                updated_at_unix_ms: 7,
+            },
+        );
+        assert_eq!(
+            missing_bucket,
+            Err(BucketLifecycleConfigurationOperationError::BucketNotFound)
+        );
+
+        let invalid_xml = apply_bucket_lifecycle_configuration_operation(
+            None,
+            true,
+            &BucketLifecycleConfigurationOperation::UpsertConfiguration {
+                bucket: "photos".to_string(),
+                configuration_xml: "   ".to_string(),
+                updated_at_unix_ms: 8,
+            },
+        );
+        assert_eq!(
+            invalid_xml,
+            Err(BucketLifecycleConfigurationOperationError::InvalidLifecycleConfiguration)
+        );
+
+        let outcome = apply_bucket_lifecycle_configuration_operation(
+            None,
+            true,
+            &BucketLifecycleConfigurationOperation::UpsertConfiguration {
+                bucket: "photos".to_string(),
+                configuration_xml: "<LifecycleConfiguration><Rule/></LifecycleConfiguration>"
+                    .to_string(),
+                updated_at_unix_ms: 9,
+            },
+        )
+        .expect("upsert should succeed");
+        assert_eq!(
+            outcome.configuration_state,
+            Some(BucketLifecycleConfigurationState {
+                bucket: "photos".to_string(),
+                configuration_xml:
+                    "<LifecycleConfiguration><Rule/></LifecycleConfiguration>".to_string(),
+                updated_at_unix_ms: 9,
+            })
+        );
+    }
+
+    #[test]
+    fn lifecycle_configuration_delete_requires_existing_configuration() {
+        let missing_configuration = apply_bucket_lifecycle_configuration_operation(
+            None,
+            true,
+            &BucketLifecycleConfigurationOperation::DeleteConfiguration {
+                bucket: "photos".to_string(),
+            },
+        );
+        assert_eq!(
+            missing_configuration,
+            Err(BucketLifecycleConfigurationOperationError::ConfigurationNotFound)
+        );
+
+        let existing = BucketLifecycleConfigurationState {
+            bucket: "photos".to_string(),
+            configuration_xml: "<LifecycleConfiguration><Rule/></LifecycleConfiguration>"
+                .to_string(),
+            updated_at_unix_ms: 10,
+        };
+        let deleted = apply_bucket_lifecycle_configuration_operation(
+            Some(&existing),
+            true,
+            &BucketLifecycleConfigurationOperation::DeleteConfiguration {
+                bucket: "photos".to_string(),
+            },
+        )
+        .expect("delete should succeed");
+        assert_eq!(deleted.configuration_state, None);
+    }
+
+    #[test]
+    fn lifecycle_configuration_operation_error_labels_are_stable() {
+        assert_eq!(
+            BucketLifecycleConfigurationOperationError::InvalidBucketName.as_str(),
+            "invalid-bucket-name"
+        );
+        assert_eq!(
+            BucketLifecycleConfigurationOperationError::InvalidLifecycleConfiguration.as_str(),
+            "invalid-lifecycle-configuration"
+        );
+        assert_eq!(
+            BucketLifecycleConfigurationOperationError::BucketNotFound.as_str(),
+            "bucket-not-found"
+        );
+        assert_eq!(
+            BucketLifecycleConfigurationOperationError::ConfigurationNotFound.as_str(),
+            "lifecycle-configuration-not-found"
         );
     }
 

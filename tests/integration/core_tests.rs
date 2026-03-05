@@ -370,6 +370,7 @@ fn seed_consensus_metadata_object_rows(
             })
             .collect(),
         object_versions: Vec::new(),
+        bucket_lifecycle_configurations: Vec::new(),
     };
     let state_path = Path::new(data_dir)
         .join(".maxio-runtime")
@@ -395,6 +396,7 @@ fn seed_consensus_metadata_bucket_tombstones(
         bucket_tombstones: tombstones.to_vec(),
         objects: Vec::new(),
         object_versions: Vec::new(),
+        bucket_lifecycle_configurations: Vec::new(),
     };
     let state_path = Path::new(data_dir)
         .join(".maxio-runtime")

@@ -283,6 +283,7 @@ pub(crate) fn seed_consensus_metadata_bucket_state(
         bucket_tombstones: bucket_tombstones.to_vec(),
         objects: Vec::new(),
         object_versions: Vec::new(),
+        bucket_lifecycle_configurations: Vec::new(),
     };
     let state_path = Path::new(data_dir)
         .join(".maxio-runtime")
@@ -309,6 +310,7 @@ pub(crate) fn seed_consensus_metadata_object_rows(
         bucket_tombstones: Vec::new(),
         objects: objects.to_vec(),
         object_versions: Vec::new(),
+        bucket_lifecycle_configurations: Vec::new(),
     };
     let state_path = Path::new(data_dir)
         .join(".maxio-runtime")
@@ -335,6 +337,7 @@ pub(crate) fn seed_consensus_metadata_object_version_rows(
         bucket_tombstones: Vec::new(),
         objects: Vec::new(),
         object_versions: object_versions.to_vec(),
+        bucket_lifecycle_configurations: Vec::new(),
     };
     let state_path = Path::new(data_dir)
         .join(".maxio-runtime")

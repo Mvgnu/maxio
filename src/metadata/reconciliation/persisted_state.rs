@@ -151,6 +151,14 @@ pub fn apply_pending_metadata_repair_plan_to_persisted_state(
 
     persisted_state.view_id = pending_plan.plan.source_view_id.trim().to_string();
     persisted_state.buckets = applied.buckets.clone();
+    let valid_buckets: BTreeSet<String> = persisted_state
+        .buckets
+        .iter()
+        .map(|bucket| bucket.bucket.clone())
+        .collect();
+    persisted_state
+        .bucket_lifecycle_configurations
+        .retain(|entry| valid_buckets.contains(&entry.bucket));
     persisted_state.bucket_tombstones = applied.bucket_tombstones.clone();
     persisted_state.objects = applied.objects.clone();
     persisted_state.object_versions = applied.object_versions.clone();
@@ -190,6 +198,15 @@ fn operation_bucket_name(operation: &BucketMetadataOperation) -> &str {
         | BucketMetadataOperation::DeleteBucket { bucket, .. }
         | BucketMetadataOperation::SetVersioning { bucket, .. }
         | BucketMetadataOperation::SetLifecycle { bucket, .. } => bucket.as_str(),
+    }
+}
+
+fn operation_bucket_lifecycle_configuration_name(
+    operation: &BucketLifecycleConfigurationOperation,
+) -> &str {
+    match operation {
+        BucketLifecycleConfigurationOperation::UpsertConfiguration { bucket, .. }
+        | BucketLifecycleConfigurationOperation::DeleteConfiguration { bucket } => bucket.as_str(),
     }
 }
 
@@ -246,6 +263,12 @@ pub fn apply_bucket_metadata_operation_to_persisted_state(
         .into_iter()
         .map(|state| (state.bucket.clone(), state))
         .collect();
+    let mut lifecycle_configuration_map: BTreeMap<String, BucketLifecycleConfigurationState> =
+        persisted_state
+            .bucket_lifecycle_configurations
+            .into_iter()
+            .map(|state| (state.bucket.clone(), state))
+            .collect();
     let mut tombstone_map: BTreeMap<String, BucketMetadataTombstoneState> = persisted_state
         .bucket_tombstones
         .into_iter()
@@ -271,12 +294,86 @@ pub fn apply_bucket_metadata_operation_to_persisted_state(
     } else {
         tombstone_map.remove(operation_bucket);
     }
+    if outcome.bucket_state.is_none() {
+        lifecycle_configuration_map.remove(operation_bucket);
+    }
 
     persisted_state.view_id = expected_view_id.to_string();
     persisted_state.buckets = bucket_map.into_values().collect();
+    persisted_state.bucket_lifecycle_configurations =
+        lifecycle_configuration_map.into_values().collect();
     persisted_state.bucket_tombstones = tombstone_map.into_values().collect();
     persist_persisted_metadata_state(path, &persisted_state)
         .map_err(PersistedBucketMetadataOperationError::StatePersist)?;
+    Ok(outcome)
+}
+
+pub fn apply_bucket_lifecycle_configuration_operation_to_persisted_state(
+    path: &Path,
+    expected_view_id: &str,
+    operation: &BucketLifecycleConfigurationOperation,
+) -> Result<
+    BucketLifecycleConfigurationOperationOutcome,
+    PersistedBucketLifecycleConfigurationOperationError,
+> {
+    let expected_view_id = expected_view_id.trim();
+    if expected_view_id.is_empty() {
+        return Err(PersistedBucketLifecycleConfigurationOperationError::InvalidExpectedViewId);
+    }
+
+    let mut persisted_state = load_persisted_metadata_state(path)
+        .map_err(PersistedBucketLifecycleConfigurationOperationError::StateLoad)?;
+    validate_persisted_metadata_state_for_query(&persisted_state)
+        .map_err(PersistedBucketLifecycleConfigurationOperationError::InvalidPersistedState)?;
+
+    let persisted_view_id = persisted_state.view_id.trim();
+    if !persisted_view_id.is_empty() && persisted_view_id != expected_view_id {
+        return Err(
+            PersistedBucketLifecycleConfigurationOperationError::ViewIdMismatch {
+                expected_view_id: expected_view_id.to_string(),
+                persisted_view_id: persisted_view_id.to_string(),
+            },
+        );
+    }
+
+    let operation_bucket = operation_bucket_lifecycle_configuration_name(operation);
+    let bucket_exists = persisted_state
+        .buckets
+        .iter()
+        .any(|state| state.bucket == operation_bucket);
+    let current_state = persisted_state
+        .bucket_lifecycle_configurations
+        .iter()
+        .find(|state| state.bucket == operation_bucket);
+    let outcome = apply_bucket_lifecycle_configuration_operation(
+        current_state,
+        bucket_exists,
+        operation,
+    )
+    .map_err(PersistedBucketLifecycleConfigurationOperationError::Operation)?;
+
+    match outcome.configuration_state.clone() {
+        Some(next_state) => {
+            if let Some(existing) = persisted_state
+                .bucket_lifecycle_configurations
+                .iter_mut()
+                .find(|state| state.bucket == operation_bucket)
+            {
+                *existing = next_state;
+            } else {
+                persisted_state.bucket_lifecycle_configurations.push(next_state);
+            }
+        }
+        None => {
+            persisted_state
+                .bucket_lifecycle_configurations
+                .retain(|state| state.bucket != operation_bucket);
+        }
+    }
+
+    persisted_state.view_id = expected_view_id.to_string();
+    persist_persisted_metadata_state(path, &persisted_state)
+        .map_err(PersistedBucketLifecycleConfigurationOperationError::StatePersist)?;
     Ok(outcome)
 }
 
@@ -476,6 +573,26 @@ fn validate_persisted_metadata_state_for_query(
         }
     }
 
+    let mut lifecycle_configuration_buckets = BTreeSet::new();
+    for configuration in &state.bucket_lifecycle_configurations {
+        if !lifecycle_configuration_buckets.insert(configuration.bucket.clone()) {
+            return Err(
+                PersistedMetadataQueryableStateError::DuplicateBucketLifecycleConfigurationState {
+                    bucket: configuration.bucket.clone(),
+                },
+            );
+        }
+        if !bucket_names.contains(&configuration.bucket)
+            || tombstoned_bucket_names.contains(&configuration.bucket)
+        {
+            return Err(
+                PersistedMetadataQueryableStateError::OrphanBucketLifecycleConfigurationState {
+                    bucket: configuration.bucket.clone(),
+                },
+            );
+        }
+    }
+
     let mut object_identity = BTreeSet::new();
     for object in &state.objects {
         let identity = (object.bucket.clone(), object.key.clone());
@@ -631,6 +748,29 @@ pub fn resolve_bucket_metadata_from_persisted_state(
         .cloned()
         .map(PersistedBucketMetadataReadResolution::Present)
         .unwrap_or(PersistedBucketMetadataReadResolution::Missing))
+}
+
+pub fn resolve_bucket_lifecycle_configuration_from_persisted_state(
+    state: &PersistedMetadataState,
+    bucket: &str,
+    expected_view_id: Option<&str>,
+) -> Result<PersistedBucketLifecycleConfigurationReadResolution, PersistedMetadataQueryError> {
+    validate_persisted_query_view_id(state.view_id.as_str(), expected_view_id)?;
+    validate_persisted_metadata_state_for_query(state)
+        .map_err(PersistedMetadataQueryError::InvalidPersistedState)?;
+
+    let bucket = bucket.trim();
+    if bucket.is_empty() {
+        return Ok(PersistedBucketLifecycleConfigurationReadResolution::Missing);
+    }
+
+    Ok(state
+        .bucket_lifecycle_configurations
+        .iter()
+        .find(|entry| entry.bucket == bucket)
+        .cloned()
+        .map(PersistedBucketLifecycleConfigurationReadResolution::Present)
+        .unwrap_or(PersistedBucketLifecycleConfigurationReadResolution::Missing))
 }
 
 pub fn resolve_bucket_presence_from_persisted_state(
