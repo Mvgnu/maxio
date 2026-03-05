@@ -5,7 +5,7 @@ use crate::error::S3Error;
 use crate::metadata::{
     CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON, ClusterMetadataListingStrategy,
     MetadataNodeObjectsPage, MetadataNodeVersionsPage, MetadataQuery, MetadataVersionsQuery,
-    ObjectMetadataState, ObjectVersionMetadataState,
+    ObjectMetadataState, ObjectVersionMetadataState, PersistedMetadataQueryError,
     assess_cluster_metadata_fan_in_snapshot_for_topology_responders,
     assess_cluster_metadata_fan_in_snapshot_for_topology_single_responder,
     cluster_metadata_fan_in_auth_token_reject_reason, cluster_metadata_readiness_reject_reason,
@@ -362,6 +362,26 @@ fn hydrate_versions_from_consensus_states(
     Ok(page)
 }
 
+fn map_persisted_metadata_query_error(
+    operation: &str,
+    err: PersistedMetadataQueryError,
+) -> S3Error {
+    match err {
+        PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        } => S3Error::service_unavailable(&format!(
+            "Distributed metadata listing operation '{}' cannot query consensus metadata state (persisted metadata view mismatch: expected '{}', persisted '{}')",
+            operation, expected_view_id, persisted_view_id
+        )),
+        other => S3Error::service_unavailable(&format!(
+            "Distributed metadata listing operation '{}' cannot query consensus metadata state ({})",
+            operation,
+            other.canonical_reason()
+        )),
+    }
+}
+
 pub(super) fn paginate_objects_v2_from_consensus_index_persisted_state(
     state: &AppState,
     topology: &RuntimeTopologySnapshot,
@@ -373,12 +393,7 @@ pub(super) fn paginate_objects_v2_from_consensus_index_persisted_state(
     let persisted_state = load_consensus_index_persisted_metadata_state(state, "ListObjectsV2")?;
     let metadata_query = build_consensus_v2_query(topology, bucket, query, snapshot_id);
     let canonical_page = list_objects_page_from_persisted_state(&persisted_state, &metadata_query)
-        .map_err(|err| {
-            S3Error::service_unavailable(&format!(
-                "Distributed metadata listing operation 'ListObjectsV2' cannot query consensus metadata state: {:?}",
-                err
-            ))
-        })?;
+        .map_err(|err| map_persisted_metadata_query_error("ListObjectsV2", err))?;
     let hydrated = hydrate_objects_from_consensus_states(
         "ListObjectsV2",
         all_objects,
@@ -398,12 +413,7 @@ pub(super) fn paginate_objects_v1_from_consensus_index_persisted_state(
     let persisted_state = load_consensus_index_persisted_metadata_state(state, "ListObjectsV1")?;
     let metadata_query = build_consensus_v1_query(topology, bucket, query, snapshot_id);
     let canonical_page = list_objects_page_from_persisted_state(&persisted_state, &metadata_query)
-        .map_err(|err| {
-            S3Error::service_unavailable(&format!(
-                "Distributed metadata listing operation 'ListObjectsV1' cannot query consensus metadata state: {:?}",
-                err
-            ))
-        })?;
+        .map_err(|err| map_persisted_metadata_query_error("ListObjectsV1", err))?;
     let hydrated = hydrate_objects_from_consensus_states(
         "ListObjectsV1",
         all_objects,
@@ -425,12 +435,7 @@ pub(super) fn paginate_versions_from_consensus_index_persisted_state(
     let metadata_query = build_consensus_versions_query(topology, bucket, query, snapshot_id);
     let canonical_page =
         list_object_versions_page_from_persisted_state(&persisted_state, &metadata_query)
-            .map_err(|err| {
-                S3Error::service_unavailable(&format!(
-                    "Distributed metadata listing operation 'ListObjectVersions' cannot query consensus metadata state: {:?}",
-                    err
-                ))
-            })?;
+            .map_err(|err| map_persisted_metadata_query_error("ListObjectVersions", err))?;
     let hydrated = hydrate_versions_from_consensus_states(
         "ListObjectVersions",
         all_versions,
@@ -1057,6 +1062,7 @@ mod tests {
     use crate::error::S3ErrorCode;
     use crate::membership::MembershipEngineStatus;
     use crate::metadata::ClusterMetadataListingStrategy;
+    use crate::metadata::index::MetadataQueryError;
     use crate::server::{RuntimeMode, RuntimeTopologySnapshot};
 
     fn object_meta(key: &str, version_id: Option<&str>, is_delete_marker: bool) -> ObjectMeta {
@@ -1257,6 +1263,47 @@ mod tests {
             StorageError::InvalidKey("invalid prefix".to_string()),
         );
         assert!(matches!(err.code, S3ErrorCode::InvalidArgument));
+    }
+
+    #[test]
+    fn map_persisted_metadata_query_error_uses_canonical_reason_for_non_view_errors() {
+        let err = map_persisted_metadata_query_error(
+            "ListObjectsV2",
+            PersistedMetadataQueryError::InvalidQuery(MetadataQueryError::InvalidContinuationToken),
+        );
+        assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
+        assert!(
+            err.message.contains("invalid-continuation-token"),
+            "unexpected message: {}",
+            err.message
+        );
+    }
+
+    #[test]
+    fn map_persisted_metadata_query_error_preserves_view_mismatch_details() {
+        let err = map_persisted_metadata_query_error(
+            "ListObjectVersions",
+            PersistedMetadataQueryError::ViewIdMismatch {
+                expected_view_id: "view-a".to_string(),
+                persisted_view_id: "view-b".to_string(),
+            },
+        );
+        assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
+        assert!(
+            err.message.contains("persisted metadata view mismatch"),
+            "unexpected message: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("expected 'view-a'"),
+            "unexpected message: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains("persisted 'view-b'"),
+            "unexpected message: {}",
+            err.message
+        );
     }
 
     #[test]

@@ -13,7 +13,6 @@ use crate::api::object::peer_transport::{
 use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
 use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_request};
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
-use crate::metadata::index::MetadataQueryError;
 use crate::metadata::{
     BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
     BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
@@ -311,18 +310,12 @@ pub(super) fn assess_bucket_metadata_operation_preconditions<T: Clone + Eq>(
         topology.membership_nodes.as_slice(),
         responder_states.as_slice(),
     )
-    .map_err(|error| match error {
-        MetadataQueryError::DuplicateCoverageNodeResponse
-        | MetadataQueryError::DuplicateCoverageExpectedNode
-        | MetadataQueryError::InvalidCoverageNodeId
-        | MetadataQueryError::InvalidContinuationToken
-        | MetadataQueryError::InvalidVersionsMarker
-        | MetadataQueryError::InconsistentBucketMetadataResponse => {
-            format!(
-                "Failed to assess distributed bucket metadata convergence for operation '{}'",
-                operation
-            )
-        }
+    .map_err(|error| {
+        format!(
+            "Failed to assess distributed bucket metadata convergence for operation '{}' ({})",
+            operation,
+            error.canonical_reason()
+        )
     })
 }
 
@@ -469,23 +462,7 @@ pub(super) fn ensure_consensus_index_create_bucket_preconditions(
             ..
         })
         | Ok(PersistedBucketMutationPreconditionResolution::Missing) => Ok(()),
-        Err(PersistedMetadataQueryError::ViewIdMismatch {
-            expected_view_id,
-            persisted_view_id,
-        }) => Err(Box::new(response::error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
-                operation, expected_view_id, persisted_view_id
-            ),
-        ))),
-        Err(err) => Err(Box::new(response::error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-                operation, err
-            ),
-        ))),
+        Err(err) => Err(map_persisted_bucket_metadata_query_error(operation, err)),
     }
 }
 
@@ -517,23 +494,7 @@ pub(super) fn ensure_consensus_index_delete_bucket_preconditions(
         | Ok(PersistedBucketMutationPreconditionResolution::Missing) => Err(Box::new(
             response::error(StatusCode::NOT_FOUND, "Bucket not found"),
         )),
-        Err(PersistedMetadataQueryError::ViewIdMismatch {
-            expected_view_id,
-            persisted_view_id,
-        }) => Err(Box::new(response::error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
-                operation, expected_view_id, persisted_view_id
-            ),
-        ))),
-        Err(err) => Err(Box::new(response::error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-                operation, err
-            ),
-        ))),
+        Err(err) => Err(map_persisted_bucket_metadata_query_error(operation, err)),
     }
 }
 
@@ -583,8 +544,9 @@ pub(super) fn persist_bucket_metadata_operation(
                 operation_name, expected_view_id, persisted_view_id
             ),
             PersistedBucketMetadataOperationError::InvalidPersistedState(reason) => format!(
-                "Distributed bucket metadata operation '{}' cannot update persisted metadata state: invalid persisted metadata state ({:?})",
-                operation_name, reason
+                "Distributed bucket metadata operation '{}' cannot update persisted metadata state: invalid persisted metadata state ({})",
+                operation_name,
+                reason.canonical_reason()
             ),
             PersistedBucketMetadataOperationError::Operation(reason) => format!(
                 "Distributed bucket metadata operation '{}' cannot update persisted metadata state: {}",
@@ -645,8 +607,9 @@ pub(super) fn persist_bucket_lifecycle_configuration_operation(
             ),
             PersistedBucketLifecycleConfigurationOperationError::InvalidPersistedState(reason) => {
                 format!(
-                    "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: invalid persisted metadata state ({:?})",
-                    operation_name, reason
+                    "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: invalid persisted metadata state ({})",
+                    operation_name,
+                    reason.canonical_reason()
                 )
             }
             PersistedBucketLifecycleConfigurationOperationError::Operation(reason) => format!(
@@ -717,8 +680,9 @@ pub(super) fn persist_object_metadata_operation(
                 operation_name, expected_view_id, persisted_view_id
             ),
             PersistedObjectMetadataOperationError::InvalidPersistedState(reason) => format!(
-                "Distributed object metadata operation '{}' cannot update persisted metadata state: invalid persisted metadata state ({:?})",
-                operation_name, reason
+                "Distributed object metadata operation '{}' cannot update persisted metadata state: invalid persisted metadata state ({})",
+                operation_name,
+                reason.canonical_reason()
             ),
             PersistedObjectMetadataOperationError::Operation(reason) => format!(
                 "Distributed object metadata operation '{}' cannot update persisted metadata state: {}",
@@ -780,8 +744,9 @@ pub(super) fn persist_object_version_metadata_operation(
                 operation_name, expected_view_id, persisted_view_id
             ),
             PersistedObjectVersionMetadataOperationError::InvalidPersistedState(reason) => format!(
-                "Distributed object-version metadata operation '{}' cannot update persisted metadata state: invalid persisted metadata state ({:?})",
-                operation_name, reason
+                "Distributed object-version metadata operation '{}' cannot update persisted metadata state: invalid persisted metadata state ({})",
+                operation_name,
+                reason.canonical_reason()
             ),
             PersistedObjectVersionMetadataOperationError::Operation(reason) => format!(
                 "Distributed object-version metadata operation '{}' cannot update persisted metadata state: {}",
@@ -907,25 +872,7 @@ pub(super) fn load_consensus_bucket_metadata_rows(
         &persisted_state,
         Some(topology.membership_view_id.as_str()),
     )
-    .map_err(|err| match err {
-        PersistedMetadataQueryError::ViewIdMismatch {
-            expected_view_id,
-            persisted_view_id,
-        } => Box::new(response::error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
-                operation, expected_view_id, persisted_view_id
-            ),
-        )),
-        _ => Box::new(response::error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-                operation, err
-            ),
-        )),
-    })
+    .map_err(|err| map_persisted_bucket_metadata_query_error(operation, err))
 }
 
 pub(super) fn load_consensus_object_metadata_rows_for_prefix(
@@ -1086,23 +1033,7 @@ pub(super) fn consensus_bucket_metadata_state_for_bucket(
     ) {
         Ok(PersistedBucketMetadataReadResolution::Present(bucket_state)) => Ok(bucket_state),
         Ok(PersistedBucketMetadataReadResolution::Missing) => Err(Box::new(bucket_not_found())),
-        Err(PersistedMetadataQueryError::ViewIdMismatch {
-            expected_view_id,
-            persisted_view_id,
-        }) => Err(Box::new(response::error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
-                operation, expected_view_id, persisted_view_id
-            ),
-        ))),
-        Err(err) => Err(Box::new(response::error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            format!(
-                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-                operation, err
-            ),
-        ))),
+        Err(err) => Err(map_persisted_bucket_metadata_query_error(operation, err)),
     }
 }
 
@@ -1132,23 +1063,33 @@ pub(super) fn consensus_bucket_lifecycle_configuration_xml_for_bucket(
             Ok(Some(configuration_state.configuration_xml))
         }
         Ok(PersistedBucketLifecycleConfigurationReadResolution::Missing) => Ok(None),
-        Err(PersistedMetadataQueryError::ViewIdMismatch {
+        Err(err) => Err(map_persisted_bucket_metadata_query_error(operation, err)),
+    }
+}
+
+fn map_persisted_bucket_metadata_query_error(
+    operation: &str,
+    err: PersistedMetadataQueryError,
+) -> Box<Response> {
+    match err {
+        PersistedMetadataQueryError::ViewIdMismatch {
             expected_view_id,
             persisted_view_id,
-        }) => Err(Box::new(response::error(
+        } => Box::new(response::error(
             StatusCode::SERVICE_UNAVAILABLE,
             format!(
                 "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
                 operation, expected_view_id, persisted_view_id
             ),
-        ))),
-        Err(err) => Err(Box::new(response::error(
+        )),
+        other => Box::new(response::error(
             StatusCode::SERVICE_UNAVAILABLE,
             format!(
-                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-                operation, err
+                "Distributed bucket metadata operation '{}' cannot query consensus metadata state ({})",
+                operation,
+                other.canonical_reason()
             ),
-        ))),
+        )),
     }
 }
 
@@ -1170,8 +1111,9 @@ fn map_persisted_metadata_query_error(
         _ => Box::new(response::error(
             StatusCode::SERVICE_UNAVAILABLE,
             format!(
-                "Distributed metadata listing operation '{}' cannot query consensus metadata state: {:?}",
-                operation, err
+                "Distributed metadata listing operation '{}' cannot query consensus metadata state ({})",
+                operation,
+                err.canonical_reason()
             ),
         )),
     }
@@ -1344,6 +1286,13 @@ mod tests {
 
     fn response_status(response: Response) -> StatusCode {
         response.status()
+    }
+
+    async fn response_body(response: Box<Response>) -> String {
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body should be readable");
+        String::from_utf8(bytes.to_vec()).expect("response body should be valid utf-8")
     }
 
     fn distributed_test_topology() -> RuntimeTopologySnapshot {
@@ -1662,6 +1611,29 @@ mod tests {
             responders.as_slice(),
         );
         assert!(response.is_none());
+    }
+
+    #[tokio::test]
+    async fn persisted_query_error_mapping_uses_canonical_reason_labels() {
+        let bucket_response = map_persisted_bucket_metadata_query_error(
+            "GetBucketVersioning",
+            PersistedMetadataQueryError::InvalidQuery(
+                crate::metadata::index::MetadataQueryError::InvalidCoverageNodeId,
+            ),
+        );
+        assert_eq!(bucket_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let bucket_body = response_body(bucket_response).await;
+        assert!(bucket_body.contains("invalid-coverage-node-id"));
+
+        let listing_response = map_persisted_metadata_query_error(
+            "ListConsoleObjects",
+            PersistedMetadataQueryError::InvalidQuery(
+                crate::metadata::index::MetadataQueryError::InvalidVersionsMarker,
+            ),
+        );
+        assert_eq!(listing_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let listing_body = response_body(listing_response).await;
+        assert!(listing_body.contains("invalid-versions-marker"));
     }
 
     #[tokio::test]

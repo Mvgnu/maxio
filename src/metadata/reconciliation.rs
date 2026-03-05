@@ -296,6 +296,26 @@ pub enum PersistedMetadataQueryableStateError {
     },
 }
 
+impl PersistedMetadataQueryableStateError {
+    pub const fn canonical_reason(&self) -> &'static str {
+        match self {
+            Self::DuplicateBucketState { .. } => "duplicate-bucket-state",
+            Self::DuplicateBucketLifecycleConfigurationState { .. } => {
+                "duplicate-bucket-lifecycle-configuration-state"
+            }
+            Self::DuplicateBucketTombstoneState { .. } => "duplicate-bucket-tombstone-state",
+            Self::BucketTombstoneConflict { .. } => "bucket-tombstone-conflict",
+            Self::DuplicateObjectState { .. } => "duplicate-object-state",
+            Self::OrphanObjectState { .. } => "orphan-object-state",
+            Self::DuplicateObjectVersionState { .. } => "duplicate-object-version-state",
+            Self::OrphanObjectVersionState { .. } => "orphan-object-version-state",
+            Self::OrphanBucketLifecycleConfigurationState { .. } => {
+                "orphan-bucket-lifecycle-configuration-state"
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PersistedMetadataQueryError {
     InvalidPersistedState(PersistedMetadataQueryableStateError),
@@ -304,6 +324,16 @@ pub enum PersistedMetadataQueryError {
         persisted_view_id: String,
     },
     InvalidQuery(MetadataQueryError),
+}
+
+impl PersistedMetadataQueryError {
+    pub const fn canonical_reason(&self) -> &'static str {
+        match self {
+            Self::InvalidPersistedState(error) => error.canonical_reason(),
+            Self::ViewIdMismatch { .. } => "persisted-view-id-mismatch",
+            Self::InvalidQuery(error) => error.canonical_reason(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1354,7 +1384,7 @@ mod tests {
         resolve_object_version_metadata_from_persisted_state, summarize_metadata_repair_plan,
         summarize_pending_metadata_repair_queue, validate_metadata_repair_plan,
     };
-    use crate::metadata::index::{MetadataQuery, MetadataVersionsQuery};
+    use crate::metadata::index::{MetadataQuery, MetadataQueryError, MetadataVersionsQuery};
     use crate::metadata::state::{
         BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationState,
         BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
@@ -4720,5 +4750,25 @@ mod tests {
                 persisted_view_id: "view-a".to_string(),
             })
         );
+    }
+
+    #[test]
+    fn persisted_metadata_query_error_canonical_reasons_are_stable() {
+        let invalid_state = PersistedMetadataQueryError::InvalidPersistedState(
+            PersistedMetadataQueryableStateError::DuplicateBucketState {
+                bucket: "photos".to_string(),
+            },
+        );
+        assert_eq!(invalid_state.canonical_reason(), "duplicate-bucket-state");
+
+        let view_mismatch = PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id: "view-a".to_string(),
+            persisted_view_id: "view-b".to_string(),
+        };
+        assert_eq!(view_mismatch.canonical_reason(), "persisted-view-id-mismatch");
+
+        let invalid_query =
+            PersistedMetadataQueryError::InvalidQuery(MetadataQueryError::InvalidVersionsMarker);
+        assert_eq!(invalid_query.canonical_reason(), "invalid-versions-marker");
     }
 }

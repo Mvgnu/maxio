@@ -80,6 +80,19 @@ pub enum MetadataQueryError {
     InconsistentBucketMetadataResponse,
 }
 
+impl MetadataQueryError {
+    pub const fn canonical_reason(self) -> &'static str {
+        match self {
+            Self::InvalidContinuationToken => "invalid-continuation-token",
+            Self::InvalidVersionsMarker => "invalid-versions-marker",
+            Self::InvalidCoverageNodeId => "invalid-coverage-node-id",
+            Self::DuplicateCoverageExpectedNode => "duplicate-coverage-expected-node",
+            Self::DuplicateCoverageNodeResponse => "duplicate-coverage-node-response",
+            Self::InconsistentBucketMetadataResponse => "inconsistent-bucket-metadata-response",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MetadataListPage {
     pub objects: Vec<ObjectMetadataState>,
@@ -711,20 +724,7 @@ impl ClusterBucketMetadataConvergenceInputError {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::ResponderStateCardinalityMismatch => "responder-state-cardinality-mismatch",
-            Self::InvalidResponderTopology(error) => match error {
-                MetadataQueryError::InvalidContinuationToken => "invalid-continuation-token",
-                MetadataQueryError::InvalidVersionsMarker => "invalid-versions-marker",
-                MetadataQueryError::InvalidCoverageNodeId => "invalid-coverage-node-id",
-                MetadataQueryError::DuplicateCoverageExpectedNode => {
-                    "duplicate-coverage-expected-node"
-                }
-                MetadataQueryError::DuplicateCoverageNodeResponse => {
-                    "duplicate-coverage-node-response"
-                }
-                MetadataQueryError::InconsistentBucketMetadataResponse => {
-                    "inconsistent-bucket-metadata-response"
-                }
-            },
+            Self::InvalidResponderTopology(error) => error.canonical_reason(),
         }
     }
 }
@@ -4228,6 +4228,44 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn metadata_query_error_canonical_reason_labels_are_stable() {
+        let cases = [
+            (
+                MetadataQueryError::InvalidContinuationToken,
+                "invalid-continuation-token",
+            ),
+            (
+                MetadataQueryError::InvalidVersionsMarker,
+                "invalid-versions-marker",
+            ),
+            (
+                MetadataQueryError::InvalidCoverageNodeId,
+                "invalid-coverage-node-id",
+            ),
+            (
+                MetadataQueryError::DuplicateCoverageExpectedNode,
+                "duplicate-coverage-expected-node",
+            ),
+            (
+                MetadataQueryError::DuplicateCoverageNodeResponse,
+                "duplicate-coverage-node-response",
+            ),
+            (
+                MetadataQueryError::InconsistentBucketMetadataResponse,
+                "inconsistent-bucket-metadata-response",
+            ),
+        ];
+        for (error, expected) in cases {
+            assert_eq!(error.canonical_reason(), expected);
+            assert_eq!(
+                ClusterBucketMetadataConvergenceInputError::InvalidResponderTopology(error)
+                    .as_str(),
+                expected
+            );
+        }
     }
 
     #[test]

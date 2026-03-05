@@ -496,8 +496,9 @@ pub(super) fn probe_persisted_metadata_state(data_dir: &str) -> PersistedMetadat
                     object_rows,
                     object_version_rows,
                     warning: Some(format!(
-                        "Persisted metadata state '{}' is not queryable: {err:?}",
-                        state_path.display()
+                        "Persisted metadata state '{}' is not queryable ({})",
+                        state_path.display(),
+                        err.canonical_reason()
                     )),
                 },
             }

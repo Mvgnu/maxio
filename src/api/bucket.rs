@@ -22,7 +22,6 @@ use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
 use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_request};
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::error::{S3Error, S3ErrorCode};
-use crate::metadata::index::MetadataQueryError;
 use crate::metadata::{
     BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
     BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
@@ -380,8 +379,9 @@ fn persist_bucket_metadata_operation(
                 operation_name, expected_view_id, persisted_view_id
             ),
             PersistedBucketMetadataOperationError::InvalidPersistedState(reason) => format!(
-                "Distributed bucket metadata operation '{}' cannot update persisted metadata state: invalid persisted metadata state ({:?})",
-                operation_name, reason
+                "Distributed bucket metadata operation '{}' cannot update persisted metadata state: invalid persisted metadata state ({})",
+                operation_name,
+                reason.canonical_reason()
             ),
             PersistedBucketMetadataOperationError::Operation(reason) => format!(
                 "Distributed bucket metadata operation '{}' cannot update persisted metadata state: {}",
@@ -442,8 +442,9 @@ fn persist_bucket_lifecycle_configuration_operation(
             ),
             PersistedBucketLifecycleConfigurationOperationError::InvalidPersistedState(reason) => {
                 format!(
-                    "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: invalid persisted metadata state ({:?})",
-                    operation_name, reason
+                    "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: invalid persisted metadata state ({})",
+                    operation_name,
+                    reason.canonical_reason()
                 )
             }
             PersistedBucketLifecycleConfigurationOperationError::Operation(reason) => format!(
@@ -472,7 +473,11 @@ fn load_persisted_bucket_metadata_state(
         &persisted_state,
         Some(topology.membership_view_id.as_str()),
     )
-    .map_err(|err| match err {
+    .map_err(|err| map_persisted_metadata_query_error(operation, err))
+}
+
+fn map_persisted_metadata_query_error(operation: &str, err: PersistedMetadataQueryError) -> S3Error {
+    match err {
         PersistedMetadataQueryError::ViewIdMismatch {
             expected_view_id,
             persisted_view_id,
@@ -480,11 +485,12 @@ fn load_persisted_bucket_metadata_state(
             "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
             operation, expected_view_id, persisted_view_id
         )),
-        _ => S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-            operation, err
+        other => S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' cannot query consensus metadata state ({})",
+            operation,
+            other.canonical_reason()
         )),
-    })
+    }
 }
 
 fn bucket_metadata_state_from_consensus_index(
@@ -512,17 +518,7 @@ fn bucket_metadata_state_from_consensus_index(
         Ok(crate::metadata::PersistedBucketMetadataReadResolution::Missing) => {
             Err(S3Error::no_such_bucket(bucket))
         }
-        Err(PersistedMetadataQueryError::ViewIdMismatch {
-            expected_view_id,
-            persisted_view_id,
-        }) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
-            operation, expected_view_id, persisted_view_id
-        ))),
-        Err(err) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-            operation, err
-        ))),
+        Err(err) => Err(map_persisted_metadata_query_error(operation, err)),
     }
 }
 
@@ -562,17 +558,7 @@ fn bucket_lifecycle_rules_from_consensus_index(
                 operation, bucket
             )))
         }
-        Err(PersistedMetadataQueryError::ViewIdMismatch {
-            expected_view_id,
-            persisted_view_id,
-        }) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
-            operation, expected_view_id, persisted_view_id
-        ))),
-        Err(err) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-            operation, err
-        ))),
+        Err(err) => Err(map_persisted_metadata_query_error(operation, err)),
     }
 }
 
@@ -611,17 +597,7 @@ fn ensure_consensus_index_create_bucket_preconditions(
             ..
         })
         | Ok(PersistedBucketMutationPreconditionResolution::Missing) => Ok(()),
-        Err(PersistedMetadataQueryError::ViewIdMismatch {
-            expected_view_id,
-            persisted_view_id,
-        }) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
-            operation, expected_view_id, persisted_view_id
-        ))),
-        Err(err) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-            operation, err
-        ))),
+        Err(err) => Err(map_persisted_metadata_query_error(operation, err)),
     }
 }
 
@@ -650,17 +626,7 @@ fn ensure_consensus_index_delete_bucket_preconditions(
         | Ok(PersistedBucketMutationPreconditionResolution::Missing) => {
             Err(S3Error::no_such_bucket(bucket))
         }
-        Err(PersistedMetadataQueryError::ViewIdMismatch {
-            expected_view_id,
-            persisted_view_id,
-        }) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
-            operation, expected_view_id, persisted_view_id
-        ))),
-        Err(err) => Err(S3Error::service_unavailable(&format!(
-            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
-            operation, err
-        ))),
+        Err(err) => Err(map_persisted_metadata_query_error(operation, err)),
     }
 }
 
@@ -1075,24 +1041,12 @@ fn assess_cluster_bucket_metadata_operation_preconditions<T: Clone + Eq>(
         topology.membership_nodes.as_slice(),
         responder_states.as_slice(),
     )
-    .map_err(|error| match error {
-        MetadataQueryError::DuplicateCoverageNodeResponse
-        | MetadataQueryError::DuplicateCoverageExpectedNode
-        | MetadataQueryError::InvalidCoverageNodeId => S3Error::service_unavailable(&format!(
-            "Failed to assess distributed bucket metadata convergence for operation '{}'",
-            operation
-        )),
-        MetadataQueryError::InvalidContinuationToken
-        | MetadataQueryError::InvalidVersionsMarker => S3Error::service_unavailable(&format!(
-            "Failed to assess distributed bucket metadata convergence for operation '{}'",
-            operation
-        )),
-        MetadataQueryError::InconsistentBucketMetadataResponse => {
-            S3Error::service_unavailable(&format!(
-                "Failed to assess distributed bucket metadata convergence for operation '{}'",
-                operation
-            ))
-        }
+    .map_err(|error| {
+        S3Error::service_unavailable(&format!(
+            "Failed to assess distributed bucket metadata convergence for operation '{}' ({})",
+            operation,
+            error.canonical_reason()
+        ))
     })
 }
 
@@ -2408,5 +2362,17 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn map_persisted_metadata_query_error_uses_canonical_reason_for_non_view_errors() {
+        let err = map_persisted_metadata_query_error(
+            "ListBuckets",
+            PersistedMetadataQueryError::InvalidQuery(
+                crate::metadata::index::MetadataQueryError::InvalidCoverageNodeId,
+            ),
+        );
+        assert!(matches!(err.code, S3ErrorCode::ServiceUnavailable));
+        assert!(err.message.contains("invalid-coverage-node-id"));
     }
 }
