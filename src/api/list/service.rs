@@ -3,8 +3,10 @@ use std::path::{Component, Path, PathBuf};
 
 use crate::error::S3Error;
 use crate::metadata::{
+    CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
     ClusterMetadataListingStrategy, MetadataNodeObjectsPage, MetadataNodeVersionsPage,
     MetadataQuery, MetadataVersionsQuery, ObjectMetadataState, ObjectVersionMetadataState,
+    cluster_metadata_fan_in_auth_token_reject_reason,
     assess_cluster_metadata_fan_in_snapshot_for_topology_responders,
     assess_cluster_metadata_fan_in_snapshot_for_topology_single_responder,
     cluster_metadata_readiness_reject_reason, list_object_versions_page_from_persisted_state,
@@ -176,8 +178,18 @@ pub(super) fn ensure_consensus_index_peer_fan_in_transport_ready(
         return Ok(());
     }
 
+    let Some(reason) = cluster_metadata_fan_in_auth_token_reject_reason(
+        state.metadata_listing_strategy,
+        has_cluster_auth_token,
+    ) else {
+        return Ok(());
+    };
+    debug_assert_eq!(
+        reason,
+        CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON
+    );
     Err(S3Error::service_unavailable(
-        "Distributed metadata listing strategy is not ready for this request (consensus-index-peer-fan-in-auth-token-missing)",
+        &format!("Distributed metadata listing strategy is not ready for this request ({reason})"),
     ))
 }
 
