@@ -1,8 +1,8 @@
 use maxio::config::{ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode};
 use maxio::metadata::{
-    BucketMetadataState, BucketMetadataTombstoneState, ClusterMetadataListingStrategy,
-    ObjectMetadataState, ObjectVersionMetadataState, PersistedMetadataState,
-    persist_persisted_metadata_state,
+    BucketLifecycleConfigurationState, BucketMetadataState, BucketMetadataTombstoneState,
+    ClusterMetadataListingStrategy, ObjectMetadataState, ObjectVersionMetadataState,
+    PersistedMetadataState, persist_persisted_metadata_state,
 };
 use maxio::server;
 use maxio::storage::{BucketMeta, ObjectMeta, filesystem::FilesystemStorage};
@@ -277,13 +277,29 @@ pub(crate) fn seed_consensus_metadata_bucket_state(
     buckets: &[BucketMetadataState],
     bucket_tombstones: &[BucketMetadataTombstoneState],
 ) {
+    seed_consensus_metadata_bucket_state_with_lifecycle_configurations(
+        data_dir,
+        view_id,
+        buckets,
+        bucket_tombstones,
+        &[],
+    );
+}
+
+pub(crate) fn seed_consensus_metadata_bucket_state_with_lifecycle_configurations(
+    data_dir: &str,
+    view_id: &str,
+    buckets: &[BucketMetadataState],
+    bucket_tombstones: &[BucketMetadataTombstoneState],
+    bucket_lifecycle_configurations: &[BucketLifecycleConfigurationState],
+) {
     let state = PersistedMetadataState {
         view_id: view_id.to_string(),
         buckets: buckets.to_vec(),
         bucket_tombstones: bucket_tombstones.to_vec(),
         objects: Vec::new(),
         object_versions: Vec::new(),
-        bucket_lifecycle_configurations: Vec::new(),
+        bucket_lifecycle_configurations: bucket_lifecycle_configurations.to_vec(),
     };
     let state_path = Path::new(data_dir)
         .join(".maxio-runtime")

@@ -23,13 +23,17 @@ use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::error::{S3Error, S3ErrorCode};
 use crate::metadata::{
+    BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
     BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
     ClusterBucketMetadataConvergenceAssessment, ClusterBucketMetadataConvergenceGap,
     ClusterBucketMetadataConvergenceInputError, ClusterBucketMetadataReadResolution,
     ClusterBucketMetadataResponderState, ClusterBucketPresenceConvergenceExpectation,
     ClusterBucketPresenceReadResolution, ClusterMetadataListingStrategy,
-    ClusterResponderMembershipView, MetadataNodeBucketsPage, PersistedBucketMetadataOperationError,
+    ClusterResponderMembershipView, MetadataNodeBucketsPage,
+    PersistedBucketLifecycleConfigurationOperationError,
+    PersistedBucketLifecycleConfigurationReadResolution, PersistedBucketMetadataOperationError,
     PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError,
+    apply_bucket_lifecycle_configuration_operation_to_persisted_state,
     apply_bucket_metadata_operation_to_persisted_state,
     assess_cluster_bucket_metadata_convergence_for_responder_states,
     assess_cluster_bucket_presence_convergence,
@@ -40,6 +44,7 @@ use crate::metadata::{
     assess_cluster_responder_membership_views, cluster_metadata_fan_in_preflight_reject_reason,
     cluster_metadata_readiness_reject_reason, list_buckets_from_persisted_state_with_view_id,
     load_persisted_metadata_state, merge_cluster_list_buckets_page_with_topology_snapshot,
+    resolve_bucket_lifecycle_configuration_from_persisted_state,
     resolve_bucket_metadata_from_persisted_state,
     resolve_bucket_mutation_preconditions_from_persisted_state,
     resolve_cluster_bucket_metadata_for_read, resolve_cluster_bucket_presence_for_read,
@@ -382,6 +387,69 @@ fn persist_bucket_metadata_operation(
     })
 }
 
+fn persist_bucket_lifecycle_configuration_operation(
+    state: &AppState,
+    topology: &crate::server::RuntimeTopologySnapshot,
+    operation_name: &str,
+    operation: &BucketLifecycleConfigurationOperation,
+) -> Result<(), S3Error> {
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let apply_result = apply_bucket_lifecycle_configuration_operation_to_persisted_state(
+        state_path.as_path(),
+        topology.membership_view_id.as_str(),
+        operation,
+    );
+    if matches!(
+        (&apply_result, operation),
+        (
+            Err(
+                PersistedBucketLifecycleConfigurationOperationError::Operation(
+                    BucketLifecycleConfigurationOperationError::ConfigurationNotFound
+                )
+            ),
+            BucketLifecycleConfigurationOperation::DeleteConfiguration { .. }
+        )
+    ) {
+        return Ok(());
+    }
+
+    apply_result.map(|_| ()).map_err(|error| {
+        let message = match error {
+            PersistedBucketLifecycleConfigurationOperationError::InvalidExpectedViewId => format!(
+                "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: invalid expected metadata view id",
+                operation_name
+            ),
+            PersistedBucketLifecycleConfigurationOperationError::StateLoad(io_error) => format!(
+                "Distributed bucket metadata operation '{}' cannot load persisted lifecycle state: {}",
+                operation_name, io_error
+            ),
+            PersistedBucketLifecycleConfigurationOperationError::StatePersist(io_error) => format!(
+                "Distributed bucket metadata operation '{}' cannot persist lifecycle state: {}",
+                operation_name, io_error
+            ),
+            PersistedBucketLifecycleConfigurationOperationError::ViewIdMismatch {
+                expected_view_id,
+                persisted_view_id,
+            } => format!(
+                "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: persisted metadata view mismatch (expected='{}', persisted='{}')",
+                operation_name, expected_view_id, persisted_view_id
+            ),
+            PersistedBucketLifecycleConfigurationOperationError::InvalidPersistedState(reason) => {
+                format!(
+                    "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: invalid persisted metadata state ({:?})",
+                    operation_name, reason
+                )
+            }
+            PersistedBucketLifecycleConfigurationOperationError::Operation(reason) => format!(
+                "Distributed bucket metadata operation '{}' cannot update persisted lifecycle state: {}",
+                operation_name,
+                reason.as_str()
+            ),
+        };
+        S3Error::service_unavailable(message.as_str())
+    })
+}
+
 fn load_persisted_bucket_metadata_state(
     state: &AppState,
     operation: &str,
@@ -437,6 +505,56 @@ fn bucket_metadata_state_from_consensus_index(
         }
         Ok(crate::metadata::PersistedBucketMetadataReadResolution::Missing) => {
             Err(S3Error::no_such_bucket(bucket))
+        }
+        Err(PersistedMetadataQueryError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        }) => Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: persisted metadata view mismatch (expected='{}', persisted='{}')",
+            operation, expected_view_id, persisted_view_id
+        ))),
+        Err(err) => Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' cannot query consensus metadata state: {:?}",
+            operation, err
+        ))),
+    }
+}
+
+fn bucket_lifecycle_rules_from_consensus_index(
+    state: &AppState,
+    bucket: &str,
+    operation: &str,
+) -> Result<Vec<StorageLifecycleRule>, S3Error> {
+    let topology = runtime_topology_snapshot(state);
+    let state_path = persisted_metadata_state_path(state.config.data_dir.as_str());
+    let persisted_state = load_persisted_metadata_state(state_path.as_path()).map_err(|err| {
+        S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' cannot load consensus metadata state: {}",
+            operation, err
+        ))
+    })?;
+
+    match resolve_bucket_lifecycle_configuration_from_persisted_state(
+        &persisted_state,
+        bucket,
+        Some(topology.membership_view_id.as_str()),
+    ) {
+        Ok(PersistedBucketLifecycleConfigurationReadResolution::Present(configuration)) => {
+            let rules = parse_lifecycle_rules(configuration.configuration_xml.as_str()).map_err(
+                |_| {
+                    S3Error::service_unavailable(&format!(
+                        "Distributed bucket metadata operation '{}' cannot decode persisted lifecycle state for '{}'",
+                        operation, bucket
+                    ))
+                },
+            )?;
+            Ok(canonicalize_lifecycle_rules(rules))
+        }
+        Ok(PersistedBucketLifecycleConfigurationReadResolution::Missing) => {
+            Err(S3Error::service_unavailable(&format!(
+                "Distributed bucket metadata operation '{}' cannot query consensus metadata state: missing persisted lifecycle configuration for '{}'",
+                operation, bucket
+            )))
         }
         Err(PersistedMetadataQueryError::ViewIdMismatch {
             expected_view_id,
@@ -1799,6 +1917,16 @@ async fn put_bucket_lifecycle(
             enabled: !expected_rules.is_empty(),
         },
     )?;
+    persist_bucket_lifecycle_configuration_operation(
+        &state,
+        &topology,
+        "PutBucketLifecycle",
+        &BucketLifecycleConfigurationOperation::UpsertConfiguration {
+            bucket: bucket.clone(),
+            configuration_xml: body_str.to_string(),
+            updated_at_unix_ms: current_unix_ms_u64(),
+        },
+    )?;
 
     if should_fan_in {
         let responded_nodes = fan_out_bucket_metadata_mutation_to_peers(
@@ -1875,6 +2003,14 @@ async fn delete_bucket_lifecycle(
         &BucketMetadataOperation::SetLifecycle {
             bucket: bucket.clone(),
             enabled: false,
+        },
+    )?;
+    persist_bucket_lifecycle_configuration_operation(
+        &state,
+        &topology,
+        "DeleteBucketLifecycle",
+        &BucketLifecycleConfigurationOperation::DeleteConfiguration {
+            bucket: bucket.clone(),
         },
     )?;
 
@@ -2000,49 +2136,8 @@ pub async fn get_bucket_lifecycle(
     let topology = runtime_topology_snapshot(&state);
     let internal_local_only =
         is_trusted_internal_local_metadata_scope_request(&state, headers, params);
-    let rules = if should_attempt_cluster_bucket_metadata_fan_in(
-        &state,
-        &topology,
-        internal_local_only,
-    ) {
-        let fan_in = fetch_cluster_bucket_lifecycle_fan_in(&state, &topology, &bucket).await?;
-        ensure_distributed_bucket_metadata_operation_strategy_ready_for_responders(
-            &state,
-            &topology,
-            "GetBucketLifecycle",
-            fan_in.responded_nodes.as_slice(),
-        )?;
-        resolve_cluster_bucket_lifecycle_state(
-            &state,
-            &topology,
-            "GetBucketLifecycle",
-            &bucket,
-            fan_in.responded_nodes.as_slice(),
-            fan_in.lifecycle_states.as_slice(),
-        )?
-    } else {
-        let use_consensus_persisted_metadata = should_use_consensus_index_persisted_metadata_state(
-            &state,
-            &topology,
-            internal_local_only,
-        );
-        if !internal_local_only && !use_consensus_persisted_metadata {
-            ensure_distributed_bucket_metadata_operation_strategy_ready(
-                &state,
-                "GetBucketLifecycle",
-            )?;
-        }
-        if use_consensus_persisted_metadata {
-            let bucket_state =
-                bucket_metadata_state_from_consensus_index(&state, &bucket, "GetBucketLifecycle")?;
-            if !bucket_state.lifecycle_enabled {
-                return Err(S3Error::no_such_lifecycle_configuration(&bucket));
-            }
-            if !cluster_auth_token_configured(&state) {
-                return Err(S3Error::service_unavailable(
-                    "Distributed metadata strategy is not ready for bucket metadata operation 'GetBucketLifecycle' (consensus-index-peer-fan-in-auth-token-missing)",
-                ));
-            }
+    let rules =
+        if should_attempt_cluster_bucket_metadata_fan_in(&state, &topology, internal_local_only) {
             let fan_in = fetch_cluster_bucket_lifecycle_fan_in(&state, &topology, &bucket).await?;
             ensure_distributed_bucket_metadata_operation_strategy_ready_for_responders(
                 &state,
@@ -2059,17 +2154,40 @@ pub async fn get_bucket_lifecycle(
                 fan_in.lifecycle_states.as_slice(),
             )?
         } else {
-            let local_rules = state
-                .storage
-                .get_lifecycle_rules(&bucket)
-                .await
-                .map_err(|e| map_bucket_storage_err(&bucket, e))?;
-            if local_rules.is_empty() {
-                return Err(S3Error::no_such_lifecycle_configuration(&bucket));
+            let use_consensus_persisted_metadata =
+                should_use_consensus_index_persisted_metadata_state(
+                    &state,
+                    &topology,
+                    internal_local_only,
+                );
+            if !internal_local_only && !use_consensus_persisted_metadata {
+                ensure_distributed_bucket_metadata_operation_strategy_ready(
+                    &state,
+                    "GetBucketLifecycle",
+                )?;
             }
-            local_rules
-        }
-    };
+            if use_consensus_persisted_metadata {
+                let bucket_state = bucket_metadata_state_from_consensus_index(
+                    &state,
+                    &bucket,
+                    "GetBucketLifecycle",
+                )?;
+                if !bucket_state.lifecycle_enabled {
+                    return Err(S3Error::no_such_lifecycle_configuration(&bucket));
+                }
+                bucket_lifecycle_rules_from_consensus_index(&state, &bucket, "GetBucketLifecycle")?
+            } else {
+                let local_rules = state
+                    .storage
+                    .get_lifecycle_rules(&bucket)
+                    .await
+                    .map_err(|e| map_bucket_storage_err(&bucket, e))?;
+                if local_rules.is_empty() {
+                    return Err(S3Error::no_such_lifecycle_configuration(&bucket));
+                }
+                local_rules
+            }
+        };
 
     let result = serialize_lifecycle_rules(rules);
     let mut response = xml_response(StatusCode::OK, &result)?;

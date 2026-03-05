@@ -3,8 +3,9 @@ use base64::Engine;
 use hmac::Mac;
 use maxio::config::WriteDurabilityMode;
 use maxio::metadata::{
-    BucketMetadataState, BucketMetadataTombstoneState, ClusterMetadataListingStrategy,
-    ObjectMetadataState, PersistedMetadataState, persist_persisted_metadata_state,
+    BucketLifecycleConfigurationState, BucketMetadataState, BucketMetadataTombstoneState,
+    ClusterMetadataListingStrategy, ObjectMetadataState, PersistedMetadataState,
+    persist_persisted_metadata_state,
 };
 use maxio::storage::placement::{
     PendingReplicationQueue, ReplicationMutationOperation, membership_view_id_with_self,
@@ -4704,6 +4705,57 @@ async fn test_get_bucket_lifecycle_consensus_index_uses_persisted_metadata_state
 }
 
 #[tokio::test]
+async fn test_get_bucket_lifecycle_consensus_index_uses_persisted_lifecycle_configuration_payload()
+{
+    let tmp = TempDir::new().unwrap();
+    let data_dir = tmp.path().to_string_lossy().to_string();
+    let view_id = distributed_local_consensus_membership_view_id();
+    let bucket = "lifecycle-consensus-persisted-payload";
+    let lifecycle_xml = r#"
+<LifecycleConfiguration>
+  <Rule>
+    <ID>persisted-expiration</ID>
+    <Status>Enabled</Status>
+    <Filter>
+      <Prefix>logs/</Prefix>
+    </Filter>
+    <Expiration>
+      <Days>3</Days>
+    </Expiration>
+  </Rule>
+</LifecycleConfiguration>
+"#;
+    seed_consensus_metadata_bucket_state_with_lifecycle_configurations(
+        &data_dir,
+        view_id.as_str(),
+        &[BucketMetadataState {
+            bucket: bucket.to_string(),
+            versioning_enabled: false,
+            lifecycle_enabled: true,
+        }],
+        &[],
+        &[BucketLifecycleConfigurationState {
+            bucket: bucket.to_string(),
+            configuration_xml: lifecycle_xml.to_string(),
+            updated_at_unix_ms: 1,
+        }],
+    );
+
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = DISTRIBUTED_LOCAL_NODE.to_string();
+    config.cluster_peers = vec![DISTRIBUTED_PEER_NODE.to_string()];
+    config.metadata_listing_strategy = ClusterMetadataListingStrategy::ConsensusIndex;
+
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let get = s3_request("GET", &format!("{}/{}?lifecycle", base_url, bucket), vec![]).await;
+    let status = get.status();
+    let body = get.text().await.unwrap();
+    assert_eq!(status, 200, "unexpected body: {body}");
+    assert!(body.contains("<ID>persisted-expiration</ID>"));
+}
+
+#[tokio::test]
 async fn test_get_bucket_lifecycle_consensus_index_persists_local_mutation_state() {
     let tmp = TempDir::new().unwrap();
     let data_dir = tmp.path().to_string_lossy().to_string();
@@ -4749,13 +4801,10 @@ async fn test_get_bucket_lifecycle_consensus_index_persists_local_mutation_state
         vec![],
     )
     .await;
-    assert_eq!(get.status(), 503);
+    let status = get.status();
     let body = get.text().await.unwrap();
-    assert_eq!(
-        extract_xml_tag(&body, "Code").as_deref(),
-        Some("ServiceUnavailable")
-    );
-    assert!(body.contains("consensus-index-peer-fan-in-auth-token-missing"));
+    assert_eq!(status, 200, "unexpected body: {body}");
+    assert!(body.contains("<ID>expire-local</ID>"));
 }
 
 #[tokio::test]
@@ -4792,7 +4841,7 @@ async fn test_get_bucket_lifecycle_consensus_index_returns_service_unavailable_w
         extract_xml_tag(&body, "Code").as_deref(),
         Some("ServiceUnavailable")
     );
-    assert!(body.contains("consensus-index-peer-fan-in-auth-token-missing"));
+    assert!(body.contains("missing persisted lifecycle configuration"));
 }
 
 #[tokio::test]
