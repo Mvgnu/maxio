@@ -323,6 +323,27 @@ pub(super) async fn cluster_join_handler(
         Some(raw) => Some(raw.trim().to_string()),
         None => None,
     };
+    if is_propagation_request
+        && membership_update_preconditions_missing(
+            expected_membership_view_id.as_deref(),
+            request.expected_placement_epoch,
+        )
+    {
+        let payload = ClusterMembershipUpdatePayload {
+            status: "rejected".to_string(),
+            reason: MEMBERSHIP_UPDATE_REASON_PRECONDITION_FAILED.to_string(),
+            auth_reason: None,
+            mode: forwarded_auth.mode.as_str().to_string(),
+            updated: false,
+            cluster_id: topology.cluster_id,
+            local_node_id: topology.node_id,
+            cluster_peers: topology.cluster_peers,
+            membership_view_id: topology.membership_view_id,
+            placement_epoch: topology.placement_epoch,
+            membership_last_update_unix_ms: topology.membership_status.last_update_unix_ms,
+        };
+        return cluster_join_response(&state, StatusCode::CONFLICT, payload);
+    }
     if membership_update_precondition_failed(
         &topology,
         expected_membership_view_id.as_deref(),

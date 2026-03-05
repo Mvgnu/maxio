@@ -3618,6 +3618,47 @@ async fn test_cluster_join_endpoint_rejects_stale_precondition() {
 }
 
 #[tokio::test]
+async fn test_cluster_join_endpoint_rejects_propagated_request_without_preconditions() {
+    let tmp = tempfile::TempDir::new().unwrap();
+    let data_dir = tmp.path().to_str().unwrap().to_string();
+    let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.cluster_auth_token = Some("shared-secret".to_string());
+    config.cluster_peers = vec!["127.0.0.1:30526".to_string()];
+    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+
+    let initial_health = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(initial_health.status(), 200);
+    let initial_health_body: serde_json::Value = initial_health.json().await.unwrap();
+    let cluster_id = initial_health_body["clusterId"]
+        .as_str()
+        .expect("clusterId should be present")
+        .to_string();
+
+    let rejected = client()
+        .post(format!("{}/internal/cluster/join", base_url))
+        .header("x-maxio-join-cluster-id", cluster_id.as_str())
+        .header("x-maxio-join-node-id", "127.0.0.1:30526")
+        .header("x-maxio-forwarded-by", "127.0.0.1:30526")
+        .header("x-maxio-join-unix-ms", unix_ms_now_string())
+        .header("x-maxio-join-nonce", "join-apply-propagated-missing-preconditions")
+        .header("x-maxio-internal-auth-token", "shared-secret")
+        .header("x-maxio-internal-membership-propagated", "1")
+        .json(&json!({}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(rejected.status(), 409);
+    let rejected_body: serde_json::Value = rejected.json().await.unwrap();
+    assert_eq!(rejected_body["status"], "rejected");
+    assert_eq!(rejected_body["reason"], "precondition_failed");
+    assert_eq!(rejected_body["updated"], false);
+}
+
+#[tokio::test]
 async fn test_cluster_join_endpoint_rejects_forwarded_sender_not_in_allowlist() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();

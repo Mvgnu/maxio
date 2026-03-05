@@ -239,6 +239,64 @@ fn should_persist_consensus_object_metadata(
         && state.metadata_listing_strategy == ClusterMetadataListingStrategy::ConsensusIndex
 }
 
+fn object_metadata_persist_error_reason(error: &PersistedObjectMetadataOperationError) -> String {
+    match error {
+        PersistedObjectMetadataOperationError::InvalidExpectedViewId => {
+            "invalid expected metadata view id".to_string()
+        }
+        PersistedObjectMetadataOperationError::StateLoad(io_error) => {
+            format!("failed to load persisted metadata state: {io_error}")
+        }
+        PersistedObjectMetadataOperationError::StatePersist(io_error) => {
+            format!("failed to persist metadata state: {io_error}")
+        }
+        PersistedObjectMetadataOperationError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        } => format!(
+            "persisted metadata view mismatch (expected='{expected_view_id}', persisted='{persisted_view_id}')"
+        ),
+        PersistedObjectMetadataOperationError::InvalidPersistedState(reason) => {
+            format!(
+                "invalid persisted metadata state ({})",
+                reason.canonical_reason()
+            )
+        }
+        PersistedObjectMetadataOperationError::Operation(reason) => reason.as_str().to_string(),
+    }
+}
+
+fn object_version_metadata_persist_error_reason(
+    error: &PersistedObjectVersionMetadataOperationError,
+) -> String {
+    match error {
+        PersistedObjectVersionMetadataOperationError::InvalidExpectedViewId => {
+            "invalid expected metadata view id".to_string()
+        }
+        PersistedObjectVersionMetadataOperationError::StateLoad(io_error) => {
+            format!("failed to load persisted metadata state: {io_error}")
+        }
+        PersistedObjectVersionMetadataOperationError::StatePersist(io_error) => {
+            format!("failed to persist metadata state: {io_error}")
+        }
+        PersistedObjectVersionMetadataOperationError::ViewIdMismatch {
+            expected_view_id,
+            persisted_view_id,
+        } => format!(
+            "persisted metadata view mismatch (expected='{expected_view_id}', persisted='{persisted_view_id}')"
+        ),
+        PersistedObjectVersionMetadataOperationError::InvalidPersistedState(reason) => {
+            format!(
+                "invalid persisted metadata state ({})",
+                reason.canonical_reason()
+            )
+        }
+        PersistedObjectVersionMetadataOperationError::Operation(reason) => {
+            reason.as_str().to_string()
+        }
+    }
+}
+
 fn persist_object_metadata_operation(
     state: &AppState,
     placement: &PlacementViewState,
@@ -271,27 +329,7 @@ fn persist_object_metadata_operation(
     apply_result.map(|_| ()).map_err(|error| {
         S3Error::service_unavailable(&format!(
             "Object metadata operation '{operation_name}' cannot update persisted metadata state: {}",
-            match error {
-                PersistedObjectMetadataOperationError::InvalidExpectedViewId => {
-                    "invalid expected metadata view id".to_string()
-                }
-                PersistedObjectMetadataOperationError::StateLoad(io_error) => {
-                    format!("failed to load persisted metadata state: {io_error}")
-                }
-                PersistedObjectMetadataOperationError::StatePersist(io_error) => {
-                    format!("failed to persist metadata state: {io_error}")
-                }
-                PersistedObjectMetadataOperationError::ViewIdMismatch {
-                    expected_view_id,
-                    persisted_view_id,
-                } => format!(
-                    "persisted metadata view mismatch (expected='{expected_view_id}', persisted='{persisted_view_id}')"
-                ),
-                PersistedObjectMetadataOperationError::InvalidPersistedState(reason) => {
-                    format!("invalid persisted metadata state ({reason:?})")
-                }
-                PersistedObjectMetadataOperationError::Operation(reason) => reason.as_str().to_string(),
-            }
+            object_metadata_persist_error_reason(&error)
         ))
     })
 }
@@ -328,29 +366,7 @@ fn persist_object_version_metadata_operation(
     apply_result.map(|_| ()).map_err(|error| {
         S3Error::service_unavailable(&format!(
             "Object-version metadata operation '{operation_name}' cannot update persisted metadata state: {}",
-            match error {
-                PersistedObjectVersionMetadataOperationError::InvalidExpectedViewId => {
-                    "invalid expected metadata view id".to_string()
-                }
-                PersistedObjectVersionMetadataOperationError::StateLoad(io_error) => {
-                    format!("failed to load persisted metadata state: {io_error}")
-                }
-                PersistedObjectVersionMetadataOperationError::StatePersist(io_error) => {
-                    format!("failed to persist metadata state: {io_error}")
-                }
-                PersistedObjectVersionMetadataOperationError::ViewIdMismatch {
-                    expected_view_id,
-                    persisted_view_id,
-                } => format!(
-                    "persisted metadata view mismatch (expected='{expected_view_id}', persisted='{persisted_view_id}')"
-                ),
-                PersistedObjectVersionMetadataOperationError::InvalidPersistedState(reason) => {
-                    format!("invalid persisted metadata state ({reason:?})")
-                }
-                PersistedObjectVersionMetadataOperationError::Operation(reason) => {
-                    reason.as_str().to_string()
-                }
-            }
+            object_version_metadata_persist_error_reason(&error)
         ))
     })
 }
@@ -2102,6 +2118,7 @@ pub async fn delete_objects(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::metadata::PersistedMetadataQueryableStateError;
 
     #[test]
     fn forwarded_delete_objects_outcome_maps_auth_rejects_to_service_unavailable() {
@@ -2171,5 +2188,35 @@ mod tests {
                 panic!("bad-gateway forwarded delete should map to error");
             }
         }
+    }
+
+    #[test]
+    fn object_metadata_persist_error_reason_uses_canonical_reason_for_invalid_state() {
+        let reason = object_metadata_persist_error_reason(
+            &PersistedObjectMetadataOperationError::InvalidPersistedState(
+                PersistedMetadataQueryableStateError::DuplicateObjectState {
+                    bucket: "bucket".to_string(),
+                    key: "key".to_string(),
+                },
+            ),
+        );
+        assert_eq!(reason, "invalid persisted metadata state (duplicate-object-state)");
+    }
+
+    #[test]
+    fn object_version_metadata_persist_error_reason_uses_canonical_reason_for_invalid_state() {
+        let reason = object_version_metadata_persist_error_reason(
+            &PersistedObjectVersionMetadataOperationError::InvalidPersistedState(
+                PersistedMetadataQueryableStateError::DuplicateObjectVersionState {
+                    bucket: "bucket".to_string(),
+                    key: "key".to_string(),
+                    version_id: "v1".to_string(),
+                },
+            ),
+        );
+        assert_eq!(
+            reason,
+            "invalid persisted metadata state (duplicate-object-version-state)"
+        );
     }
 }

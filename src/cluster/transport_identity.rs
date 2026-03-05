@@ -154,8 +154,10 @@ pub enum PeerTransportPeerAttestationError {
     CertificatePemInvalid,
     KeyPathUnreadable,
     KeyPemInvalid,
+    KeyPemEncryptedUnsupported,
     TrustStorePathUnreadable,
     TrustStorePemInvalid,
+    TrustStoreContainsPrivateKeyPem,
     CertificateValidityWindowInvalid,
     PeerConnectFailed,
     TlsHandshakeFailed,
@@ -177,8 +179,10 @@ impl PeerTransportPeerAttestationError {
             Self::CertificatePemInvalid => "certificate_pem_invalid",
             Self::KeyPathUnreadable => "key_path_unreadable",
             Self::KeyPemInvalid => "key_pem_invalid",
+            Self::KeyPemEncryptedUnsupported => "key_pem_encrypted_unsupported",
             Self::TrustStorePathUnreadable => "trust_store_path_unreadable",
             Self::TrustStorePemInvalid => "trust_store_pem_invalid",
+            Self::TrustStoreContainsPrivateKeyPem => "trust_store_contains_private_key_pem",
             Self::CertificateValidityWindowInvalid => "certificate_validity_window_invalid",
             Self::PeerConnectFailed => "peer_connect_failed",
             Self::TlsHandshakeFailed => "tls_handshake_failed",
@@ -812,14 +816,19 @@ pub fn attest_peer_transport_identity_with_mtls_with_policy(
 
     let key_bytes =
         fs::read(key_path).map_err(|_| PeerTransportPeerAttestationError::KeyPathUnreadable)?;
+    if contains_valid_pem_block(key_bytes.as_slice(), "ENCRYPTED PRIVATE KEY") {
+        return Err(PeerTransportPeerAttestationError::KeyPemEncryptedUnsupported);
+    }
     let key = PKey::private_key_from_pem(key_bytes.as_slice())
         .map_err(|_| PeerTransportPeerAttestationError::KeyPemInvalid)?;
 
-    if fs::read(trust_store_path)
-        .map_err(|_| PeerTransportPeerAttestationError::TrustStorePathUnreadable)?
-        .is_empty()
-    {
+    let trust_store_bytes =
+        fs::read(trust_store_path).map_err(|_| PeerTransportPeerAttestationError::TrustStorePathUnreadable)?;
+    if trust_store_bytes.is_empty() {
         return Err(PeerTransportPeerAttestationError::TrustStorePemInvalid);
+    }
+    if contains_any_private_key_pem_block(trust_store_bytes.as_slice()) {
+        return Err(PeerTransportPeerAttestationError::TrustStoreContainsPrivateKeyPem);
     }
 
     let mut builder = SslConnector::builder(SslMethod::tls_client())
@@ -2126,6 +2135,63 @@ mod tests {
         assert_eq!(
             result,
             Err(PeerTransportPeerAttestationError::InvalidExpectedNodeIdentity)
+        );
+    }
+
+    #[test]
+    fn peer_attestation_rejects_encrypted_private_key_as_unsupported() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, _, trust_store_path, _) = write_valid_identity_fixture(&dir);
+        let key_path = dir.path().join("peer.key");
+        fs::write(
+            &key_path,
+            "-----BEGIN ENCRYPTED PRIVATE KEY-----\n\
+             dGVzdA==\n\
+             -----END ENCRYPTED PRIVATE KEY-----\n",
+        )
+        .expect("write key");
+
+        let result = attest_peer_transport_identity_with_mtls(
+            "127.0.0.1:9000",
+            "maxio-peer:9000",
+            cert_path.as_str(),
+            key_path.to_string_lossy().as_ref(),
+            trust_store_path.as_str(),
+            Duration::from_secs(1),
+        );
+        assert_eq!(
+            result,
+            Err(PeerTransportPeerAttestationError::KeyPemEncryptedUnsupported)
+        );
+    }
+
+    #[test]
+    fn peer_attestation_rejects_trust_store_with_private_key_material() {
+        let dir = tempdir().expect("tempdir");
+        let (cert_path, key_path, _, _) = write_valid_identity_fixture(&dir);
+        let trust_store_path = dir.path().join("ca.pem");
+        fs::write(
+            &trust_store_path,
+            "-----BEGIN CERTIFICATE-----\n\
+             dGVzdA==\n\
+             -----END CERTIFICATE-----\n\
+             -----BEGIN PRIVATE KEY-----\n\
+             dGVzdA==\n\
+             -----END PRIVATE KEY-----\n",
+        )
+        .expect("write ca");
+
+        let result = attest_peer_transport_identity_with_mtls(
+            "127.0.0.1:9000",
+            "maxio-peer:9000",
+            cert_path.as_str(),
+            key_path.as_str(),
+            trust_store_path.to_string_lossy().as_ref(),
+            Duration::from_secs(1),
+        );
+        assert_eq!(
+            result,
+            Err(PeerTransportPeerAttestationError::TrustStoreContainsPrivateKeyPem)
         );
     }
 
