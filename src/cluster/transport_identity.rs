@@ -91,6 +91,29 @@ pub struct PeerTransportIdentityStatus {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerTransportEnforcementMode {
+    Compatibility,
+    StrictMtlsIdentityBound,
+}
+
+impl PeerTransportEnforcementMode {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Compatibility => "compatibility",
+            Self::StrictMtlsIdentityBound => "strict_mtls_identity_bound",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerTransportEnforcementAssessment {
+    pub mode: PeerTransportEnforcementMode,
+    pub ready: bool,
+    pub reason: PeerTransportIdentityReadinessReason,
+    pub warning: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct PeerCertificatePolicy<'a> {
     pub sha256_pin: Option<&'a str>,
@@ -459,6 +482,78 @@ pub fn probe_peer_transport_identity_with_cert_sha256_pin_and_revocations(
             "mTLS transport files are configured/readable, but certificate fingerprint pinning is not configured; cryptographic peer identity binding is not enforced yet."
                 .to_string(),
         ),
+    }
+}
+
+pub fn assess_peer_transport_enforcement(
+    status: &PeerTransportIdentityStatus,
+    mode: PeerTransportEnforcementMode,
+) -> PeerTransportEnforcementAssessment {
+    match mode {
+        PeerTransportEnforcementMode::Compatibility => {
+            if status.mode == PeerTransportIdentityMode::None {
+                return PeerTransportEnforcementAssessment {
+                    mode,
+                    ready: true,
+                    reason: PeerTransportIdentityReadinessReason::NotConfigured,
+                    warning: Some(
+                        "peer transport identity is not configured; compatibility mode permits non-identity-bound internal transport.".to_string(),
+                    ),
+                };
+            }
+
+            PeerTransportEnforcementAssessment {
+                mode,
+                ready: status.transport_ready,
+                reason: status.reason,
+                warning: status.warning.clone(),
+            }
+        }
+        PeerTransportEnforcementMode::StrictMtlsIdentityBound => {
+            if status.mode == PeerTransportIdentityMode::None {
+                return PeerTransportEnforcementAssessment {
+                    mode,
+                    ready: false,
+                    reason: PeerTransportIdentityReadinessReason::NotConfigured,
+                    warning: Some(
+                        "strict mTLS identity-bound enforcement requires peer transport certificate, key, and trust-store configuration.".to_string(),
+                    ),
+                };
+            }
+
+            if !status.transport_ready {
+                return PeerTransportEnforcementAssessment {
+                    mode,
+                    ready: false,
+                    reason: status.reason,
+                    warning: status.warning.clone(),
+                };
+            }
+
+            if !status.identity_bound {
+                let reason = if status.reason == PeerTransportIdentityReadinessReason::Ready {
+                    PeerTransportIdentityReadinessReason::NodeIdentityBindingPinRequired
+                } else {
+                    status.reason
+                };
+                return PeerTransportEnforcementAssessment {
+                    mode,
+                    ready: false,
+                    reason,
+                    warning: Some(
+                        "strict mTLS identity-bound enforcement requires certificate fingerprint pinning and node-identity certificate binding."
+                            .to_string(),
+                    ),
+                };
+            }
+
+            PeerTransportEnforcementAssessment {
+                mode,
+                ready: true,
+                reason: PeerTransportIdentityReadinessReason::Ready,
+                warning: None,
+            }
+        }
     }
 }
 
@@ -1028,10 +1123,11 @@ fn ensure_certificate_valid_at_reference(
 #[cfg(test)]
 mod tests {
     use super::{
-        PeerCertificatePolicy,
+        PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityStatus,
         PeerTransportIdentityMode, PeerTransportIdentityReadinessReason,
         PeerTransportPeerAttestationError, attest_peer_transport_identity_with_mtls,
         attest_peer_transport_identity_with_mtls_and_cert_sha256_pin,
+        assess_peer_transport_enforcement,
         attest_peer_transport_identity_with_mtls_with_policy,
         ensure_certificate_valid_at_reference, probe_peer_transport_identity,
         probe_peer_transport_identity_with_cert_sha256_pin,
@@ -1133,6 +1229,89 @@ mod tests {
             trust_store_path.to_string_lossy().to_string(),
             cert_sha256_pin,
         )
+    }
+
+    #[test]
+    fn transport_enforcement_compatibility_allows_unconfigured_identity() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::None,
+            transport_ready: false,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::NotConfigured,
+            warning: None,
+        };
+
+        let assessment =
+            assess_peer_transport_enforcement(&status, PeerTransportEnforcementMode::Compatibility);
+        assert!(assessment.ready);
+        assert_eq!(
+            assessment.reason,
+            PeerTransportIdentityReadinessReason::NotConfigured
+        );
+        assert!(assessment.warning.is_some());
+    }
+
+    #[test]
+    fn transport_enforcement_strict_rejects_unconfigured_identity() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::None,
+            transport_ready: false,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::NotConfigured,
+            warning: None,
+        };
+
+        let assessment = assess_peer_transport_enforcement(
+            &status,
+            PeerTransportEnforcementMode::StrictMtlsIdentityBound,
+        );
+        assert!(!assessment.ready);
+        assert_eq!(
+            assessment.reason,
+            PeerTransportIdentityReadinessReason::NotConfigured
+        );
+        assert!(assessment.warning.is_some());
+    }
+
+    #[test]
+    fn transport_enforcement_strict_requires_identity_binding_when_transport_is_ready() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::MtlsPath,
+            transport_ready: true,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::Ready,
+            warning: Some("pin not configured".to_string()),
+        };
+
+        let assessment = assess_peer_transport_enforcement(
+            &status,
+            PeerTransportEnforcementMode::StrictMtlsIdentityBound,
+        );
+        assert!(!assessment.ready);
+        assert_eq!(
+            assessment.reason,
+            PeerTransportIdentityReadinessReason::NodeIdentityBindingPinRequired
+        );
+        assert!(assessment.warning.is_some());
+    }
+
+    #[test]
+    fn transport_enforcement_strict_accepts_identity_bound_ready_status() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::MtlsPath,
+            transport_ready: true,
+            identity_bound: true,
+            reason: PeerTransportIdentityReadinessReason::Ready,
+            warning: None,
+        };
+
+        let assessment = assess_peer_transport_enforcement(
+            &status,
+            PeerTransportEnforcementMode::StrictMtlsIdentityBound,
+        );
+        assert!(assessment.ready);
+        assert_eq!(assessment.reason, PeerTransportIdentityReadinessReason::Ready);
+        assert!(assessment.warning.is_none());
     }
 
     fn spawn_tls_server(cert_path: &str, key_path: &str) -> (String, thread::JoinHandle<()>) {
