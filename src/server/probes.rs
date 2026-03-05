@@ -1036,7 +1036,7 @@ pub(super) fn cluster_peer_auth_transport_policy_assessment(
     } else {
         PeerTransportEnforcementMode::Compatibility
     };
-    let mut assessment = assess_peer_transport_policy(
+    assess_peer_transport_policy_with_context(
         &PeerTransportIdentityStatus {
             mode: auth_status.transport_identity,
             transport_ready: auth_status.transport_ready,
@@ -1045,11 +1045,10 @@ pub(super) fn cluster_peer_auth_transport_policy_assessment(
             warning: None,
         },
         enforcement_mode,
-    );
-    if !topology.is_distributed() || !auth_status.configured {
-        assessment.required = false;
-    }
-    assessment
+        topology.is_distributed(),
+        auth_status.configured,
+        topology.cluster_peer_count() > 0,
+    )
 }
 
 pub(super) fn probe_cluster_join_auth_status(

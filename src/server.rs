@@ -57,7 +57,7 @@ use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::cluster::transport_identity::{
     PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityMode,
     PeerTransportIdentityReadinessReason, PeerTransportIdentityStatus,
-    PeerTransportPolicyAssessment, assess_peer_transport_policy,
+    PeerTransportPolicyAssessment, assess_peer_transport_policy_with_context,
     attest_peer_transport_identity_with_mtls_with_policy, peer_transport_policy_reject_reason,
     probe_peer_transport_identity_with_certificate_policy_and_node_id_binding,
 };
@@ -3114,6 +3114,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn cluster_peer_auth_transport_required_not_required_without_cluster_peers() {
+        let mut config = test_config();
+        config.cluster_auth_token = Some("shared-secret".to_string());
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+        let mut topology = distributed_topology_fixture();
+        topology.cluster_peers.clear();
+        topology.membership_nodes = vec!["node-a:9000".to_string()];
+        let auth_status = configured_cluster_auth_status(
+            PeerTransportIdentityMode::MtlsPath,
+            false,
+            PeerTransportIdentityReadinessReason::CertificatePathUnreadable,
+        );
+
+        assert!(
+            !cluster_peer_auth_transport_policy_assessment(&config, &topology, &auth_status)
+                .required
+        );
+    }
+
     #[tokio::test]
     async fn build_public_router_excludes_internal_cluster_routes() {
         let temp = tempfile::tempdir().expect("temp dir should create");
@@ -4058,74 +4078,68 @@ mod tests {
 
     #[test]
     fn build_peer_http_transport_uses_https_when_mtls_identity_is_configured() {
+        fn write_self_signed_identity(
+            cert_path: &std::path::Path,
+            key_path: &std::path::Path,
+        ) -> Result<(), String> {
+            use openssl::asn1::Asn1Time;
+            use openssl::bn::{BigNum, MsbOption};
+            use openssl::hash::MessageDigest;
+            use openssl::pkey::PKey;
+            use openssl::rsa::Rsa;
+            use openssl::x509::{X509, X509NameBuilder};
+
+            let rsa = Rsa::generate(2048).map_err(|err| err.to_string())?;
+            let key = PKey::from_rsa(rsa).map_err(|err| err.to_string())?;
+            let mut name_builder = X509NameBuilder::new().map_err(|err| err.to_string())?;
+            name_builder
+                .append_entry_by_text("CN", "maxio-peer")
+                .map_err(|err| err.to_string())?;
+            let name = name_builder.build();
+
+            let mut serial = BigNum::new().map_err(|err| err.to_string())?;
+            serial
+                .rand(128, MsbOption::MAYBE_ZERO, false)
+                .map_err(|err| err.to_string())?;
+            let serial = serial.to_asn1_integer().map_err(|err| err.to_string())?;
+
+            let mut builder = X509::builder().map_err(|err| err.to_string())?;
+            builder.set_version(2).map_err(|err| err.to_string())?;
+            builder
+                .set_serial_number(&serial)
+                .map_err(|err| err.to_string())?;
+            builder.set_subject_name(&name).map_err(|err| err.to_string())?;
+            builder.set_issuer_name(&name).map_err(|err| err.to_string())?;
+            builder.set_pubkey(&key).map_err(|err| err.to_string())?;
+            let not_before = Asn1Time::days_from_now(0).map_err(|err| err.to_string())?;
+            let not_after = Asn1Time::days_from_now(3650).map_err(|err| err.to_string())?;
+            builder
+                .set_not_before(not_before.as_ref())
+                .map_err(|err| err.to_string())?;
+            builder
+                .set_not_after(not_after.as_ref())
+                .map_err(|err| err.to_string())?;
+            builder
+                .sign(&key, MessageDigest::sha256())
+                .map_err(|err| err.to_string())?;
+
+            let cert_pem = builder.build().to_pem().map_err(|err| err.to_string())?;
+            let key_pem = key
+                .private_key_to_pem_pkcs8()
+                .map_err(|err| err.to_string())?;
+            std::fs::write(cert_path, cert_pem).map_err(|err| err.to_string())?;
+            std::fs::write(key_path, key_pem).map_err(|err| err.to_string())?;
+            Ok(())
+        }
+
         let temp = tempfile::tempdir().expect("temp dir should create");
         let cert_path = temp.path().join("peer.crt");
         let key_path = temp.path().join("peer.key");
         let ca_path = temp.path().join("ca.pem");
-        let cert_pem_raw = "-----BEGIN CERTIFICATE-----\n\
-                        MIIDCzCCAfOgAwIBAgIUPOKbengZvjN7BnSjSz/oe2BLSbwwDQYJKoZIhvcNAQEL\n\
-                        BQAwFTETMBEGA1UEAwwKbWF4aW8tcGVlcjAeFw0yNjAzMDQwMzAzNDBaFw0yNjAz\n\
-                        MDUwMzAzNDBaMBUxEzARBgNVBAMMCm1heGlvLXBlZXIwggEiMA0GCSqGSIb3DQEB\n\
-                        AQUAA4IBDwAwggEKAoIBAQDf5rw0lS10aDNinDqYXdbMp/GdlYcCD4fJk4P3g9vL\n\
-                        HS16uRlcfYodqd1w+51m0G1bL+GlcDa1wU14JqZwH0sEWjA42K6+bG6CpX2DDzVS\n\
-                        zFmeYA+gf3ilQrePmNY3JnpBL/ECx3BYUtU+b7YX43/hNpg4SUOY4lHiuROU5Ww/\n\
-                        KrJYgdSdMV2bTWs3l/ST64Szh51GQ0VOcUuo0+GM3V/vfMvqrpiOFitvnVTma2b2\n\
-                        RehAXb5TSVggzmuT1hPWYYf8ApIdGkDQBtQgVbB5xNKxfJ1M7h8xnQ/Y/tnCQhiX\n\
-                        Od5zK0hgh0W8ZZrF2Ldxbc+VDFqhEXkOG5Hp8iFmkCfnAgMBAAGjUzBRMB0GA1Ud\n\
-                        DgQWBBT9/nYCZRDqrcC+tZugthzMo0B0pTAfBgNVHSMEGDAWgBT9/nYCZRDqrcC+\n\
-                        tZugthzMo0B0pTAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3DQEBCwUAA4IBAQAd\n\
-                        xQfs11Igte6/B7IkIQW9ifMEW4qRdYuEoeIDUsyZ9II49A3zDMw/KZ8cVnQgF8WE\n\
-                        3N3x6lB5yaJOVTyLRQYO9LbPjos2m3clLfQxIPRPv8R+udoNPrIUtihCHSNKXPP4\n\
-                        GEEt5qzQAeUBGASPR/BjvNWa2fu3UvHdHtOuq3Ys17su2eT45+eCPuQ5ZcDQmeaE\n\
-                        wJS1LCaQIi3qw0U1cQkGhNez/sXjDldLKk7zpO9iVjlOSNwxOyF+Rbov6YWqOzZV\n\
-                        rXiiU6jNPRKFI6Yn8c5NTlvuslsgBs6IeQnfeTKUFtt0RcrCPbT/o5mrIijxXdto\n\
-                        hq/amvoK6ySEVmQ7bEYj\n\
-                        -----END CERTIFICATE-----\n";
-        let key_pem_raw = "-----BEGIN PRIVATE KEY-----\n\
-                       MIIEvgIBADANBgkqhkiG9w0BAQEFAASCBKgwggSkAgEAAoIBAQDf5rw0lS10aDNi\n\
-                       nDqYXdbMp/GdlYcCD4fJk4P3g9vLHS16uRlcfYodqd1w+51m0G1bL+GlcDa1wU14\n\
-                       JqZwH0sEWjA42K6+bG6CpX2DDzVSzFmeYA+gf3ilQrePmNY3JnpBL/ECx3BYUtU+\n\
-                       b7YX43/hNpg4SUOY4lHiuROU5Ww/KrJYgdSdMV2bTWs3l/ST64Szh51GQ0VOcUuo\n\
-                       0+GM3V/vfMvqrpiOFitvnVTma2b2RehAXb5TSVggzmuT1hPWYYf8ApIdGkDQBtQg\n\
-                       VbB5xNKxfJ1M7h8xnQ/Y/tnCQhiXOd5zK0hgh0W8ZZrF2Ldxbc+VDFqhEXkOG5Hp\n\
-                       8iFmkCfnAgMBAAECggEAM3vNS/P/azRomGSfDpkJQq7dXmRbEmy6xu2OGzRtLkOr\n\
-                       yPvV6pANWavM+OVKeLE1bBHS+2UVl25230lX3RE9ASexzeh5Kd0p/g2Kkj/FfZ/y\n\
-                       fXnOLhQRjEKOjczReQX2d5XL/90XJqAJW515S/3qUkFo+AxUqEtmE9GFwKeOX+mF\n\
-                       y38tcWD3tGc31ib2fAAftUNkiL+fRuhsnfF3KKnjvWoKwYcs/CGxL5Cs7IYYPsMC\n\
-                       z84gzwvD/1FYR/Ocxn8o/4av2VKQ1vjHexktI3P82KytcnapAyoJ742kL5YijHoY\n\
-                       N9fCA4rHuw2ey4HNjE13S/bvXmOqvqhHRjtKTUMnZQKBgQD16NpcxOaeJbQMKLX2\n\
-                       ocOnLLjwGu/O6HbZsifkCWt4yZmH+6LqGrPEgUEKOw+WgWD7pCu51zk99AGcttxg\n\
-                       rGUYuu1/a605WDOgE3sfQLBVyXoN2Yj4Go+m+Q9vfEtSjQtWJnZtgIfc01NNeUyU\n\
-                       NNkx0R0ydEIKSrGokcVicZPBrQKBgQDpFrJ8YTU7MX7mZ0QahTFxaJ42l0X5P2DU\n\
-                       xrjQgG3Cbo60dfcTKJmzcu/XO5pihYENAmEDRFuuUSpZvkEluG5hop2SyDd4zXWT\n\
-                       M6soin4fV6Vcw8nvJKirXTHRJgM9jn+fAU5K6fken/u8bG6g7cGU6nNRTCCBYpco\n\
-                       +yxSFrmKYwKBgQD0ETaZmLwj/tvirY1cylU8WYD8nl+hhsxfaRl6lXbbnYwKkVCy\n\
-                       9emygW8iTlg8UxEE8X6MpvajbMkk18GHGdQFZZJPQ3ncTpR+rpcm/7eEjcHceSoe\n\
-                       xY4KdWxChKTlvCOiT+5+5HD0VbJ6VIgTGRjw/tHxv73EJTqLSpMUEBJMyQKBgQDo\n\
-                       AtGzAMeNnhzklpGxnDa03h/t0vGxwaZO5Wd9Evkt+gJOGsXO6jDj8FpP8WIhAyaL\n\
-                       nnyWVeq0PtJa9ge+1i/5O3aBbo3YzxpjZaDO/9u+su1EwxYz1leWC3PU7XN4SGk8\n\
-                       Cn62DuML2s8mpQARa9eutRgIKjCI2WwBPNLG+xvAZQKBgGoiOjNP3QVvI23xriPJ\n\
-                       kJS/EGdo5BMJ5iOBXDENbI+HYHdTwLjb7VGPE4PoPFAM4VQ2HgtCjec5DLP1/xOo\n\
-                       weiHVMpIPHJpcQSuSa9X7ji+7D4zwF/5bo350j99aySVI0DyIx2bYR4nGGTJOitw\n\
-                       yPgr8n4j1X1HMlM6ArjKekjY\n\
-                       -----END PRIVATE KEY-----\n";
-        let cert_pem = cert_pem_raw
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        let key_pem = key_pem_raw
-            .lines()
-            .map(str::trim)
-            .filter(|line| !line.is_empty())
-            .collect::<Vec<_>>()
-            .join("\n")
-            + "\n";
-        std::fs::write(&cert_path, cert_pem.as_bytes()).expect("cert fixture should write");
-        std::fs::write(&key_path, key_pem.as_bytes()).expect("key fixture should write");
-        std::fs::write(&ca_path, cert_pem.as_bytes()).expect("ca fixture should write");
+        write_self_signed_identity(cert_path.as_path(), key_path.as_path())
+            .expect("test fixture certificate/key should generate");
+        let cert_pem = std::fs::read(&cert_path).expect("cert fixture should read");
+        std::fs::write(&ca_path, cert_pem.as_slice()).expect("ca fixture should write");
 
         let mut config = test_config();
         config.cluster_peer_tls_cert_path = Some(

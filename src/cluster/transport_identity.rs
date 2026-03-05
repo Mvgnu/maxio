@@ -601,6 +601,20 @@ pub fn assess_peer_transport_policy(
     }
 }
 
+pub fn assess_peer_transport_policy_with_context(
+    status: &PeerTransportIdentityStatus,
+    mode: PeerTransportEnforcementMode,
+    is_distributed: bool,
+    auth_configured: bool,
+    has_cluster_peers: bool,
+) -> PeerTransportPolicyAssessment {
+    let mut assessment = assess_peer_transport_policy(status, mode);
+    if !is_distributed || !auth_configured || !has_cluster_peers {
+        assessment.required = false;
+    }
+    assessment
+}
+
 pub fn probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
     cert_path: Option<&str>,
     key_path: Option<&str>,
@@ -1190,7 +1204,8 @@ mod tests {
         PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityMode,
         PeerTransportIdentityReadinessReason, PeerTransportIdentityStatus,
         PeerTransportPeerAttestationError, assess_peer_transport_enforcement,
-        assess_peer_transport_policy, attest_peer_transport_identity_with_mtls,
+        assess_peer_transport_policy, assess_peer_transport_policy_with_context,
+        attest_peer_transport_identity_with_mtls,
         attest_peer_transport_identity_with_mtls_and_cert_sha256_pin,
         attest_peer_transport_identity_with_mtls_with_policy,
         ensure_certificate_valid_at_reference, peer_transport_policy_reject_reason,
@@ -1471,6 +1486,58 @@ mod tests {
 
         let assessment =
             assess_peer_transport_policy(&status, PeerTransportEnforcementMode::Compatibility);
+        assert!(assessment.required);
+        assert!(!assessment.is_ready());
+        assert_eq!(
+            assessment.gap(),
+            Some(PeerTransportIdentityReadinessReason::CertificatePathUnreadable)
+        );
+        assert_eq!(
+            peer_transport_policy_reject_reason(&assessment),
+            Some(PeerTransportIdentityReadinessReason::CertificatePathUnreadable)
+        );
+    }
+
+    #[test]
+    fn transport_policy_with_context_disables_requirement_without_cluster_peers() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::MtlsPath,
+            transport_ready: false,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::CertificatePathUnreadable,
+            warning: Some("missing cert".to_string()),
+        };
+
+        let assessment = assess_peer_transport_policy_with_context(
+            &status,
+            PeerTransportEnforcementMode::StrictMtlsIdentityBound,
+            true,
+            true,
+            false,
+        );
+        assert!(!assessment.required);
+        assert!(assessment.is_ready());
+        assert_eq!(assessment.gap(), None);
+        assert_eq!(peer_transport_policy_reject_reason(&assessment), None);
+    }
+
+    #[test]
+    fn transport_policy_with_context_enforces_strict_mode_for_distributed_shared_token_peers() {
+        let status = PeerTransportIdentityStatus {
+            mode: PeerTransportIdentityMode::MtlsPath,
+            transport_ready: false,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::CertificatePathUnreadable,
+            warning: Some("missing cert".to_string()),
+        };
+
+        let assessment = assess_peer_transport_policy_with_context(
+            &status,
+            PeerTransportEnforcementMode::StrictMtlsIdentityBound,
+            true,
+            true,
+            true,
+        );
         assert!(assessment.required);
         assert!(!assessment.is_ready());
         assert_eq!(
