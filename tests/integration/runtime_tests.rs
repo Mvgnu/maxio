@@ -1389,12 +1389,18 @@ async fn test_pending_replication_replay_worker_drops_terminal_replica_failure_w
         "terminal replay drop should acknowledge exactly one queued target"
     );
     assert_eq!(
-        metric_value(&metrics_body, "maxio_pending_replication_replay_skipped_total"),
+        metric_value(
+            &metrics_body,
+            "maxio_pending_replication_replay_skipped_total"
+        ),
         Some(1.0),
         "terminal replay drop should count one skipped replay candidate"
     );
     assert_eq!(
-        metric_value(&metrics_body, "maxio_pending_replication_replay_failed_total"),
+        metric_value(
+            &metrics_body,
+            "maxio_pending_replication_replay_failed_total"
+        ),
         Some(0.0),
         "terminal replay drop should not be recorded as retryable failure"
     );

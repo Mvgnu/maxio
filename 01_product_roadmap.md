@@ -292,6 +292,7 @@ Scorecard sync update (March 4, 2026):
     - `runtime_tests::test_cluster_membership_update_endpoint_does_not_queue_terminal_propagation_failure`
 - Locked by regression: `core_tests::test_delete_objects_batch_distributed_primary_write_strict_quorum_returns_service_unavailable_when_replica_unreachable` (wired into `scripts/domain_check.sh s3_api_surface`).
 - Cluster transport policy contracts now expose canonical required/ready/reason projection helpers (`PeerTransportPolicyAssessment::is_ready`, `PeerTransportPolicyAssessment::gap`, `peer_transport_policy_reject_reason`) to keep downstream runtime/S3/console gating aligned without duplicating conditional mapping logic.
+- S3 internal peer transport policy enforcement now evaluates active runtime peers (`state.active_cluster_peers`) instead of static startup peer config only, keeping strict mTLS requirement checks aligned with live distributed forwarding/fanout topology.
 
 ## Distributed Implementation Exit Targets (Execution-Aligned)
 

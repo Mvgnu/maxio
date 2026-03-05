@@ -21,16 +21,13 @@ struct ResolvedInternalPeerTransport {
     ca_path: Option<String>,
 }
 
-fn resolve_internal_peer_transport(
+fn resolve_internal_peer_transport_with_cluster_peer_presence(
     config: &Config,
+    has_cluster_peers: bool,
 ) -> Result<ResolvedInternalPeerTransport, S3Error> {
-    let has_configured_cluster_peers = config
-        .cluster_peers
-        .iter()
-        .any(|peer| !peer.trim().is_empty());
     let strict_transport_required = config.cluster_peer_transport_required()
         && config.cluster_auth_token().is_some()
-        && has_configured_cluster_peers;
+        && has_cluster_peers;
     let expected_node_id = config.cluster_auth_token().map(|_| config.node_id.as_str());
     let status = probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
         config.cluster_peer_tls_cert_path(),
@@ -79,7 +76,12 @@ fn resolve_internal_peer_transport(
 }
 
 pub(crate) fn internal_peer_transport_scheme(state: &AppState) -> Result<&'static str, S3Error> {
-    resolve_internal_peer_transport(state.config.as_ref()).map(|resolved| resolved.scheme)
+    let has_active_cluster_peers = !state.active_cluster_peers().is_empty();
+    resolve_internal_peer_transport_with_cluster_peer_presence(
+        state.config.as_ref(),
+        has_active_cluster_peers,
+    )
+    .map(|resolved| resolved.scheme)
 }
 
 pub(crate) fn build_internal_peer_http_client(
@@ -87,7 +89,11 @@ pub(crate) fn build_internal_peer_http_client(
     connect_timeout: Option<Duration>,
     timeout: Duration,
 ) -> Result<InternalPeerHttpClient, S3Error> {
-    let transport = resolve_internal_peer_transport(state.config.as_ref())?;
+    let has_active_cluster_peers = !state.active_cluster_peers().is_empty();
+    let transport = resolve_internal_peer_transport_with_cluster_peer_presence(
+        state.config.as_ref(),
+        has_active_cluster_peers,
+    )?;
 
     let mut builder = reqwest::Client::builder().timeout(timeout);
     if let Some(connect_timeout) = connect_timeout {
@@ -124,7 +130,11 @@ pub(crate) fn attest_internal_peer_target(
     target: &str,
     timeout: Duration,
 ) -> Result<(), S3Error> {
-    let transport = resolve_internal_peer_transport(state.config.as_ref())?;
+    let has_active_cluster_peers = !state.active_cluster_peers().is_empty();
+    let transport = resolve_internal_peer_transport_with_cluster_peer_presence(
+        state.config.as_ref(),
+        has_active_cluster_peers,
+    )?;
     if transport.scheme != "https" {
         return Ok(());
     }
@@ -198,7 +208,10 @@ fn load_internal_peer_client_identity(config: &Config) -> Result<reqwest::Identi
 
 #[cfg(test)]
 mod tests {
-    use super::{load_internal_peer_client_identity, resolve_internal_peer_transport};
+    use super::{
+        load_internal_peer_client_identity,
+        resolve_internal_peer_transport_with_cluster_peer_presence,
+    };
     use crate::config::{
         ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode,
     };
@@ -236,7 +249,14 @@ mod tests {
     #[test]
     fn resolve_internal_peer_transport_uses_http_when_mtls_is_not_configured() {
         let config = test_config();
-        let resolved = resolve_internal_peer_transport(&config).expect("transport should resolve");
+        let resolved = resolve_internal_peer_transport_with_cluster_peer_presence(
+            &config,
+            config
+                .cluster_peers
+                .iter()
+                .any(|peer| !peer.trim().is_empty()),
+        )
+        .expect("transport should resolve");
         assert_eq!(resolved.scheme, "http");
         assert!(resolved.ca_path.is_none());
     }
@@ -248,7 +268,25 @@ mod tests {
         config.cluster_peers = vec!["node-b.internal:9000".to_string()];
         config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
 
-        let err = resolve_internal_peer_transport(&config).expect_err("should fail closed");
+        let err = resolve_internal_peer_transport_with_cluster_peer_presence(
+            &config,
+            config
+                .cluster_peers
+                .iter()
+                .any(|peer| !peer.trim().is_empty()),
+        )
+        .expect_err("should fail closed");
+        assert!(err.message.contains("requires mTLS identity"));
+    }
+
+    #[test]
+    fn resolve_internal_peer_transport_rejects_missing_mtls_when_runtime_peers_exist() {
+        let mut config = test_config();
+        config.cluster_auth_token = Some("shared-secret".to_string());
+        config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
+
+        let err = resolve_internal_peer_transport_with_cluster_peer_presence(&config, true)
+            .expect_err("should fail closed");
         assert!(err.message.contains("requires mTLS identity"));
     }
 
@@ -259,7 +297,14 @@ mod tests {
         config.cluster_peer_tls_key_path = Some("/tmp/maxio-missing-key.pem".to_string());
         config.cluster_peer_tls_ca_path = Some("/tmp/maxio-missing-ca.pem".to_string());
 
-        let err = resolve_internal_peer_transport(&config).expect_err("should fail closed");
+        let err = resolve_internal_peer_transport_with_cluster_peer_presence(
+            &config,
+            config
+                .cluster_peers
+                .iter()
+                .any(|peer| !peer.trim().is_empty()),
+        )
+        .expect_err("should fail closed");
         assert!(err.message.contains("Internal peer transport is not ready"));
     }
 
@@ -298,7 +343,14 @@ mod tests {
         config.cluster_peer_tls_ca_path = Some(trust_store_path.to_string_lossy().to_string());
         config.cluster_peer_tls_cert_sha256 = None;
 
-        let err = resolve_internal_peer_transport(&config).expect_err("should fail closed");
+        let err = resolve_internal_peer_transport_with_cluster_peer_presence(
+            &config,
+            config
+                .cluster_peers
+                .iter()
+                .any(|peer| !peer.trim().is_empty()),
+        )
+        .expect_err("should fail closed");
         assert!(err.message.contains("Internal peer transport is not ready"));
         assert!(
             err.message.contains("node_identity_binding_pin_required")
