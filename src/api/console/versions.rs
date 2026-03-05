@@ -133,14 +133,14 @@ pub(super) async fn get_versioning(
         &topology,
         internal_local_only,
     );
-    if should_fan_in {
-        if let Some(resp) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+    if should_fan_in
+        && let Some(resp) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
             &state,
             &topology,
             internal_local_only,
-        ) {
-            return resp;
-        }
+        )
+    {
+        return resp;
     }
 
     let enabled = if should_fan_in {
@@ -168,12 +168,12 @@ pub(super) async fn get_versioning(
             Err(err) => return response::error(StatusCode::SERVICE_UNAVAILABLE, err),
         }
     } else {
-        if !internal_local_only && !use_consensus_bucket_metadata {
-            if let Some(err) =
+        if !internal_local_only
+            && !use_consensus_bucket_metadata
+            && let Some(err) =
                 storage::reject_unready_bucket_metadata_operation(&state, "GetBucketVersioning")
-            {
-                return err;
-            }
+        {
+            return err;
         }
         if use_consensus_bucket_metadata {
             match storage::consensus_bucket_metadata_state_for_bucket(
@@ -447,21 +447,22 @@ pub(super) async fn set_versioning(
         &topology,
         internal_local_only,
     );
-    if should_fan_in {
-        if let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+    if should_fan_in
+        && let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
             &state,
             &topology,
             internal_local_only,
-        ) {
-            return err;
-        }
+        )
+    {
+        return err;
     }
-    if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
-        if let Some(err) =
+    if !internal_local_only
+        && !should_fan_in
+        && !use_consensus_bucket_metadata
+        && let Some(err) =
             storage::reject_unready_bucket_metadata_operation(&state, "SetBucketVersioning")
-        {
-            return err;
-        }
+    {
+        return err;
     }
     if use_consensus_bucket_metadata {
         if let Err(resp) = storage::ensure_consensus_index_versioning_mutation_preconditions(
@@ -660,10 +661,10 @@ pub(super) async fn list_versions(
         };
         (all, storage::list_metadata_coverage(&state))
     };
-    if !internal_local_only {
-        if let Some(resp) = storage::reject_unready_metadata_listing(metadata_coverage.as_ref()) {
-            return resp;
-        }
+    if !internal_local_only
+        && let Some(resp) = storage::reject_unready_metadata_listing(metadata_coverage.as_ref())
+    {
+        return resp;
     }
 
     let versions = all

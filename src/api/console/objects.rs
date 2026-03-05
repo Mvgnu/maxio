@@ -182,10 +182,10 @@ pub(super) async fn list_objects(
         };
         (objects, storage::list_metadata_coverage(&state))
     };
-    if !internal_local_only {
-        if let Some(resp) = storage::reject_unready_metadata_listing(metadata_coverage.as_ref()) {
-            return resp;
-        }
+    if !internal_local_only
+        && let Some(resp) = storage::reject_unready_metadata_listing(metadata_coverage.as_ref())
+    {
+        return resp;
     }
 
     let mut files = Vec::new();

@@ -178,12 +178,12 @@ pub(super) async fn list_buckets(
     }
 
     let metadata_coverage = storage::list_metadata_coverage(&state);
-    if !internal_local_only && !use_consensus_bucket_metadata {
-        if let Some(error_response) =
+    if !internal_local_only
+        && !use_consensus_bucket_metadata
+        && let Some(error_response) =
             storage::reject_unready_metadata_listing(metadata_coverage.as_ref())
-        {
-            return error_response;
-        }
+    {
+        return error_response;
     }
 
     if use_consensus_bucket_metadata {
@@ -506,30 +506,31 @@ pub(super) async fn create_bucket(
         &topology,
         internal_local_only,
     );
-    if should_fan_in {
-        if let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+    if should_fan_in
+        && let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
             &state,
             &topology,
             internal_local_only,
-        ) {
-            return err;
-        }
+        )
+    {
+        return err;
     }
-    if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
-        if let Some(err) = storage::reject_unready_bucket_metadata_operation(&state, "CreateBucket")
-        {
-            return err;
-        }
+    if !internal_local_only
+        && !should_fan_in
+        && !use_consensus_bucket_metadata
+        && let Some(err) = storage::reject_unready_bucket_metadata_operation(&state, "CreateBucket")
+    {
+        return err;
     }
-    if use_consensus_bucket_metadata {
-        if let Err(err) = storage::ensure_consensus_index_create_bucket_preconditions(
+    if use_consensus_bucket_metadata
+        && let Err(err) = storage::ensure_consensus_index_create_bucket_preconditions(
             &state,
             &topology,
             body.name.as_str(),
             "CreateBucket",
-        ) {
-            return *err;
-        }
+        )
+    {
+        return *err;
     }
 
     let now = chrono::Utc::now()
@@ -620,30 +621,31 @@ pub(super) async fn delete_bucket_api(
         &topology,
         internal_local_only,
     );
-    if should_fan_in {
-        if let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+    if should_fan_in
+        && let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
             &state,
             &topology,
             internal_local_only,
-        ) {
-            return err;
-        }
+        )
+    {
+        return err;
     }
-    if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
-        if let Some(err) = storage::reject_unready_bucket_metadata_operation(&state, "DeleteBucket")
-        {
-            return err;
-        }
+    if !internal_local_only
+        && !should_fan_in
+        && !use_consensus_bucket_metadata
+        && let Some(err) = storage::reject_unready_bucket_metadata_operation(&state, "DeleteBucket")
+    {
+        return err;
     }
-    if use_consensus_bucket_metadata {
-        if let Err(err) = storage::ensure_consensus_index_delete_bucket_preconditions(
+    if use_consensus_bucket_metadata
+        && let Err(err) = storage::ensure_consensus_index_delete_bucket_preconditions(
             &state,
             &topology,
             bucket.as_str(),
             "DeleteBucket",
-        ) {
-            return *err;
-        }
+        )
+    {
+        return *err;
     }
 
     match state.storage.delete_bucket(&bucket).await {

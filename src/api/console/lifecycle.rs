@@ -102,14 +102,14 @@ pub(super) async fn get_lifecycle(
         &topology,
         internal_local_only,
     );
-    if should_fan_in {
-        if let Some(resp) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+    if should_fan_in
+        && let Some(resp) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
             &state,
             &topology,
             internal_local_only,
-        ) {
-            return resp;
-        }
+        )
+    {
+        return resp;
     }
 
     let rules = if should_fan_in {
@@ -136,12 +136,12 @@ pub(super) async fn get_lifecycle(
             Err(err) => return response::error(StatusCode::SERVICE_UNAVAILABLE, err),
         }
     } else {
-        if !internal_local_only && !use_consensus_bucket_metadata {
-            if let Some(err) =
+        if !internal_local_only
+            && !use_consensus_bucket_metadata
+            && let Some(err) =
                 storage::reject_unready_bucket_metadata_operation(&state, "GetBucketLifecycle")
-            {
-                return err;
-            }
+        {
+            return err;
         }
         if use_consensus_bucket_metadata {
             let bucket_state = match storage::consensus_bucket_metadata_state_for_bucket(
@@ -225,21 +225,22 @@ pub(super) async fn set_lifecycle(
         &topology,
         internal_local_only,
     );
-    if should_fan_in {
-        if let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
+    if should_fan_in
+        && let Some(err) = storage::reject_cluster_authoritative_peer_fan_in_transport_unready(
             &state,
             &topology,
             internal_local_only,
-        ) {
-            return err;
-        }
+        )
+    {
+        return err;
     }
-    if !internal_local_only && !should_fan_in && !use_consensus_bucket_metadata {
-        if let Some(err) =
+    if !internal_local_only
+        && !should_fan_in
+        && !use_consensus_bucket_metadata
+        && let Some(err) =
             storage::reject_unready_bucket_metadata_operation(&state, "SetBucketLifecycle")
-        {
-            return err;
-        }
+    {
+        return err;
     }
     if use_consensus_bucket_metadata {
         if let Err(resp) = storage::ensure_consensus_index_lifecycle_mutation_preconditions(
