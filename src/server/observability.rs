@@ -1265,9 +1265,10 @@ pub(super) async fn health_handler(State(state): State<AppState>) -> Response {
     response_with_content_type(
         StatusCode::OK,
         HeaderValue::from_static("application/json"),
-        axum::body::Body::from(
-            serde_json::to_vec(&body)
-                .unwrap_or_else(|_| b"{\"ok\":false,\"status\":\"degraded\"}".to_vec()),
+        json_body_or_fallback(
+            &body,
+            b"{\"ok\":false,\"status\":\"degraded\"}",
+            "health_handler",
         ),
     )
 }

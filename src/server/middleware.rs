@@ -13,6 +13,24 @@ pub(super) fn response_with_content_type(
     response
 }
 
+pub(super) fn json_body_or_fallback<T: serde::Serialize>(
+    payload: &T,
+    fallback: &'static [u8],
+    context: &str,
+) -> axum::body::Body {
+    match serde_json::to_vec(payload) {
+        Ok(body) => axum::body::Body::from(body),
+        Err(err) => {
+            tracing::error!(
+                error = %err,
+                context = context,
+                "Failed to serialize runtime JSON payload"
+            );
+            axum::body::Body::from(fallback.to_vec())
+        }
+    }
+}
+
 pub(super) fn apply_cors_headers(response_headers: &mut HeaderMap, request_headers: &HeaderMap) {
     let origin = request_headers
         .get(header::ORIGIN)

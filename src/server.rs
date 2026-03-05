@@ -1844,9 +1844,10 @@ fn membership_update_response(
     response_with_content_type(
         status,
         HeaderValue::from_static("application/json"),
-        axum::body::Body::from(
-            serde_json::to_vec(&payload)
-                .unwrap_or_else(|_| b"{\"status\":\"degraded\",\"updated\":false}".to_vec()),
+        json_body_or_fallback(
+            &payload,
+            b"{\"status\":\"degraded\",\"updated\":false}",
+            "membership_update_response",
         ),
     )
 }
@@ -1862,9 +1863,10 @@ fn cluster_join_response(
     response_with_content_type(
         status,
         HeaderValue::from_static("application/json"),
-        axum::body::Body::from(
-            serde_json::to_vec(&payload)
-                .unwrap_or_else(|_| b"{\"status\":\"degraded\",\"updated\":false}".to_vec()),
+        json_body_or_fallback(
+            &payload,
+            b"{\"status\":\"degraded\",\"updated\":false}",
+            "cluster_join_response",
         ),
     )
 }

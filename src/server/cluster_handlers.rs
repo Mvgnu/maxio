@@ -119,9 +119,10 @@ pub(super) async fn cluster_join_authorize_handler(
     response_with_content_type(
         status,
         HeaderValue::from_static("application/json"),
-        axum::body::Body::from(
-            serde_json::to_vec(&payload)
-                .unwrap_or_else(|_| b"{\"authorized\":false,\"status\":\"degraded\"}".to_vec()),
+        json_body_or_fallback(
+            &payload,
+            b"{\"authorized\":false,\"status\":\"degraded\"}",
+            "cluster_join_authorize_handler",
         ),
     )
 }
