@@ -22,11 +22,12 @@ use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
 use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_request};
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::error::{S3Error, S3ErrorCode};
+use crate::metadata::index::MetadataQueryError;
 use crate::metadata::{
     BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
     BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
-    ClusterBucketMetadataConvergenceAssessment, ClusterBucketMetadataConvergenceGap,
-    ClusterBucketMetadataConvergenceInputError, ClusterBucketMetadataReadResolution,
+    ClusterBucketMetadataMutationPreconditionAssessment,
+    ClusterBucketMetadataMutationPreconditionGap, ClusterBucketMetadataResponderSnapshot,
     ClusterBucketMetadataResponderState, ClusterBucketPresenceConvergenceExpectation,
     ClusterBucketPresenceReadResolution, ClusterMetadataListingStrategy,
     ClusterResponderMembershipView, MetadataNodeBucketsPage,
@@ -35,7 +36,7 @@ use crate::metadata::{
     PersistedBucketMutationPreconditionResolution, PersistedMetadataQueryError,
     apply_bucket_lifecycle_configuration_operation_to_persisted_state,
     apply_bucket_metadata_operation_to_persisted_state,
-    assess_cluster_bucket_metadata_convergence_for_responder_states,
+    assess_cluster_bucket_metadata_mutation_preconditions,
     assess_cluster_bucket_presence_convergence,
     assess_cluster_metadata_fan_in_preflight_for_topology_responders,
     assess_cluster_metadata_fan_in_preflight_for_topology_single_responder,
@@ -46,8 +47,7 @@ use crate::metadata::{
     load_persisted_metadata_state, merge_cluster_list_buckets_page_with_topology_snapshot,
     resolve_bucket_lifecycle_configuration_from_persisted_state,
     resolve_bucket_metadata_from_persisted_state,
-    resolve_bucket_mutation_preconditions_from_persisted_state,
-    resolve_cluster_bucket_metadata_for_read, resolve_cluster_bucket_presence_for_read,
+    resolve_bucket_mutation_preconditions_from_persisted_state, resolve_cluster_bucket_presence_for_read,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::{BucketMeta, StorageError, lifecycle::LifecycleRule as StorageLifecycleRule};
@@ -986,7 +986,7 @@ fn resolve_cluster_bucket_versioning_state(
     responded_nodes: &[String],
     states: &[ClusterBucketMetadataResponderState<bool>],
 ) -> Result<bool, S3Error> {
-    let assessment = assess_cluster_bucket_metadata_operation_convergence(
+    let assessment = assess_cluster_bucket_metadata_operation_preconditions(
         state,
         topology,
         operation,
@@ -994,71 +994,108 @@ fn resolve_cluster_bucket_versioning_state(
         states,
     )?;
     ensure_cluster_bucket_metadata_operation_ready(operation, assessment.gap)?;
-    if assessment.gap == Some(ClusterBucketMetadataConvergenceGap::NoResponderValues) {
+    if assessment.gap == Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) {
         return Err(S3Error::service_unavailable(
             "Distributed bucket metadata fan-in did not include any versioning responders",
         ));
     }
 
-    match resolve_cluster_bucket_metadata_for_read(states) {
-        ClusterBucketMetadataReadResolution::Present(versioned) => Ok(versioned),
-        ClusterBucketMetadataReadResolution::Missing => {
-            Err(S3Error::service_unavailable(&format!(
+    match assessment.gap {
+        Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => Err(
+            S3Error::service_unavailable(&format!(
                 "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
                 bucket
-            )))
-        }
-        ClusterBucketMetadataReadResolution::Inconsistent => {
+            )),
+        ),
+        Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
             Err(S3Error::service_unavailable(&format!(
                 "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
                 bucket
             )))
         }
+        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) => Err(
+            S3Error::service_unavailable(&format!(
+                "Distributed bucket metadata fan-in for '{}' is not ready ({})",
+                operation,
+                assessment
+                    .gap
+                    .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
+                    .unwrap_or("unknown")
+            )),
+        ),
+        None => assessment.current_value.ok_or_else(|| {
+            S3Error::service_unavailable(
+                "Distributed bucket metadata fan-in did not include any versioning responders",
+            )
+        }),
     }
 }
 
-fn assess_cluster_bucket_metadata_operation_convergence<T: Clone + Eq>(
+fn assess_cluster_bucket_metadata_operation_preconditions<T: Clone + Eq>(
     state: &AppState,
     topology: &crate::server::RuntimeTopologySnapshot,
     operation: &str,
     responded_nodes: &[String],
     states: &[ClusterBucketMetadataResponderState<T>],
-) -> Result<ClusterBucketMetadataConvergenceAssessment<T>, S3Error> {
-    assess_cluster_bucket_metadata_convergence_for_responder_states(
+) -> Result<ClusterBucketMetadataMutationPreconditionAssessment<T>, S3Error> {
+    if responded_nodes.len() != states.len() {
+        return Err(S3Error::service_unavailable(&format!(
+            "Distributed bucket metadata operation '{}' responder/state fan-in cardinality mismatch",
+            operation
+        )));
+    }
+    let responder_states = responded_nodes
+        .iter()
+        .cloned()
+        .zip(states.iter().cloned())
+        .map(|(node_id, state)| ClusterBucketMetadataResponderSnapshot { node_id, state })
+        .collect::<Vec<_>>();
+
+    assess_cluster_bucket_metadata_mutation_preconditions(
         state.metadata_listing_strategy,
         Some(topology.membership_view_id.as_str()),
         topology.node_id.as_str(),
         topology.membership_nodes.as_slice(),
-        responded_nodes,
-        states,
+        responder_states.as_slice(),
     )
     .map_err(|error| match error {
-        ClusterBucketMetadataConvergenceInputError::ResponderStateCardinalityMismatch => {
-            S3Error::service_unavailable(&format!(
-                "Distributed bucket metadata operation '{}' responder/state fan-in cardinality mismatch",
-                operation
-            ))
-        }
-        ClusterBucketMetadataConvergenceInputError::InvalidResponderTopology(_) => {
+        MetadataQueryError::DuplicateCoverageNodeResponse
+        | MetadataQueryError::DuplicateCoverageExpectedNode
+        | MetadataQueryError::InvalidCoverageNodeId => S3Error::service_unavailable(&format!(
+            "Failed to assess distributed bucket metadata convergence for operation '{}'",
+            operation
+        )),
+        MetadataQueryError::InvalidContinuationToken | MetadataQueryError::InvalidVersionsMarker => {
             S3Error::service_unavailable(&format!(
                 "Failed to assess distributed bucket metadata convergence for operation '{}'",
                 operation
             ))
         }
+        MetadataQueryError::InconsistentBucketMetadataResponse => S3Error::service_unavailable(
+            &format!(
+                "Failed to assess distributed bucket metadata convergence for operation '{}'",
+                operation
+            ),
+        ),
     })
 }
 
 fn ensure_cluster_bucket_metadata_operation_ready(
     operation: &str,
-    gap: Option<ClusterBucketMetadataConvergenceGap>,
+    gap: Option<ClusterBucketMetadataMutationPreconditionGap>,
 ) -> Result<(), S3Error> {
     match gap {
-        Some(ClusterBucketMetadataConvergenceGap::StrategyNotClusterAuthoritative)
-        | Some(ClusterBucketMetadataConvergenceGap::MissingExpectedNodes)
-        | Some(ClusterBucketMetadataConvergenceGap::UnexpectedResponderNodes)
-        | Some(ClusterBucketMetadataConvergenceGap::MissingAndUnexpectedNodes) => {
+        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes) => {
             let reason = gap
-                .map(ClusterBucketMetadataConvergenceGap::as_str)
+                .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
                 .unwrap_or("unknown");
             Err(S3Error::service_unavailable(&format!(
                 "Distributed metadata strategy is not ready for bucket metadata operation '{}' ({})",
@@ -1198,7 +1235,7 @@ fn resolve_cluster_bucket_lifecycle_state(
     responded_nodes: &[String],
     states: &[ClusterBucketMetadataResponderState<BucketLifecycleResponderValue>],
 ) -> Result<Vec<StorageLifecycleRule>, S3Error> {
-    let assessment = assess_cluster_bucket_metadata_operation_convergence(
+    let assessment = assess_cluster_bucket_metadata_operation_preconditions(
         state,
         topology,
         operation,
@@ -1206,31 +1243,49 @@ fn resolve_cluster_bucket_lifecycle_state(
         states,
     )?;
     ensure_cluster_bucket_metadata_operation_ready(operation, assessment.gap)?;
-    if assessment.gap == Some(ClusterBucketMetadataConvergenceGap::NoResponderValues) {
+    if assessment.gap == Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) {
         return Err(S3Error::service_unavailable(
             "Distributed bucket metadata fan-in did not include any lifecycle responders",
         ));
     }
 
-    match resolve_cluster_bucket_metadata_for_read(states) {
-        ClusterBucketMetadataReadResolution::Present(
-            BucketLifecycleResponderValue::NoLifecycleConfiguration,
-        ) => Err(S3Error::no_such_lifecycle_configuration(bucket)),
-        ClusterBucketMetadataReadResolution::Present(BucketLifecycleResponderValue::Rules(
-            rules,
-        )) => Ok(rules),
-        ClusterBucketMetadataReadResolution::Missing => {
-            Err(S3Error::service_unavailable(&format!(
+    match assessment.gap {
+        Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => Err(
+            S3Error::service_unavailable(&format!(
                 "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
                 bucket
-            )))
-        }
-        ClusterBucketMetadataReadResolution::Inconsistent => {
+            )),
+        ),
+        Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
             Err(S3Error::service_unavailable(&format!(
                 "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}'",
                 bucket
             )))
         }
+        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) => Err(
+            S3Error::service_unavailable(&format!(
+                "Distributed bucket metadata fan-in for '{}' is not ready ({})",
+                operation,
+                assessment
+                    .gap
+                    .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
+                    .unwrap_or("unknown")
+            )),
+        ),
+        None => match assessment.current_value {
+            Some(BucketLifecycleResponderValue::NoLifecycleConfiguration) => {
+                Err(S3Error::no_such_lifecycle_configuration(bucket))
+            }
+            Some(BucketLifecycleResponderValue::Rules(rules)) => Ok(rules),
+            None => Err(S3Error::service_unavailable(
+                "Distributed bucket metadata fan-in did not include any lifecycle responders",
+            )),
+        },
     }
 }
 
