@@ -10,29 +10,15 @@ use super::response;
 use crate::api::object::peer_transport::{
     attest_internal_peer_target, build_internal_peer_http_client,
 };
-use crate::auth::signature_v4::{generate_presigned_url, PresignRequest};
-use crate::cluster::authenticator::{authenticate_forwarded_request, FORWARDED_BY_HEADER};
+use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
+use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_request};
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
+use crate::metadata::index::MetadataQueryError;
 use crate::metadata::{
-    CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
-    apply_bucket_lifecycle_configuration_operation_to_persisted_state,
-    apply_bucket_metadata_operation_to_persisted_state,
-    apply_object_metadata_operation_to_persisted_state,
-    apply_object_version_metadata_operation_to_persisted_state,
-    assess_cluster_bucket_metadata_convergence_for_responder_states,
-    assess_cluster_metadata_fan_in_preflight_for_topology_responders,
-    assess_cluster_metadata_snapshot_for_topology_responders,
-    assess_cluster_metadata_snapshot_for_topology_single_responder,
-    cluster_metadata_fan_in_auth_token_reject_reason,
-    cluster_metadata_fan_in_execution_strategy, cluster_metadata_fan_in_preflight_reject_reason,
-    cluster_metadata_readiness_reject_reason, list_buckets_from_persisted_state_with_view_id,
-    list_object_versions_page_from_persisted_state, list_objects_page_from_persisted_state,
-    load_persisted_metadata_state, resolve_bucket_lifecycle_configuration_from_persisted_state,
-    resolve_bucket_metadata_from_persisted_state,
-    resolve_bucket_mutation_preconditions_from_persisted_state,
     BucketLifecycleConfigurationOperation, BucketLifecycleConfigurationOperationError,
     BucketMetadataOperation, BucketMetadataOperationError, BucketMetadataState,
-    ClusterBucketMetadataConvergenceAssessment, ClusterBucketMetadataConvergenceInputError,
+    CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
+    ClusterBucketMetadataMutationPreconditionAssessment, ClusterBucketMetadataResponderSnapshot,
     ClusterBucketMetadataResponderState, ClusterMetadataListingStrategy,
     ClusterResponderMembershipView, MetadataQuery, MetadataVersionsQuery, ObjectMetadataOperation,
     ObjectMetadataOperationError, ObjectMetadataState, ObjectVersionMetadataOperation,
@@ -42,8 +28,23 @@ use crate::metadata::{
     PersistedBucketMetadataReadResolution, PersistedBucketMutationPreconditionResolution,
     PersistedMetadataQueryError, PersistedObjectMetadataOperationError,
     PersistedObjectVersionMetadataOperationError,
+    apply_bucket_lifecycle_configuration_operation_to_persisted_state,
+    apply_bucket_metadata_operation_to_persisted_state,
+    apply_object_metadata_operation_to_persisted_state,
+    apply_object_version_metadata_operation_to_persisted_state,
+    assess_cluster_bucket_metadata_mutation_preconditions,
+    assess_cluster_metadata_fan_in_preflight_for_topology_responders,
+    assess_cluster_metadata_snapshot_for_topology_responders,
+    assess_cluster_metadata_snapshot_for_topology_single_responder,
+    cluster_metadata_fan_in_auth_token_reject_reason, cluster_metadata_fan_in_execution_strategy,
+    cluster_metadata_fan_in_preflight_reject_reason, cluster_metadata_readiness_reject_reason,
+    list_buckets_from_persisted_state_with_view_id, list_object_versions_page_from_persisted_state,
+    list_objects_page_from_persisted_state, load_persisted_metadata_state,
+    resolve_bucket_lifecycle_configuration_from_persisted_state,
+    resolve_bucket_metadata_from_persisted_state,
+    resolve_bucket_mutation_preconditions_from_persisted_state,
 };
-use crate::server::{runtime_topology_snapshot, AppState, RuntimeTopologySnapshot};
+use crate::server::{AppState, RuntimeTopologySnapshot, runtime_topology_snapshot};
 use crate::storage::StorageError;
 
 pub(super) const INTERNAL_METADATA_SCOPE_QUERY_PARAM: &str = "x-maxio-internal-metadata-scope";
@@ -281,29 +282,40 @@ pub(super) fn reject_unready_bucket_metadata_operation_for_responders(
     Some(response::error(StatusCode::SERVICE_UNAVAILABLE, message))
 }
 
-pub(super) fn assess_bucket_metadata_operation_convergence<T: Clone + Eq>(
+pub(super) fn assess_bucket_metadata_operation_preconditions<T: Clone + Eq>(
     state: &AppState,
     topology: &RuntimeTopologySnapshot,
     operation: &str,
     responded_nodes: &[String],
     states: &[ClusterBucketMetadataResponderState<T>],
-) -> Result<ClusterBucketMetadataConvergenceAssessment<T>, String> {
-    assess_cluster_bucket_metadata_convergence_for_responder_states(
+) -> Result<ClusterBucketMetadataMutationPreconditionAssessment<T>, String> {
+    if responded_nodes.len() != states.len() {
+        return Err(format!(
+            "Distributed bucket metadata operation '{}' responder/state fan-in cardinality mismatch",
+            operation
+        ));
+    }
+    let responder_states = responded_nodes
+        .iter()
+        .cloned()
+        .zip(states.iter().cloned())
+        .map(|(node_id, state)| ClusterBucketMetadataResponderSnapshot { node_id, state })
+        .collect::<Vec<_>>();
+
+    assess_cluster_bucket_metadata_mutation_preconditions(
         state.metadata_listing_strategy,
         Some(topology.membership_view_id.as_str()),
         topology.node_id.as_str(),
         topology.membership_nodes.as_slice(),
-        responded_nodes,
-        states,
+        responder_states.as_slice(),
     )
     .map_err(|error| match error {
-        ClusterBucketMetadataConvergenceInputError::ResponderStateCardinalityMismatch => {
-            format!(
-                "Distributed bucket metadata operation '{}' responder/state fan-in cardinality mismatch",
-                operation
-            )
-        }
-        ClusterBucketMetadataConvergenceInputError::InvalidResponderTopology(_) => {
+        MetadataQueryError::DuplicateCoverageNodeResponse
+        | MetadataQueryError::DuplicateCoverageExpectedNode
+        | MetadataQueryError::InvalidCoverageNodeId
+        | MetadataQueryError::InvalidContinuationToken
+        | MetadataQueryError::InvalidVersionsMarker
+        | MetadataQueryError::InconsistentBucketMetadataResponse => {
             format!(
                 "Failed to assess distributed bucket metadata convergence for operation '{}'",
                 operation

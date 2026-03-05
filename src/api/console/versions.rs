@@ -12,10 +12,9 @@ use crate::api::console::objects::sanitize_filename;
 use crate::api::console::response;
 use crate::api::console::storage;
 use crate::metadata::{
-    BucketMetadataOperation, ClusterBucketMetadataConvergenceGap,
-    ClusterBucketMetadataReadResolution, ClusterBucketMetadataResponderState,
-    ClusterMetadataListingStrategy, ClusterResponderMembershipView, ObjectVersionMetadataState,
-    resolve_cluster_bucket_metadata_for_read,
+    BucketMetadataOperation, ClusterBucketMetadataMutationPreconditionGap,
+    ClusterBucketMetadataResponderState, ClusterMetadataListingStrategy,
+    ClusterResponderMembershipView, ObjectVersionMetadataState,
 };
 use crate::server::{AppState, runtime_topology_snapshot};
 use crate::storage::{ObjectMeta, StorageError};
@@ -265,7 +264,7 @@ fn resolve_cluster_bucket_versioning_state(
     responded_nodes: &[String],
     states: &[ClusterBucketMetadataResponderState<bool>],
 ) -> Result<bool, String> {
-    let assessment = storage::assess_bucket_metadata_operation_convergence(
+    let assessment = storage::assess_bucket_metadata_operation_preconditions(
         state,
         topology,
         operation,
@@ -273,37 +272,57 @@ fn resolve_cluster_bucket_versioning_state(
         states,
     )?;
     ensure_cluster_bucket_metadata_operation_ready(operation, assessment.gap)?;
-    if assessment.gap == Some(ClusterBucketMetadataConvergenceGap::NoResponderValues) {
+    if assessment.gap == Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) {
         return Err(
             "Distributed bucket metadata fan-in did not include any versioning responders"
                 .to_string(),
         );
     }
 
-    match resolve_cluster_bucket_metadata_for_read(states) {
-        ClusterBucketMetadataReadResolution::Present(enabled) => Ok(enabled),
-        ClusterBucketMetadataReadResolution::Missing => Err(format!(
-            "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
-            bucket
+    match assessment.gap {
+        Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => {
+            Err(format!(
+                "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
+                bucket
+            ))
+        }
+        Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
+            Err(format!(
+                "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
+                bucket
+            ))
+        }
+        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) => Err(format!(
+            "Distributed bucket metadata fan-in for '{}' is not ready ({})",
+            operation,
+            assessment
+                .gap
+                .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
+                .unwrap_or("unknown")
         )),
-        ClusterBucketMetadataReadResolution::Inconsistent => Err(format!(
-            "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
-            bucket
-        )),
+        None => assessment.current_value.ok_or_else(|| {
+            "Distributed bucket metadata fan-in did not include any versioning responders"
+                .to_string()
+        }),
     }
 }
 
 fn ensure_cluster_bucket_metadata_operation_ready(
     operation: &str,
-    gap: Option<ClusterBucketMetadataConvergenceGap>,
+    gap: Option<ClusterBucketMetadataMutationPreconditionGap>,
 ) -> Result<(), String> {
     match gap {
-        Some(ClusterBucketMetadataConvergenceGap::StrategyNotClusterAuthoritative)
-        | Some(ClusterBucketMetadataConvergenceGap::MissingExpectedNodes)
-        | Some(ClusterBucketMetadataConvergenceGap::UnexpectedResponderNodes)
-        | Some(ClusterBucketMetadataConvergenceGap::MissingAndUnexpectedNodes) => {
+        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes) => {
             let reason = gap
-                .map(ClusterBucketMetadataConvergenceGap::as_str)
+                .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
                 .unwrap_or("unknown");
             Err(format!(
                 "Distributed metadata strategy is not ready for bucket metadata operation '{}' ({})",

@@ -1,8 +1,8 @@
 use axum::{
+    Json,
     extract::{Path, Query, State},
     http::{HeaderMap, Method, StatusCode},
     response::IntoResponse,
-    Json,
 };
 use chrono::Utc;
 use quick_xml::de::from_str;
@@ -11,12 +11,11 @@ use std::collections::HashMap;
 
 use crate::api::console::{response, storage};
 use crate::metadata::{
-    resolve_cluster_bucket_metadata_for_read, BucketLifecycleConfigurationOperation,
-    BucketMetadataOperation, ClusterBucketMetadataConvergenceGap,
-    ClusterBucketMetadataReadResolution, ClusterBucketMetadataResponderState,
+    BucketLifecycleConfigurationOperation, BucketMetadataOperation,
+    ClusterBucketMetadataMutationPreconditionGap, ClusterBucketMetadataResponderState,
 };
-use crate::server::{runtime_topology_snapshot, AppState};
-use crate::storage::{lifecycle::LifecycleRule, StorageError};
+use crate::server::{AppState, runtime_topology_snapshot};
+use crate::storage::{StorageError, lifecycle::LifecycleRule};
 use crate::xml::types::{LifecycleConfiguration, LifecycleExpiration, LifecycleFilter};
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -158,7 +157,7 @@ pub(super) async fn get_lifecycle(
                                     "Distributed bucket metadata operation 'GetBucketLifecycle' cannot query consensus metadata state: missing persisted lifecycle configuration for '{}'",
                                     bucket
                                 ),
-                            )
+                            );
                         }
                         Err(err) => return *err,
                     };
@@ -171,7 +170,7 @@ pub(super) async fn get_lifecycle(
                                 "Distributed bucket metadata operation 'GetBucketLifecycle' cannot decode persisted lifecycle state for '{}': {}",
                                 bucket, err
                             ),
-                        )
+                        );
                     }
                 }
             }
@@ -505,7 +504,7 @@ fn resolve_cluster_bucket_lifecycle_state(
     responded_nodes: &[String],
     states: &[ClusterBucketMetadataResponderState<BucketLifecycleResponderValue>],
 ) -> Result<Vec<LifecycleRule>, String> {
-    let assessment = storage::assess_bucket_metadata_operation_convergence(
+    let assessment = storage::assess_bucket_metadata_operation_preconditions(
         state,
         topology,
         operation,
@@ -513,42 +512,61 @@ fn resolve_cluster_bucket_lifecycle_state(
         states,
     )?;
     ensure_cluster_bucket_metadata_operation_ready(operation, assessment.gap)?;
-    if assessment.gap == Some(ClusterBucketMetadataConvergenceGap::NoResponderValues) {
+    if assessment.gap == Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) {
         return Err(
             "Distributed bucket metadata fan-in did not include any lifecycle responders"
                 .to_string(),
         );
     }
 
-    match resolve_cluster_bucket_metadata_for_read(states) {
-        ClusterBucketMetadataReadResolution::Present(
-            BucketLifecycleResponderValue::NoLifecycleConfiguration,
-        ) => Ok(Vec::new()),
-        ClusterBucketMetadataReadResolution::Present(BucketLifecycleResponderValue::Rules(
-            rules,
-        )) => Ok(rules),
-        ClusterBucketMetadataReadResolution::Missing => Err(format!(
-            "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
-            bucket
+    match assessment.gap {
+        Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => {
+            Err(format!(
+                "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
+                bucket
+            ))
+        }
+        Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
+            Err(format!(
+                "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}'",
+                bucket
+            ))
+        }
+        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::NoResponderValues) => Err(format!(
+            "Distributed bucket metadata fan-in for '{}' is not ready ({})",
+            operation,
+            assessment
+                .gap
+                .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
+                .unwrap_or("unknown")
         )),
-        ClusterBucketMetadataReadResolution::Inconsistent => Err(format!(
-            "Distributed bucket lifecycle state is inconsistent across responder nodes for '{}'",
-            bucket
-        )),
+        None => match assessment.current_value {
+            Some(BucketLifecycleResponderValue::NoLifecycleConfiguration) => Ok(Vec::new()),
+            Some(BucketLifecycleResponderValue::Rules(rules)) => Ok(rules),
+            None => Err(
+                "Distributed bucket metadata fan-in did not include any lifecycle responders"
+                    .to_string(),
+            ),
+        },
     }
 }
 
 fn ensure_cluster_bucket_metadata_operation_ready(
     operation: &str,
-    gap: Option<ClusterBucketMetadataConvergenceGap>,
+    gap: Option<ClusterBucketMetadataMutationPreconditionGap>,
 ) -> Result<(), String> {
     match gap {
-        Some(ClusterBucketMetadataConvergenceGap::StrategyNotClusterAuthoritative)
-        | Some(ClusterBucketMetadataConvergenceGap::MissingExpectedNodes)
-        | Some(ClusterBucketMetadataConvergenceGap::UnexpectedResponderNodes)
-        | Some(ClusterBucketMetadataConvergenceGap::MissingAndUnexpectedNodes) => {
+        Some(ClusterBucketMetadataMutationPreconditionGap::StrategyNotClusterAuthoritative)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingExpectedNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::UnexpectedResponderNodes)
+        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingAndUnexpectedNodes) => {
             let reason = gap
-                .map(ClusterBucketMetadataConvergenceGap::as_str)
+                .map(ClusterBucketMetadataMutationPreconditionGap::as_str)
                 .unwrap_or("unknown");
             Err(format!(
                 "Distributed metadata strategy is not ready for bucket metadata operation '{}' ({})",

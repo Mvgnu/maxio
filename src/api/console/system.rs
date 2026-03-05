@@ -76,6 +76,18 @@ struct MetricsPayload {
     membership_protocol_ready: bool,
     membership_converged: bool,
     membership_convergence_reason: String,
+    write_durability_mode: String,
+    metadata_listing_strategy: String,
+    metadata_listing_ready: bool,
+    pending_replication_backlog_operations: usize,
+    pending_replication_backlog_due_targets: usize,
+    pending_replication_replay_cycles_total: u64,
+    pending_rebalance_backlog_operations: usize,
+    pending_rebalance_replay_cycles_total: u64,
+    pending_membership_propagation_backlog_operations: usize,
+    pending_membership_propagation_replay_cycles_total: u64,
+    pending_metadata_repair_backlog_plans: usize,
+    pending_metadata_repair_replay_cycles_total: u64,
     #[serde(flatten)]
     topology: TopologyPayload,
 }
@@ -169,6 +181,18 @@ struct SummaryMetricsPayload {
     membership_protocol_ready: bool,
     membership_converged: bool,
     membership_convergence_reason: String,
+    write_durability_mode: String,
+    metadata_listing_strategy: String,
+    metadata_listing_ready: bool,
+    pending_replication_backlog_operations: usize,
+    pending_replication_backlog_due_targets: usize,
+    pending_replication_replay_cycles_total: u64,
+    pending_rebalance_backlog_operations: usize,
+    pending_rebalance_replay_cycles_total: u64,
+    pending_membership_propagation_backlog_operations: usize,
+    pending_membership_propagation_replay_cycles_total: u64,
+    pending_metadata_repair_backlog_plans: usize,
+    pending_metadata_repair_replay_cycles_total: u64,
 }
 
 #[derive(Debug, Serialize)]
@@ -236,17 +260,30 @@ fn metrics_payload(
     topology: &RuntimeTopologySnapshot,
     requests_total: u64,
     uptime_seconds: f64,
-    membership_protocol_ready: bool,
-    membership_converged: bool,
-    membership_convergence_reason: &str,
+    health: &RuntimeHealthPayload,
 ) -> MetricsPayload {
     MetricsPayload {
         requests_total,
         uptime_seconds,
         version: env!("CARGO_PKG_VERSION").to_string(),
-        membership_protocol_ready,
-        membership_converged,
-        membership_convergence_reason: membership_convergence_reason.to_string(),
+        membership_protocol_ready: health.membership_protocol_ready(),
+        membership_converged: health.membership_converged(),
+        membership_convergence_reason: health.membership_convergence_reason().to_string(),
+        write_durability_mode: health.write_durability_mode.clone(),
+        metadata_listing_strategy: health.metadata_listing_strategy.clone(),
+        metadata_listing_ready: health.checks.metadata_list_ready,
+        pending_replication_backlog_operations: health.pending_replication_backlog_operations,
+        pending_replication_backlog_due_targets: health.pending_replication_backlog_due_targets,
+        pending_replication_replay_cycles_total: health.pending_replication_replay_cycles_total,
+        pending_rebalance_backlog_operations: health.pending_rebalance_backlog_operations,
+        pending_rebalance_replay_cycles_total: health.pending_rebalance_replay_cycles_total,
+        pending_membership_propagation_backlog_operations: health
+            .pending_membership_propagation_backlog_operations,
+        pending_membership_propagation_replay_cycles_total: health
+            .pending_membership_propagation_replay_cycles_total,
+        pending_metadata_repair_backlog_plans: health.pending_metadata_repair_backlog_plans,
+        pending_metadata_repair_replay_cycles_total: health
+            .pending_metadata_repair_replay_cycles_total,
         topology: topology_payload(topology),
     }
 }
@@ -278,14 +315,7 @@ pub(super) async fn get_metrics(State(state): State<AppState>) -> impl IntoRespo
 
     response::json(
         StatusCode::OK,
-        metrics_payload(
-            &topology,
-            requests_total,
-            uptime_seconds,
-            health.membership_protocol_ready(),
-            health.membership_converged(),
-            health.membership_convergence_reason(),
-        ),
+        metrics_payload(&topology, requests_total, uptime_seconds, &health),
     )
 }
 
@@ -496,17 +526,33 @@ pub(super) async fn get_summary(State(state): State<AppState>) -> impl IntoRespo
     let membership_protocol_ready = health.membership_protocol_ready();
     let membership_converged = health.membership_converged();
     let membership_convergence_reason = health.membership_convergence_reason().to_string();
+    let metrics = SummaryMetricsPayload {
+        requests_total,
+        uptime_seconds,
+        version: env!("CARGO_PKG_VERSION").to_string(),
+        membership_protocol_ready,
+        membership_converged,
+        membership_convergence_reason,
+        write_durability_mode: health.write_durability_mode.clone(),
+        metadata_listing_strategy: health.metadata_listing_strategy.clone(),
+        metadata_listing_ready: health.checks.metadata_list_ready,
+        pending_replication_backlog_operations: health.pending_replication_backlog_operations,
+        pending_replication_backlog_due_targets: health.pending_replication_backlog_due_targets,
+        pending_replication_replay_cycles_total: health.pending_replication_replay_cycles_total,
+        pending_rebalance_backlog_operations: health.pending_rebalance_backlog_operations,
+        pending_rebalance_replay_cycles_total: health.pending_rebalance_replay_cycles_total,
+        pending_membership_propagation_backlog_operations: health
+            .pending_membership_propagation_backlog_operations,
+        pending_membership_propagation_replay_cycles_total: health
+            .pending_membership_propagation_replay_cycles_total,
+        pending_metadata_repair_backlog_plans: health.pending_metadata_repair_backlog_plans,
+        pending_metadata_repair_replay_cycles_total: health
+            .pending_metadata_repair_replay_cycles_total,
+    };
 
     let payload = SummaryPayload {
         health,
-        metrics: SummaryMetricsPayload {
-            requests_total,
-            uptime_seconds,
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            membership_protocol_ready,
-            membership_converged,
-            membership_convergence_reason,
-        },
+        metrics,
         topology: topology_payload(&topology),
         membership: membership_payload(&topology),
     };
