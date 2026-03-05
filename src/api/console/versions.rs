@@ -12,9 +12,11 @@ use crate::api::console::objects::sanitize_filename;
 use crate::api::console::response;
 use crate::api::console::storage;
 use crate::metadata::{
+    ClusterBucketMetadataMutationPreconditionFailureDisposition,
     BucketMetadataOperation, ClusterBucketMetadataMutationPreconditionGap,
     ClusterBucketMetadataResponderState, ClusterMetadataListingStrategy,
     ClusterResponderMembershipView, ObjectVersionMetadataState,
+    cluster_bucket_metadata_mutation_precondition_failure_disposition,
     cluster_bucket_metadata_mutation_precondition_gap_is_no_responder_values,
     cluster_bucket_metadata_mutation_precondition_gap_is_strategy_unready,
 };
@@ -284,25 +286,29 @@ fn resolve_cluster_bucket_versioning_state(
         );
     }
 
-    match assessment.gap {
-        Some(ClusterBucketMetadataMutationPreconditionGap::BucketMissing)
-        | Some(ClusterBucketMetadataMutationPreconditionGap::MissingBucketOnResponder) => {
-            Err(format!(
+    match cluster_bucket_metadata_mutation_precondition_failure_disposition(assessment.gap) {
+        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::NoSuchBucket) => Err(
+            format!(
                 "Distributed bucket metadata is inconsistent for '{}' (bucket missing on one or more responder nodes)",
                 bucket
-            ))
+            ),
+        ),
+        Some(ClusterBucketMetadataMutationPreconditionFailureDisposition::ServiceUnavailable) => {
+            if assessment.gap
+                == Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues)
+            {
+                Err(format!(
+                    "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
+                    bucket
+                ))
+            } else {
+                let gap_reason = assessment.gap.map(|gap| gap.as_str()).unwrap_or("unknown-gap");
+                Err(format!(
+                    "Distributed bucket metadata fan-in for '{}' is not ready ({})",
+                    operation, gap_reason
+                ))
+            }
         }
-        Some(ClusterBucketMetadataMutationPreconditionGap::InconsistentResponderValues) => {
-            Err(format!(
-                "Distributed bucket versioning state is inconsistent across responder nodes for '{}'",
-                bucket
-            ))
-        }
-        Some(gap) => Err(format!(
-            "Distributed bucket metadata fan-in for '{}' is not ready ({})",
-            operation,
-            gap.as_str()
-        )),
         None => assessment.current_value.ok_or_else(|| {
             "Distributed bucket metadata fan-in did not include any versioning responders"
                 .to_string()
