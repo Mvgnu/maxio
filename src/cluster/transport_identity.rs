@@ -862,27 +862,9 @@ fn dns_name_matches(candidate: &str, expected: &str) -> bool {
     if candidate.is_empty() {
         return false;
     }
-    if candidate == expected {
-        return true;
-    }
-    if let Some(suffix) = candidate.strip_prefix("*.") {
-        return dns_wildcard_matches_suffix(expected, suffix);
-    }
-    false
-}
-
-fn dns_wildcard_matches_suffix(expected: &str, suffix: &str) -> bool {
-    if suffix.is_empty() || expected.len() <= suffix.len() || !expected.ends_with(suffix) {
-        return false;
-    }
-    let Some(prefix) = expected.strip_suffix(suffix) else {
-        return false;
-    };
-    if !prefix.ends_with('.') {
-        return false;
-    }
-    let label = prefix.trim_end_matches('.');
-    !label.is_empty() && !label.contains('.')
+    // Wildcard certificate identities are intentionally rejected to preserve
+    // strict per-node cryptographic binding.
+    candidate == expected
 }
 
 fn contains_valid_pem_block(data: &[u8], label: &str) -> bool {
@@ -1229,6 +1211,18 @@ mod tests {
             PeerTransportIdentityReadinessReason::NotConfigured
         );
         assert!(status.warning.is_none());
+    }
+
+    #[test]
+    fn dns_name_matching_requires_exact_identity_and_rejects_wildcards() {
+        assert!(super::dns_name_matches(
+            "node-a.cluster.internal",
+            "node-a.cluster.internal"
+        ));
+        assert!(!super::dns_name_matches(
+            "*.cluster.internal",
+            "node-a.cluster.internal"
+        ));
     }
 
     #[test]
