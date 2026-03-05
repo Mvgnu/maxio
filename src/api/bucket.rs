@@ -854,10 +854,10 @@ async fn fan_out_bucket_metadata_mutation_to_peers(
             body.clone(),
         )
         .await
-        .map_err(|_| {
+        .map_err(|err| {
             S3Error::service_unavailable(&format!(
-                "Distributed bucket metadata mutation '{}' failed while contacting responder node '{}'",
-                operation, peer
+                "Distributed bucket metadata mutation '{}' failed while contacting responder node '{}': {}",
+                operation, peer, err.message
             ))
         })?;
         let status = response.status();
@@ -1356,8 +1356,10 @@ fn merge_cluster_bucket_entries_with_topology_snapshot(
         topology.membership_nodes.as_slice(),
         fan_in.bucket_pages.as_slice(),
     )
-    .map_err(|_| {
-        S3Error::service_unavailable("Failed to merge distributed bucket listing metadata snapshot")
+    .map_err(|err| {
+        S3Error::service_unavailable(&format!(
+            "Failed to merge distributed bucket listing metadata snapshot: {err:?}"
+        ))
     })?;
     if let Some(reason) =
         cluster_metadata_readiness_reject_reason(&merged.snapshot.readiness_assessment)
@@ -1667,10 +1669,10 @@ async fn fan_out_create_bucket_mutation_to_peers(
     for peer in &topology.cluster_peers {
         let response = send_internal_peer_request(state, peer, Method::PUT, path.as_str(), &query, None)
             .await
-            .map_err(|_| {
+            .map_err(|err| {
                 S3Error::service_unavailable(&format!(
-                    "Distributed bucket metadata mutation 'CreateBucket' failed while contacting responder node '{}'",
-                    peer
+                    "Distributed bucket metadata mutation 'CreateBucket' failed while contacting responder node '{}': {}",
+                    peer, err.message
                 ))
             })?;
         let status = response.status();
@@ -1716,10 +1718,10 @@ async fn fan_out_delete_bucket_mutation_to_peers(
             None,
         )
         .await
-        .map_err(|_| {
+        .map_err(|err| {
             S3Error::service_unavailable(&format!(
-                "Distributed bucket metadata mutation 'DeleteBucket' failed while contacting responder node '{}'",
-                peer
+                "Distributed bucket metadata mutation 'DeleteBucket' failed while contacting responder node '{}': {}",
+                peer, err.message
             ))
         })?;
         let status = response.status();
