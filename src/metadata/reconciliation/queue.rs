@@ -332,6 +332,32 @@ where
     Ok(outcome)
 }
 
+pub fn replay_pending_metadata_repairs_once_with_persisted_state_apply(
+    queue_path: &Path,
+    metadata_state_path: &Path,
+    now_unix_ms: u64,
+    max_candidates: usize,
+    lease_ms: u64,
+    backoff_base_ms: u64,
+    backoff_max_ms: u64,
+) -> std::io::Result<PendingMetadataRepairReplayCycleOutcome> {
+    replay_pending_metadata_repairs_once_with_classified_apply_fn(
+        queue_path,
+        now_unix_ms,
+        max_candidates,
+        lease_ms,
+        backoff_base_ms,
+        backoff_max_ms,
+        |pending_plan| {
+            apply_pending_metadata_repair_plan_to_persisted_state_classified(
+                metadata_state_path,
+                pending_plan,
+            )
+            .map(|_| ())
+        },
+    )
+}
+
 fn load_pending_metadata_repair_plan_from_disk(
     path: &Path,
     repair_id: &str,

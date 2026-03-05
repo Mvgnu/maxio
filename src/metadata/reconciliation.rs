@@ -1195,6 +1195,7 @@ mod tests {
         record_pending_metadata_repair_failure_with_backoff,
         replay_pending_metadata_repairs_once_with_apply_fn,
         replay_pending_metadata_repairs_once_with_classified_apply_fn,
+        replay_pending_metadata_repairs_once_with_persisted_state_apply,
         resolve_bucket_lifecycle_configuration_from_persisted_state,
         resolve_bucket_metadata_from_persisted_state,
         resolve_bucket_mutation_preconditions_from_persisted_state,
@@ -2673,6 +2674,132 @@ mod tests {
         );
         let reloaded = load_pending_metadata_repair_queue(&queue_path).expect("reload queue");
         assert!(reloaded.plans.is_empty());
+    }
+
+    #[test]
+    fn replay_pending_metadata_repairs_once_with_persisted_state_apply_acknowledges_successful_apply()
+     {
+        let temp = TempDir::new().expect("temp dir");
+        let queue_path = temp.path().join("pending-metadata-repair-queue.json");
+        let state_path = temp.path().join("cluster-metadata-state.json");
+        let pending = PendingMetadataRepairPlan::new(
+            "repair-persisted-apply-success",
+            100,
+            MetadataRepairPlan {
+                source_view_id: "source-view".to_string(),
+                target_view_id: "target-view".to_string(),
+                actions: vec![MetadataReconcileAction::UpsertBucket {
+                    bucket: "photos".to_string(),
+                    versioning_enabled: true,
+                    lifecycle_enabled: false,
+                }],
+            },
+        )
+        .expect("valid pending plan");
+        let mut queue = PendingMetadataRepairQueue::default();
+        queue.plans.push(pending);
+        persist_pending_metadata_repair_queue(&queue_path, &queue).expect("persist queue");
+
+        let outcome = replay_pending_metadata_repairs_once_with_persisted_state_apply(
+            &queue_path,
+            &state_path,
+            100,
+            16,
+            250,
+            500,
+            5_000,
+        )
+        .expect("replay cycle");
+        assert_eq!(
+            outcome,
+            PendingMetadataRepairReplayCycleOutcome {
+                scanned_plans: 1,
+                leased_plans: 1,
+                acknowledged_plans: 1,
+                failed_plans: 0,
+                dropped_plans: 0,
+                skipped_plans: 0,
+            }
+        );
+
+        let reloaded_queue = load_pending_metadata_repair_queue(&queue_path).expect("reload queue");
+        assert!(reloaded_queue.plans.is_empty());
+
+        let persisted = load_persisted_metadata_state(&state_path).expect("load persisted state");
+        assert_eq!(persisted.view_id, "source-view");
+        assert_eq!(
+            persisted.buckets,
+            vec![BucketMetadataState {
+                bucket: "photos".to_string(),
+                versioning_enabled: true,
+                lifecycle_enabled: false,
+            }]
+        );
+    }
+
+    #[test]
+    fn replay_pending_metadata_repairs_once_with_persisted_state_apply_drops_permanent_failures() {
+        let temp = TempDir::new().expect("temp dir");
+        let queue_path = temp.path().join("pending-metadata-repair-queue.json");
+        let state_path = temp.path().join("cluster-metadata-state.json");
+        persist_persisted_metadata_state(
+            &state_path,
+            &PersistedMetadataState {
+                view_id: "view-live".to_string(),
+                buckets: Vec::new(),
+                bucket_tombstones: Vec::new(),
+                objects: Vec::new(),
+                object_versions: Vec::new(),
+                bucket_lifecycle_configurations: Vec::new(),
+            },
+        )
+        .expect("persisted state should save");
+        let pending = PendingMetadataRepairPlan::new(
+            "repair-persisted-apply-permanent",
+            100,
+            MetadataRepairPlan {
+                source_view_id: "source-view".to_string(),
+                target_view_id: "view-stale".to_string(),
+                actions: vec![MetadataReconcileAction::UpsertBucket {
+                    bucket: "photos".to_string(),
+                    versioning_enabled: true,
+                    lifecycle_enabled: false,
+                }],
+            },
+        )
+        .expect("valid pending plan");
+        let mut queue = PendingMetadataRepairQueue::default();
+        queue.plans.push(pending);
+        persist_pending_metadata_repair_queue(&queue_path, &queue).expect("persist queue");
+
+        let outcome = replay_pending_metadata_repairs_once_with_persisted_state_apply(
+            &queue_path,
+            &state_path,
+            100,
+            16,
+            250,
+            500,
+            5_000,
+        )
+        .expect("replay cycle");
+        assert_eq!(
+            outcome,
+            PendingMetadataRepairReplayCycleOutcome {
+                scanned_plans: 1,
+                leased_plans: 1,
+                acknowledged_plans: 0,
+                failed_plans: 0,
+                dropped_plans: 1,
+                skipped_plans: 0,
+            }
+        );
+
+        let reloaded_queue = load_pending_metadata_repair_queue(&queue_path).expect("reload queue");
+        assert!(reloaded_queue.plans.is_empty());
+
+        let persisted = load_persisted_metadata_state(&state_path).expect("load persisted state");
+        assert_eq!(persisted.view_id, "view-live");
+        assert!(persisted.buckets.is_empty());
     }
 
     #[test]
