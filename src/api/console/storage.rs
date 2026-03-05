@@ -14,6 +14,7 @@ use crate::auth::signature_v4::{generate_presigned_url, PresignRequest};
 use crate::cluster::authenticator::{authenticate_forwarded_request, FORWARDED_BY_HEADER};
 use crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER;
 use crate::metadata::{
+    CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON,
     apply_bucket_lifecycle_configuration_operation_to_persisted_state,
     apply_bucket_metadata_operation_to_persisted_state,
     apply_object_metadata_operation_to_persisted_state,
@@ -22,6 +23,7 @@ use crate::metadata::{
     assess_cluster_metadata_fan_in_preflight_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_responders,
     assess_cluster_metadata_snapshot_for_topology_single_responder,
+    cluster_metadata_fan_in_auth_token_reject_reason,
     cluster_metadata_fan_in_execution_strategy, cluster_metadata_fan_in_preflight_reject_reason,
     cluster_metadata_readiness_reject_reason, list_buckets_from_persisted_state_with_view_id,
     list_object_versions_page_from_persisted_state, list_objects_page_from_persisted_state,
@@ -373,9 +375,18 @@ pub(super) fn reject_consensus_index_peer_fan_in_transport_unready(
         return None;
     }
 
+    let reason = cluster_metadata_fan_in_auth_token_reject_reason(
+        state.metadata_listing_strategy,
+        has_cluster_auth_token,
+    )?;
+    debug_assert_eq!(
+        reason,
+        CLUSTER_METADATA_CONSENSUS_FAN_IN_AUTH_TOKEN_MISSING_REASON
+    );
+
     Some(response::error(
         StatusCode::SERVICE_UNAVAILABLE,
-        "Distributed metadata listing strategy is not ready for this request (consensus-index-peer-fan-in-auth-token-missing)",
+        format!("Distributed metadata listing strategy is not ready for this request ({reason})"),
     ))
 }
 
