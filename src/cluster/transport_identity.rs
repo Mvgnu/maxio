@@ -1274,9 +1274,16 @@ fn validate_certificate_private_key_pair(
     cert_bytes: &[u8],
     key_bytes: &[u8],
 ) -> Result<(), String> {
-    reqwest::Identity::from_pkcs8_pem(cert_bytes, key_bytes)
-        .map(|_| ())
-        .map_err(|error| error.to_string())
+    let certificate = X509::from_pem(cert_bytes).map_err(|error| error.to_string())?;
+    let private_key = PKey::private_key_from_pem(key_bytes).map_err(|error| error.to_string())?;
+    let certificate_public_key = certificate
+        .public_key()
+        .map_err(|error| error.to_string())?;
+    if certificate_public_key.public_eq(&private_key) {
+        Ok(())
+    } else {
+        Err("certificate public key does not match private key".to_string())
+    }
 }
 
 fn ensure_certificate_valid_now(cert: &X509) -> Result<(), String> {
