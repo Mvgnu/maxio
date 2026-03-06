@@ -1077,13 +1077,13 @@ pub(crate) async fn forward_replica_put_to_target(
         header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_HEADER),
         HeaderValue::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_PUT),
     );
-    if let Some(version_id) = replica_version_id {
-        if let Ok(value) = HeaderValue::from_str(version_id) {
-            replica_headers.insert(
-                header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_VERSION_ID_HEADER),
-                value,
-            );
-        }
+    if let Some(version_id) = replica_version_id
+        && let Ok(value) = HeaderValue::from_str(version_id)
+    {
+        replica_headers.insert(
+            header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_VERSION_ID_HEADER),
+            value,
+        );
     }
     forward_write_to_target(
         state,
@@ -1162,13 +1162,13 @@ async fn forward_replica_put_to_target_for_replay(
         header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_HEADER),
         HeaderValue::from_static(INTERNAL_TRUSTED_FORWARD_OPERATION_REPLICATE_PUT),
     );
-    if let Some(version_id) = replica_version_id {
-        if let Ok(value) = HeaderValue::from_str(version_id) {
-            replica_headers.insert(
-                header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_VERSION_ID_HEADER),
-                value,
-            );
-        }
+    if let Some(version_id) = replica_version_id
+        && let Ok(value) = HeaderValue::from_str(version_id)
+    {
+        replica_headers.insert(
+            header::HeaderName::from_static(INTERNAL_TRUSTED_FORWARD_VERSION_ID_HEADER),
+            value,
+        );
     }
     forward_write_to_target(
         state,

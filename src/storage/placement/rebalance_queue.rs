@@ -224,12 +224,12 @@ pub fn lease_pending_rebalance_transfer_for_execution(
         return PendingRebalanceLeaseOutcome::AlreadyCompleted;
     }
 
-    if let Some(next_retry_at_unix_ms) = transfer.next_retry_at_unix_ms {
-        if next_retry_at_unix_ms > now_unix_ms {
-            return PendingRebalanceLeaseOutcome::NotDue {
-                next_retry_at_unix_ms,
-            };
-        }
+    if let Some(next_retry_at_unix_ms) = transfer.next_retry_at_unix_ms
+        && next_retry_at_unix_ms > now_unix_ms
+    {
+        return PendingRebalanceLeaseOutcome::NotDue {
+            next_retry_at_unix_ms,
+        };
     }
 
     let lease_expires_at_unix_ms = now_unix_ms.saturating_add(lease_ms.max(1));

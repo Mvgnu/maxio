@@ -1000,13 +1000,12 @@ fn replica_put_headers_for_read_repair(
         replica_put_headers_for_copy(request_headers, &meta.content_type, meta.checksum_algorithm);
     headers.remove(header::AUTHORIZATION);
     if let (Some(algorithm), Some(value)) = (meta.checksum_algorithm, meta.checksum_value.as_ref())
+        && let Ok(header_value) = HeaderValue::from_str(value)
     {
-        if let Ok(header_value) = HeaderValue::from_str(value) {
-            headers.insert(
-                header::HeaderName::from_static(algorithm.header_name()),
-                header_value,
-            );
-        }
+        headers.insert(
+            header::HeaderName::from_static(algorithm.header_name()),
+            header_value,
+        );
     }
     headers
 }
@@ -2088,10 +2087,9 @@ fn forwarded_delete_objects_outcome(
     if response.status().is_success() {
         if let Some((ack_count, quorum_size, quorum_reached)) =
             parse_write_quorum_headers(response.headers())
+            && !quorum_reached
         {
-            if !quorum_reached {
-                return delete_objects_quorum_outcome_error(key, ack_count, quorum_size);
-            }
+            return delete_objects_quorum_outcome_error(key, ack_count, quorum_size);
         }
         let version_id = parse_header_string(response.headers(), "x-amz-version-id");
         let is_delete_marker =
@@ -2200,21 +2198,19 @@ pub async fn delete_objects(
         });
     }
 
-    if can_forward_batch {
-        if let Some(forward) = batch_forward_target {
-            let path_and_query = bucket_path_and_query(&bucket, &params);
-            return forward_write_to_target(
-                &state,
-                Method::POST,
-                &forward.target,
-                &path_and_query,
-                &headers,
-                body_bytes,
-                true,
-                &forward.envelope,
-            )
-            .await;
-        }
+    if can_forward_batch && let Some(forward) = batch_forward_target {
+        let path_and_query = bucket_path_and_query(&bucket, &params);
+        return forward_write_to_target(
+            &state,
+            Method::POST,
+            &forward.target,
+            &path_and_query,
+            &headers,
+            body_bytes,
+            true,
+            &forward.envelope,
+        )
+        .await;
     }
 
     let has_local_entries = planned_entries
@@ -2270,14 +2266,12 @@ pub async fn delete_objects(
             {
                 Ok(response) => {
                     quorum_aggregate.record_headers(response.headers());
-                    if state.write_durability_mode.is_strict_quorum() {
-                        if let Some((_, _, quorum_reached)) =
+                    if state.write_durability_mode.is_strict_quorum()
+                        && let Some((_, _, quorum_reached)) =
                             parse_write_quorum_headers(response.headers())
-                        {
-                            if !quorum_reached {
-                                strict_quorum_not_reached = true;
-                            }
-                        }
+                        && !quorum_reached
+                    {
+                        strict_quorum_not_reached = true;
                     }
                     outcomes.push(forwarded_delete_objects_outcome(entry.key, &response));
                 }

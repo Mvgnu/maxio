@@ -1186,18 +1186,17 @@ async fn test_metrics_pending_replication_replay_counters_increment_in_distribut
             cycles_failed,
             last_cycle_unix_ms,
             last_success_unix_ms,
-        ) {
-            if total >= 1.0 {
-                observed = Some((
-                    total,
-                    succeeded,
-                    failed,
-                    last_cycle,
-                    last_success,
-                    last_failure_unix_ms,
-                ));
-                break;
-            }
+        ) && total >= 1.0
+        {
+            observed = Some((
+                total,
+                succeeded,
+                failed,
+                last_cycle,
+                last_success,
+                last_failure_unix_ms,
+            ));
+            break;
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1270,19 +1269,18 @@ async fn test_metrics_pending_membership_propagation_replay_counters_increment_i
             cycles_failed,
             last_cycle_unix_ms,
             last_success_unix_ms,
-        ) {
-            if total >= 1.0 {
-                observed = Some((
-                    total,
-                    succeeded,
-                    failed,
-                    deferred_operations_total,
-                    last_cycle,
-                    last_success,
-                    last_failure_unix_ms,
-                ));
-                break;
-            }
+        ) && total >= 1.0
+        {
+            observed = Some((
+                total,
+                succeeded,
+                failed,
+                deferred_operations_total,
+                last_cycle,
+                last_success,
+                last_failure_unix_ms,
+            ));
+            break;
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1327,7 +1325,8 @@ async fn test_pending_rebalance_replay_worker_forwards_due_send_transfer_and_dra
     let queue_path = Path::new(data_dir.as_str())
         .join(".maxio-runtime")
         .join("pending-rebalance-queue.json");
-    let placement = PlacementViewState::from_membership(1, local_node_id, &[capture_peer.clone()]);
+    let placement =
+        PlacementViewState::from_membership(1, local_node_id, std::slice::from_ref(&capture_peer));
     let operation = PendingRebalanceOperation::new(
         "rebalance-replay-runtime-test",
         "rebalance-bucket",
@@ -1421,7 +1420,8 @@ async fn test_pending_rebalance_replay_worker_drops_send_transfer_when_target_bu
     let queue_path = Path::new(data_dir.as_str())
         .join(".maxio-runtime")
         .join("pending-rebalance-queue.json");
-    let placement = PlacementViewState::from_membership(1, local_node_id, &[capture_peer.clone()]);
+    let placement =
+        PlacementViewState::from_membership(1, local_node_id, std::slice::from_ref(&capture_peer));
     let operation = PendingRebalanceOperation::new(
         "rebalance-replay-missing-target-bucket-runtime-test",
         "rebalance-bucket",
@@ -1495,7 +1495,8 @@ async fn test_pending_rebalance_replay_worker_drops_receive_transfer_when_local_
     let queue_path = Path::new(data_dir.as_str())
         .join(".maxio-runtime")
         .join("pending-rebalance-queue.json");
-    let placement = PlacementViewState::from_membership(1, local_node_id, &[source_peer.clone()]);
+    let placement =
+        PlacementViewState::from_membership(1, local_node_id, std::slice::from_ref(&source_peer));
     let operation = PendingRebalanceOperation::new(
         "rebalance-replay-missing-local-bucket-runtime-test",
         "rebalance-bucket",
@@ -1572,7 +1573,8 @@ async fn test_pending_rebalance_replay_worker_forwards_chunk_scope_transfer_and_
     let queue_path = Path::new(data_dir.as_str())
         .join(".maxio-runtime")
         .join("pending-rebalance-queue.json");
-    let placement = PlacementViewState::from_membership(1, local_node_id, &[capture_peer.clone()]);
+    let placement =
+        PlacementViewState::from_membership(1, local_node_id, std::slice::from_ref(&capture_peer));
     let operation = PendingRebalanceOperation::new(
         "rebalance-replay-chunk-runtime-test",
         "rebalance-bucket",
@@ -1660,7 +1662,8 @@ async fn test_pending_replication_replay_worker_drops_terminal_replica_failure_w
     let queue_path = Path::new(data_dir.as_str())
         .join(".maxio-runtime")
         .join("pending-replication-queue.json");
-    let placement = PlacementViewState::from_membership(1, local_node_id, &[capture_peer.clone()]);
+    let placement =
+        PlacementViewState::from_membership(1, local_node_id, std::slice::from_ref(&capture_peer));
     let operation = PendingReplicationOperation::new(
         "pending-replication-terminal-status-test",
         ReplicationMutationOperation::PutObject,
@@ -1817,18 +1820,17 @@ async fn test_metrics_pending_rebalance_replay_counters_increment_in_distributed
             cycles_failed,
             last_cycle_unix_ms,
             last_success_unix_ms,
-        ) {
-            if total >= 1.0 {
-                observed = Some((
-                    total,
-                    succeeded,
-                    failed,
-                    last_cycle,
-                    last_success,
-                    last_failure_unix_ms,
-                ));
-                break;
-            }
+        ) && total >= 1.0
+        {
+            observed = Some((
+                total,
+                succeeded,
+                failed,
+                last_cycle,
+                last_success,
+                last_failure_unix_ms,
+            ));
+            break;
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -1912,20 +1914,20 @@ async fn test_metrics_pending_metadata_repair_replay_counters_increment_in_distr
             acknowledged_plans,
             last_cycle_unix_ms,
             last_success_unix_ms,
-        ) {
-            if total >= 1.0 && acknowledged_plans_total >= 1.0 {
-                observed = Some((
-                    total,
-                    succeeded,
-                    failed,
-                    failed_plans_total,
-                    acknowledged_plans_total,
-                    last_cycle,
-                    last_success,
-                    last_failure_unix_ms,
-                ));
-                break;
-            }
+        ) && total >= 1.0
+            && acknowledged_plans_total >= 1.0
+        {
+            observed = Some((
+                total,
+                succeeded,
+                failed,
+                failed_plans_total,
+                acknowledged_plans_total,
+                last_cycle,
+                last_success,
+                last_failure_unix_ms,
+            ));
+            break;
         }
 
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
@@ -2027,17 +2029,16 @@ async fn test_pending_metadata_repair_replay_worker_drops_stale_view_plans_witho
             failed_plans,
             target_view_mismatch_terminal_failures,
             cycles_failed,
-        ) {
-            if dropped >= 1.0 {
-                observed = Some((
-                    dropped,
-                    skipped,
-                    failed,
-                    terminal_failures,
-                    cycles_failed_total,
-                ));
-                break;
-            }
+        ) && dropped >= 1.0
+        {
+            observed = Some((
+                dropped,
+                skipped,
+                failed,
+                terminal_failures,
+                cycles_failed_total,
+            ));
+            break;
         }
 
         tokio::time::sleep(Duration::from_millis(100)).await;
@@ -6741,7 +6742,8 @@ async fn test_healthz_warns_when_pending_replication_due_backlog_exceeds_replay_
         .join("pending-replication-queue.json");
     let local_node_id = "node-a.internal:9000";
     let peer_node = "node-b.internal:9000".to_string();
-    let placement = PlacementViewState::from_membership(1, local_node_id, &[peer_node.clone()]);
+    let placement =
+        PlacementViewState::from_membership(1, local_node_id, std::slice::from_ref(&peer_node));
     for index in 0..129 {
         let operation_id = format!("pending-replication-healthz-warning-{index}");
         let object_key = format!("docs/object-{index}.txt");
@@ -6796,7 +6798,8 @@ async fn test_healthz_respects_pending_replication_due_warning_threshold_overrid
         .join("pending-replication-queue.json");
     let local_node_id = "node-a.internal:9000";
     let peer_node = "node-b.internal:9000".to_string();
-    let placement = PlacementViewState::from_membership(1, local_node_id, &[peer_node.clone()]);
+    let placement =
+        PlacementViewState::from_membership(1, local_node_id, std::slice::from_ref(&peer_node));
     for index in 0..129 {
         let operation_id = format!("pending-replication-healthz-threshold-{index}");
         let object_key = format!("docs/object-{index}.txt");
@@ -6849,7 +6852,8 @@ async fn test_healthz_warns_when_pending_rebalance_due_backlog_exceeds_replay_ba
         .join("pending-rebalance-queue.json");
     let local_node_id = "node-a.internal:9000";
     let peer_node = "node-b.internal:9000".to_string();
-    let placement = PlacementViewState::from_membership(1, local_node_id, &[peer_node.clone()]);
+    let placement =
+        PlacementViewState::from_membership(1, local_node_id, std::slice::from_ref(&peer_node));
     let transfers = vec![RebalanceTransfer {
         from: Some(local_node_id.to_string()),
         to: peer_node.clone(),
@@ -7432,22 +7436,22 @@ async fn test_gossip_convergence_worker_persists_retryable_stale_peer_reconcilia
         .join("pending-membership-propagation-queue.json");
     let mut queued_payload = None;
     for _ in 0..100 {
-        if let Ok(payload) = tokio::fs::read_to_string(queue_path.as_path()).await {
-            if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload.as_str()) {
-                let has_expected_operation =
-                    parsed["operations"].as_array().is_some_and(|operations| {
-                        operations.iter().any(|operation| {
-                            operation["peer"].as_str() == Some(stale_peer.as_str())
-                                && operation["request"]["expectedMembershipViewId"].as_str()
-                                    == Some(stale_peer_view)
-                                && operation["request"]["expectedPlacementEpoch"].as_u64()
-                                    == Some(stale_peer_epoch)
-                        })
-                    });
-                if has_expected_operation {
-                    queued_payload = Some(parsed);
-                    break;
-                }
+        if let Ok(payload) = tokio::fs::read_to_string(queue_path.as_path()).await
+            && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(payload.as_str())
+        {
+            let has_expected_operation =
+                parsed["operations"].as_array().is_some_and(|operations| {
+                    operations.iter().any(|operation| {
+                        operation["peer"].as_str() == Some(stale_peer.as_str())
+                            && operation["request"]["expectedMembershipViewId"].as_str()
+                                == Some(stale_peer_view)
+                            && operation["request"]["expectedPlacementEpoch"].as_u64()
+                                == Some(stale_peer_epoch)
+                    })
+                });
+            if has_expected_operation {
+                queued_payload = Some(parsed);
+                break;
             }
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

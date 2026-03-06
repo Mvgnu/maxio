@@ -87,56 +87,52 @@ pub(super) fn health_payload(
     if let Some(warning) = pending_replication_queue_probe.warning.clone() {
         warnings.push(warning);
     }
-    if pending_replication_queue_probe.readable {
-        if let Some(warning_threshold) = pending_replication_due_warning_threshold {
-            if pending_replication_queue_probe.due_targets > warning_threshold {
-                warnings.push(format!(
-                    "Pending replication backlog has {} due targets, exceeding replay batch size {} (warning threshold {}).",
-                    pending_replication_queue_probe.due_targets, PENDING_REPLICATION_REPLAY_BATCH_SIZE, warning_threshold
-                ));
-            }
-        }
+    if pending_replication_queue_probe.readable
+        && let Some(warning_threshold) = pending_replication_due_warning_threshold
+        && pending_replication_queue_probe.due_targets > warning_threshold
+    {
+        warnings.push(format!(
+            "Pending replication backlog has {} due targets, exceeding replay batch size {} (warning threshold {}).",
+            pending_replication_queue_probe.due_targets, PENDING_REPLICATION_REPLAY_BATCH_SIZE, warning_threshold
+        ));
     }
     if let Some(warning) = pending_rebalance_queue_probe.warning.clone() {
         warnings.push(warning);
     }
-    if pending_rebalance_queue_probe.readable {
-        if let Some(warning_threshold) = pending_rebalance_due_warning_threshold {
-            if pending_rebalance_queue_probe.due_transfers > warning_threshold {
-                warnings.push(format!(
-                    "Pending rebalance backlog has {} due transfers, exceeding replay batch size {} (warning threshold {}).",
-                    pending_rebalance_queue_probe.due_transfers, PENDING_REBALANCE_REPLAY_BATCH_SIZE, warning_threshold
-                ));
-            }
-        }
+    if pending_rebalance_queue_probe.readable
+        && let Some(warning_threshold) = pending_rebalance_due_warning_threshold
+        && pending_rebalance_queue_probe.due_transfers > warning_threshold
+    {
+        warnings.push(format!(
+            "Pending rebalance backlog has {} due transfers, exceeding replay batch size {} (warning threshold {}).",
+            pending_rebalance_queue_probe.due_transfers, PENDING_REBALANCE_REPLAY_BATCH_SIZE, warning_threshold
+        ));
     }
     if let Some(warning) = pending_membership_propagation_queue_probe.warning.clone() {
         warnings.push(warning);
     }
-    if pending_membership_propagation_queue_probe.readable {
-        if let Some(warning_threshold) = pending_membership_propagation_due_warning_threshold {
-            if pending_membership_propagation_queue_probe.due_operations > warning_threshold {
-                warnings.push(format!(
-                    "Pending membership propagation backlog has {} due operations, exceeding replay batch size {} (warning threshold {}).",
-                    pending_membership_propagation_queue_probe.due_operations,
-                    PENDING_MEMBERSHIP_PROPAGATION_REPLAY_BATCH_SIZE,
-                    warning_threshold
-                ));
-            }
-        }
+    if pending_membership_propagation_queue_probe.readable
+        && let Some(warning_threshold) = pending_membership_propagation_due_warning_threshold
+        && pending_membership_propagation_queue_probe.due_operations > warning_threshold
+    {
+        warnings.push(format!(
+            "Pending membership propagation backlog has {} due operations, exceeding replay batch size {} (warning threshold {}).",
+            pending_membership_propagation_queue_probe.due_operations,
+            PENDING_MEMBERSHIP_PROPAGATION_REPLAY_BATCH_SIZE,
+            warning_threshold
+        ));
     }
     if let Some(warning) = pending_metadata_repair_queue_probe.warning.clone() {
         warnings.push(warning);
     }
-    if pending_metadata_repair_queue_probe.readable {
-        if let Some(warning_threshold) = pending_metadata_repair_due_warning_threshold {
-            if pending_metadata_repair_queue_probe.due_plans > warning_threshold {
-                warnings.push(format!(
-                    "Pending metadata repair backlog has {} due plans, exceeding replay batch size {} (warning threshold {}).",
-                    pending_metadata_repair_queue_probe.due_plans, PENDING_METADATA_REPAIR_REPLAY_BATCH_SIZE, warning_threshold
-                ));
-            }
-        }
+    if pending_metadata_repair_queue_probe.readable
+        && let Some(warning_threshold) = pending_metadata_repair_due_warning_threshold
+        && pending_metadata_repair_queue_probe.due_plans > warning_threshold
+    {
+        warnings.push(format!(
+            "Pending metadata repair backlog has {} due plans, exceeding replay batch size {} (warning threshold {}).",
+            pending_metadata_repair_queue_probe.due_plans, PENDING_METADATA_REPAIR_REPLAY_BATCH_SIZE, warning_threshold
+        ));
     }
     if let Some(warning) = persisted_metadata_state_probe.warning.clone() {
         warnings.push(warning);

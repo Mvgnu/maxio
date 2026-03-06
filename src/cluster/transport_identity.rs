@@ -1091,10 +1091,10 @@ fn certificate_matches_expected_node_host_in_x509(
     if let Ok(expected_ip) = expected_node_host.parse::<IpAddr>() {
         if let Some(alt_names) = cert.subject_alt_names() {
             for alt_name in alt_names {
-                if let Some(ip_address) = alt_name.ipaddress() {
-                    if ip_address_matches(expected_ip, ip_address) {
-                        return Ok(true);
-                    }
+                if let Some(ip_address) = alt_name.ipaddress()
+                    && ip_address_matches(expected_ip, ip_address)
+                {
+                    return Ok(true);
                 }
             }
         }

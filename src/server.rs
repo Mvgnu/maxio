@@ -2671,19 +2671,17 @@ fn apply_pending_membership_propagation_replay_outcomes(
             | PendingMembershipPropagationReplayOperationOutcome::Dropped { original } => {
                 if let Some(index) = operations.iter().position(|operation| {
                     peer_identity_eq(operation.peer.as_str(), original.peer.as_str())
-                }) {
-                    if operations[index] == original {
-                        operations.remove(index);
-                    }
+                }) && operations[index] == original
+                {
+                    operations.remove(index);
                 }
             }
             PendingMembershipPropagationReplayOperationOutcome::Failed { original, retry } => {
                 if let Some(index) = operations.iter().position(|operation| {
                     peer_identity_eq(operation.peer.as_str(), original.peer.as_str())
-                }) {
-                    if operations[index] == original {
-                        operations[index] = retry;
-                    }
+                }) && operations[index] == original
+                {
+                    operations[index] = retry;
                 }
             }
         }
@@ -3014,14 +3012,14 @@ fn runtime_metadata_listing_readiness_for_topology(
         .config
         .cluster_auth_token()
         .is_some_and(|value| !value.trim().is_empty());
-    if topology.is_distributed() {
-        if let Some(reason) = cluster_metadata_fan_in_auth_token_reject_reason(
+    if topology.is_distributed()
+        && let Some(reason) = cluster_metadata_fan_in_auth_token_reject_reason(
             state.metadata_listing_strategy,
             has_cluster_auth_token,
-        ) {
-            effective_ready = false;
-            effective_gap = Some(reason.to_string());
-        }
+        )
+    {
+        effective_ready = false;
+        effective_gap = Some(reason.to_string());
     }
 
     RuntimeMetadataListingReadiness {

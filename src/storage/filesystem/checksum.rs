@@ -50,13 +50,13 @@ pub(super) fn finalize_checksum(
                 ))
             })?;
             let computed = hasher.finalize_base64();
-            if let Some(expected_val) = expected {
-                if computed != expected_val {
-                    return Err(StorageError::ChecksumMismatch(format!(
-                        "expected {}, got {}",
-                        expected_val, computed
-                    )));
-                }
+            if let Some(expected_val) = expected
+                && computed != expected_val
+            {
+                return Err(StorageError::ChecksumMismatch(format!(
+                    "expected {}, got {}",
+                    expected_val, computed
+                )));
             }
             Ok((Some(algo), Some(computed)))
         }

@@ -98,10 +98,10 @@ impl FilesystemStorage {
         while let Some(entry) = entries.next_entry().await? {
             if entry.file_type().await?.is_dir() {
                 let meta_path = entry.path().join(".bucket.json");
-                if let Ok(data) = fs::read_to_string(&meta_path).await {
-                    if let Ok(meta) = serde_json::from_str::<BucketMeta>(&data) {
-                        buckets.push(meta);
-                    }
+                if let Ok(data) = fs::read_to_string(&meta_path).await
+                    && let Ok(meta) = serde_json::from_str::<BucketMeta>(&data)
+                {
+                    buckets.push(meta);
                 }
             }
         }

@@ -691,10 +691,10 @@ impl FilesystemStorage {
                     if let Ok(rel) = path.strip_prefix(base) {
                         let rel_str = rel.to_string_lossy();
                         let key = rel_str.strip_suffix(".ec").unwrap_or(&rel_str).to_string();
-                        if key.starts_with(prefix) {
-                            if let Ok(meta) = self.read_object_meta(bucket, &key).await {
-                                results.push(meta);
-                            }
+                        if key.starts_with(prefix)
+                            && let Ok(meta) = self.read_object_meta(bucket, &key).await
+                        {
+                            results.push(meta);
                         }
                     }
                     continue;
@@ -702,29 +702,29 @@ impl FilesystemStorage {
 
                 if entry.file_type().await?.is_dir() {
                     let marker = path.join(".folder.meta.json");
-                    if fs::try_exists(&marker).await? {
-                        if let Ok(rel) = path.strip_prefix(base) {
-                            let key = format!("{}/", rel.to_string_lossy());
-                            if !key.starts_with(prefix) {
-                                self.walk_dir(bucket, base, &path, prefix, results).await?;
-                                continue;
-                            }
-                            if let Some(meta) = fs::read_to_string(&marker)
-                                .await
-                                .ok()
-                                .and_then(|data| serde_json::from_str::<ObjectMeta>(&data).ok())
-                            {
-                                results.push(meta);
-                            }
+                    if fs::try_exists(&marker).await?
+                        && let Ok(rel) = path.strip_prefix(base)
+                    {
+                        let key = format!("{}/", rel.to_string_lossy());
+                        if !key.starts_with(prefix) {
+                            self.walk_dir(bucket, base, &path, prefix, results).await?;
+                            continue;
+                        }
+                        if let Some(meta) = fs::read_to_string(&marker)
+                            .await
+                            .ok()
+                            .and_then(|data| serde_json::from_str::<ObjectMeta>(&data).ok())
+                        {
+                            results.push(meta);
                         }
                     }
                     self.walk_dir(bucket, base, &path, prefix, results).await?;
                 } else if let Ok(rel) = path.strip_prefix(base) {
                     let key = rel.to_string_lossy().to_string();
-                    if key.starts_with(prefix) {
-                        if let Ok(meta) = self.read_object_meta(bucket, &key).await {
-                            results.push(meta);
-                        }
+                    if key.starts_with(prefix)
+                        && let Ok(meta) = self.read_object_meta(bucket, &key).await
+                    {
+                        results.push(meta);
                     }
                 }
             }

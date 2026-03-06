@@ -129,10 +129,10 @@ impl FilesystemStorage {
                 let b64 = base64::engine::general_purpose::STANDARD;
                 let mut raw_checksums = Vec::new();
                 for part in selected {
-                    if let Some(ref val) = part.checksum_value {
-                        if let Ok(raw) = b64.decode(val) {
-                            raw_checksums.extend_from_slice(&raw);
-                        }
+                    if let Some(ref val) = part.checksum_value
+                        && let Ok(raw) = b64.decode(val)
+                    {
+                        raw_checksums.extend_from_slice(&raw);
                     }
                 }
                 if !raw_checksums.is_empty() {
@@ -366,10 +366,10 @@ impl FilesystemStorage {
                 let b64 = base64::engine::general_purpose::STANDARD;
                 let mut raw_checksums = Vec::new();
                 for part in &selected {
-                    if let Some(ref val) = part.checksum_value {
-                        if let Ok(raw) = b64.decode(val) {
-                            raw_checksums.extend_from_slice(&raw);
-                        }
+                    if let Some(ref val) = part.checksum_value
+                        && let Ok(raw) = b64.decode(val)
+                    {
+                        raw_checksums.extend_from_slice(&raw);
                     }
                 }
                 if !raw_checksums.is_empty() {

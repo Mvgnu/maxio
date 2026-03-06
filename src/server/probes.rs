@@ -872,13 +872,13 @@ pub(super) fn probe_membership_convergence(
     for observation in &peer_connectivity_probe.peer_views {
         match observation.membership_view_id.as_deref() {
             Some(peer_view_id) if peer_view_id == topology.membership_view_id => {
-                if let Some(peer_epoch) = observation.placement_epoch {
-                    if peer_epoch != topology.placement_epoch {
-                        epoch_mismatches.push(format!(
-                            "{} (peer epoch {}, local {})",
-                            observation.peer, peer_epoch, topology.placement_epoch
-                        ));
-                    }
+                if let Some(peer_epoch) = observation.placement_epoch
+                    && peer_epoch != topology.placement_epoch
+                {
+                    epoch_mismatches.push(format!(
+                        "{} (peer epoch {}, local {})",
+                        observation.peer, peer_epoch, topology.placement_epoch
+                    ));
                 }
             }
             Some(peer_view_id) => view_mismatches.push(format!(
@@ -1167,10 +1167,10 @@ pub(super) fn probe_cluster_join_auth_status(
         headers.insert(JOIN_NONCE_HEADER, value);
     }
 
-    if let Some(token) = state.config.cluster_auth_token() {
-        if let Ok(value) = HeaderValue::from_str(token) {
-            headers.insert(crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER, value);
-        }
+    if let Some(token) = state.config.cluster_auth_token()
+        && let Ok(value) = HeaderValue::from_str(token)
+    {
+        headers.insert(crate::cluster::security::INTERNAL_AUTH_TOKEN_HEADER, value);
     }
 
     let result = authorize_join_request(

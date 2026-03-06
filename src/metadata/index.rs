@@ -447,10 +447,10 @@ pub fn assess_cluster_responder_membership_views(
             .map(ToOwned::to_owned);
         match normalized {
             Some(view_id) => {
-                if let Some(expected) = expected_view_id.as_deref() {
-                    if view_id != expected {
-                        mismatched_nodes.push(responder.node_id.clone());
-                    }
+                if let Some(expected) = expected_view_id.as_deref()
+                    && view_id != expected
+                {
+                    mismatched_nodes.push(responder.node_id.clone());
                 }
                 observed_views.insert(view_id);
             }

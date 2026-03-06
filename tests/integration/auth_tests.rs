@@ -659,7 +659,7 @@ fn presign_url_with_credentials_at(
     let amz_date = now.format("%Y%m%dT%H%M%SZ").to_string();
     let credential = format!("{}/{}/{}/s3/aws4_request", access_key, date_stamp, REGION);
 
-    let mut qs_params = vec![
+    let mut qs_params = [
         (
             "X-Amz-Algorithm".to_string(),
             "AWS4-HMAC-SHA256".to_string(),
@@ -731,7 +731,7 @@ fn presign_url_with_missing_signed_header(
     let credential = format!("{}/{}/{}/s3/aws4_request", ACCESS_KEY, date_stamp, REGION);
     let signed_headers = "host;x-amz-meta-probe";
 
-    let mut qs_params = vec![
+    let mut qs_params = [
         (
             "X-Amz-Algorithm".to_string(),
             "AWS4-HMAC-SHA256".to_string(),
@@ -1025,7 +1025,7 @@ async fn test_presigned_expired_url() {
     let amz_date = past.format("%Y%m%dT%H%M%SZ").to_string();
     let credential = format!("{}/{}/{}/s3/aws4_request", ACCESS_KEY, date_stamp, REGION);
 
-    let mut qs_params = vec![
+    let mut qs_params = [
         (
             "X-Amz-Algorithm".to_string(),
             "AWS4-HMAC-SHA256".to_string(),

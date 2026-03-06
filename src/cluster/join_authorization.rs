@@ -177,10 +177,10 @@ impl JoinNonceReplayGuard for InMemoryJoinNonceReplayGuard {
         entries.retain(|_, seen_at| now_unix_ms.saturating_sub(*seen_at) <= ttl_ms);
 
         let key = Self::nonce_key(peer_node_id, nonce);
-        if let Some(previous_seen_at) = entries.get(key.as_str()) {
-            if now_unix_ms.saturating_sub(*previous_seen_at) <= ttl_ms {
-                return false;
-            }
+        if let Some(previous_seen_at) = entries.get(key.as_str())
+            && now_unix_ms.saturating_sub(*previous_seen_at) <= ttl_ms
+        {
+            return false;
         }
 
         entries.insert(key, now_unix_ms);
@@ -287,10 +287,10 @@ impl JoinNonceReplayGuard for DurableJoinNonceReplayGuard {
         entries.retain(|_, seen_at| now_unix_ms.saturating_sub(*seen_at) <= ttl_ms);
 
         let key = InMemoryJoinNonceReplayGuard::nonce_key(peer_node_id, nonce);
-        if let Some(previous_seen_at) = entries.get(key.as_str()) {
-            if now_unix_ms.saturating_sub(*previous_seen_at) <= ttl_ms {
-                return false;
-            }
+        if let Some(previous_seen_at) = entries.get(key.as_str())
+            && now_unix_ms.saturating_sub(*previous_seen_at) <= ttl_ms
+        {
+            return false;
         }
 
         entries.insert(key, now_unix_ms);
@@ -492,18 +492,18 @@ pub fn authorize_join_request(
         }
     }
 
-    if let Some(replay_guard) = replay_guard {
-        if !replay_guard.register_nonce(
+    if let Some(replay_guard) = replay_guard
+        && !replay_guard.register_nonce(
             peer_node_id.as_str(),
             nonce.as_str(),
             issued_at_unix_ms,
             now_unix_ms,
-        ) {
-            return JoinAuthorizationResult::rejected(
-                mode,
-                JoinAuthorizationError::JoinNonceReplayDetected,
-            );
-        }
+        )
+    {
+        return JoinAuthorizationResult::rejected(
+            mode,
+            JoinAuthorizationError::JoinNonceReplayDetected,
+        );
     }
 
     JoinAuthorizationResult::authorized(mode, peer_node_id)

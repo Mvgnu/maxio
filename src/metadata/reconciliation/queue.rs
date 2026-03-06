@@ -130,12 +130,12 @@ pub fn lease_pending_metadata_repair_plan_for_execution(
         return PendingMetadataRepairLeaseOutcome::NotFound;
     };
 
-    if let Some(next_retry_at_unix_ms) = plan.next_retry_at_unix_ms {
-        if next_retry_at_unix_ms > now_unix_ms {
-            return PendingMetadataRepairLeaseOutcome::NotDue {
-                next_retry_at_unix_ms,
-            };
-        }
+    if let Some(next_retry_at_unix_ms) = plan.next_retry_at_unix_ms
+        && next_retry_at_unix_ms > now_unix_ms
+    {
+        return PendingMetadataRepairLeaseOutcome::NotDue {
+            next_retry_at_unix_ms,
+        };
     }
 
     let lease_expires_at_unix_ms = now_unix_ms.saturating_add(lease_ms.max(1));
