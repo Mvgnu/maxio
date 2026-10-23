@@ -27,11 +27,14 @@ import xml.etree.ElementTree as ET
 
 
 class S3:
-    def __init__(self, port, access, secret):
-        self.endpoint = f"http://127.0.0.1:{port}"
+    def __init__(self, port, access, secret, tls_context=None):
+        self.endpoint = f"{'https' if tls_context else 'http'}://127.0.0.1:{port}"
         self.access = access
         self.secret = secret
-        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        handlers = [urllib.request.ProxyHandler({})]
+        if tls_context is not None:
+            handlers.append(urllib.request.HTTPSHandler(context=tls_context))
+        self.opener = urllib.request.build_opener(*handlers)
 
     def request(self, method, path="/", body=b"", query=None, extra_headers=None):
         path = urllib.parse.quote(path, safe="/~")
@@ -94,13 +97,14 @@ def list_keys(client, bucket):
 
 
 class Node:
-    def __init__(self, binary, root, name, port, peer_port, env):
+    def __init__(self, binary, root, name, port, peer_port, env, tls_context=None):
         self.binary = str(binary)
         self.root = root / name
         self.root.mkdir()
         self.port = port
         self.peer_port = peer_port
         self.env = env
+        self.tls_context = tls_context
         self.process = None
         self.log = None
 
@@ -120,13 +124,17 @@ class Node:
             ]
         self.log = (self.root / "server.log").open("ab")
         self.process = subprocess.Popen(args, env=self.env, stdout=self.log, stderr=self.log)
-        opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        handlers = [urllib.request.ProxyHandler({})]
+        if self.tls_context is not None:
+            handlers.append(urllib.request.HTTPSHandler(context=self.tls_context))
+        opener = urllib.request.build_opener(*handlers)
         deadline = time.monotonic() + 20
         while time.monotonic() < deadline:
             if self.process.poll() is not None:
                 raise RuntimeError(f"server exited with {self.process.returncode}: {self.root / 'server.log'}")
             try:
-                with opener.open(f"http://127.0.0.1:{self.port}/healthz", timeout=1):
+                scheme = 'https' if self.tls_context is not None else 'http'
+                with opener.open(f"{scheme}://127.0.0.1:{self.port}/healthz", timeout=1):
                     return
             except urllib.error.HTTPError as error:
                 # A degraded cluster is still serving; exercise S3 separately.

@@ -65,7 +65,9 @@ def full_gate():
     sync = shlex.quote(str(target / "debug/maxio-sync"))
     run(f"python3 scripts/smoke_standalone.py --binary {binary}")
     run(f"python3 scripts/smoke_peer_s3.py --binary {binary}")
+    run(f"python3 scripts/smoke_secure_peers.py --binary {binary}")
     run(f"python3 scripts/smoke_device_sync.py --binary {binary} --sync-binary {sync}")
+    run(f"python3 scripts/smoke_device_sync.py --binary {binary} --sync-binary {sync} --tls")
 
 
 def main():

@@ -8,7 +8,7 @@ use std::time::Duration;
 
 use super::response;
 use crate::api::object::peer_transport::{
-    attest_internal_peer_target, build_internal_peer_http_client, internal_peer_transport_scheme,
+    build_internal_peer_http_client, internal_peer_transport_scheme,
 };
 use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
 use crate::cluster::authenticator::{FORWARDED_BY_HEADER, authenticate_forwarded_request};
@@ -1395,9 +1395,9 @@ pub(super) async fn send_internal_peer_request(
     extra_query_params: &[(&str, &str)],
     body: Option<Vec<u8>>,
 ) -> Result<reqwest::Response, String> {
-    attest_internal_peer_target(state, peer, Duration::from_secs(2)).map_err(|err| err.message)?;
     let transport = build_internal_peer_http_client(
         state,
+        peer,
         Some(Duration::from_secs(2)),
         Duration::from_secs(10),
     )
@@ -1463,6 +1463,8 @@ mod tests {
             write_durability_mode: WriteDurabilityMode::DegradedSuccess,
             metadata_listing_strategy: ClusterMetadataListingStrategy::LocalNodeOnly,
             cluster_auth_token: None,
+            tls_cert_path: None,
+            tls_key_path: None,
             cluster_peer_tls_cert_path: None,
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,

@@ -42,6 +42,8 @@ pub(crate) fn make_test_config(
         write_durability_mode: WriteDurabilityMode::DegradedSuccess,
         metadata_listing_strategy: ClusterMetadataListingStrategy::LocalNodeOnly,
         cluster_auth_token: None,
+        tls_cert_path: None,
+        tls_key_path: None,
         cluster_peer_tls_cert_path: None,
         cluster_peer_tls_key_path: None,
         cluster_peer_tls_ca_path: None,

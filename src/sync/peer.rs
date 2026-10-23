@@ -82,13 +82,32 @@ impl Peer {
         if !prefix.is_empty() {
             local::validate_relative(prefix)?;
         }
+        let mut client = Client::builder()
+            .no_proxy()
+            .redirect(reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(10))
+            .timeout(Duration::from_secs(120));
+        if let Some(path) = &options.ca_cert {
+            ensure!(
+                endpoint.scheme() == "https",
+                "--ca-cert requires an HTTPS endpoint"
+            );
+            let pem = std::fs::read(path).context("cannot read sync CA bundle")?;
+            let certificates = reqwest::Certificate::from_pem_bundle(&pem)
+                .context("sync CA bundle contains an invalid certificate")?;
+            ensure!(
+                !certificates.is_empty(),
+                "sync CA bundle contains no certificates"
+            );
+            client = client.tls_built_in_root_certs(false);
+            for certificate in certificates {
+                client = client.add_root_certificate(certificate);
+            }
+        }
         Ok(Self {
-            client: Client::builder()
-                .no_proxy()
-                .redirect(reqwest::redirect::Policy::none())
-                .connect_timeout(Duration::from_secs(10))
-                .timeout(Duration::from_secs(120))
-                .build()?,
+            client: client
+                .build()
+                .context("cannot configure direct peer transport")?,
             endpoint,
             bucket: options.bucket.clone(),
             prefix: if prefix.is_empty() {

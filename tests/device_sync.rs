@@ -48,6 +48,7 @@ fn options(root: &Path, endpoint: &str) -> SyncOptions {
     SyncOptions {
         local: root.into(),
         endpoint: endpoint.into(),
+        ca_cert: None,
         bucket: "device-files".into(),
         prefix: "shared/".into(),
         access_key: "sync-test".into(),
@@ -268,4 +269,34 @@ async fn first_contact_with_different_content_preserves_both_versions() {
         .unwrap();
     assert_eq!(std::fs::read(conflict.path()).unwrap(), b"existing local");
     server.abort();
+}
+
+#[test]
+fn custom_ca_is_rejected_for_plain_http_before_creating_local_state() {
+    let root = TempDir::new().unwrap();
+    let mut config = options(root.path(), "http://127.0.0.1:9000");
+    config.ca_cert = Some(root.path().join("not-read.pem"));
+    let error = match Synchronizer::open(config) {
+        Ok(_) => panic!("CA configuration must not imply HTTP is verified TLS"),
+        Err(error) => error,
+    };
+    assert!(format!("{error:#}").contains("requires an HTTPS endpoint"));
+    assert!(!root.path().join(".maxio-sync").exists());
+}
+
+#[test]
+fn invalid_custom_ca_fails_before_creating_local_state() {
+    for contents in [
+        "",
+        "not a certificate",
+        "-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n",
+    ] {
+        let root = TempDir::new().unwrap();
+        let ca = root.path().join("ca.pem");
+        std::fs::write(&ca, contents).unwrap();
+        let mut config = options(root.path(), "https://127.0.0.1:9000");
+        config.ca_cert = Some(ca);
+        assert!(Synchronizer::open(config).is_err());
+        assert!(!root.path().join(".maxio-sync").exists());
+    }
 }

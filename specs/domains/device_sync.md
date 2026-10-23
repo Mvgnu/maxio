@@ -48,6 +48,12 @@
 - Complete and validate listings before reconciliation; reject unsafe keys, symlinks and ambiguous file paths.
 - Stage downloads, preserve conflict copies, and compare content digests; wall-clock time is not an authority.
 - No deletion propagation in this milestone: a missing copy is restored from the surviving one.
+- `--ca-cert` / `MAXIO_SYNC_CA_CERT` selects an explicit PEM trust bundle for HTTPS.
+  Verify the normal hostname, certificate chain and validity; no insecure switch.
+  Without the option, use system roots. With it, use only the supplied roots.
+  Invalid/empty/unreadable bundles and HTTP endpoints fail before journal creation.
+- Run the real-process sync drill with `--tls` to exercise the same conflict, offline
+  failure and restart behavior through native HTTPS, including wrong-CA rejection.
 
 ## Known limits / next decision
 

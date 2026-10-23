@@ -4,7 +4,8 @@
 Two ordinary folders synchronize through an explicitly chosen loopback S3 peer.
 This drill covers restart, conflicting edits, offline failure and recovery. It
 does not establish WAN transport security, NAT traversal, deletion propagation,
-or Syncthing feature parity. Only Python's standard library is required.
+or Syncthing feature parity. Python's standard library is required; --tls also
+uses OpenSSL to create a disposable private CA and exercises verified HTTPS.
 """
 
 import argparse
@@ -14,6 +15,7 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import ssl
 import subprocess
 import sys
 import tempfile
@@ -40,6 +42,7 @@ class SyncProcess:
         self.env = env
         self.root = root
         self.invocations = 0
+        self.ca_cert = None
 
     def once(self, folder, should_succeed=True):
         # Each call starts a fresh process, so successful later calls must load
@@ -53,6 +56,8 @@ class SyncProcess:
             "--prefix", "shared",
             "--once",
         ]
+        if self.ca_cert is not None:
+            command += ["--ca-cert", str(self.ca_cert)]
         result = subprocess.run(
             command, env=self.env, capture_output=True, text=True, timeout=45,
         )
@@ -75,11 +80,41 @@ class SyncProcess:
                     raise AssertionError(f"invalid sync report field {field}: {report}")
             return report
         if result.returncode == 0:
-            raise AssertionError("offline peer incorrectly produced a successful sync")
+            raise AssertionError("an unavailable or untrusted peer incorrectly produced a successful sync")
         return None
 
 
-def run(binary, sync_binary, keep_data):
+def private_ca_fixture(root):
+    """Issue a disposable standalone server leaf and an unrelated trust root."""
+    tls = root / "tls"
+    tls.mkdir()
+
+    def openssl(*args):
+        result = subprocess.run(["openssl", *map(str, args)], capture_output=True, timeout=30)
+        if result.returncode:
+            raise RuntimeError(f"OpenSSL fixture failed: {result.stderr.decode(errors='replace')}")
+
+    for name in ("ca", "wrong-ca"):
+        openssl("req", "-x509", "-newkey", "rsa:2048", "-nodes", "-sha256", "-days", "2",
+                "-keyout", tls / f"{name}.key", "-out", tls / f"{name}.crt",
+                "-subj", f"/CN=MaxIO sync smoke {name}",
+                "-addext", "basicConstraints=critical,CA:TRUE,pathlen:0",
+                "-addext", "keyUsage=critical,keyCertSign,cRLSign")
+    openssl("req", "-new", "-newkey", "rsa:2048", "-nodes", "-sha256",
+            "-keyout", tls / "server.key", "-out", tls / "server.csr",
+            "-subj", "/CN=MaxIO sync smoke server")
+    (tls / "server.ext").write_text(
+        "basicConstraints=critical,CA:FALSE\n"
+        "keyUsage=critical,digitalSignature,keyEncipherment\n"
+        "extendedKeyUsage=serverAuth\nsubjectAltName=IP:127.0.0.1\n"
+    )
+    openssl("x509", "-req", "-in", tls / "server.csr", "-CA", tls / "ca.crt",
+            "-CAkey", tls / "ca.key", "-CAcreateserial", "-out", tls / "server.crt",
+            "-days", "2", "-sha256", "-extfile", tls / "server.ext")
+    return tls
+
+
+def run(binary, sync_binary, keep_data, use_tls=False):
     root = Path(tempfile.mkdtemp(prefix="maxio-device-sync-smoke-"))
     reservation = socket.socket()
     reservation.bind(("127.0.0.1", 0))
@@ -96,8 +131,16 @@ def run(binary, sync_binary, keep_data):
         "RUST_LOG": "warn",
         "NO_PROXY": "127.0.0.1,localhost",
     })
-    node = Node(binary, root, "peer", port, 0, env)
-    client = S3(port, env["MAXIO_ACCESS_KEY"], env["MAXIO_SECRET_KEY"])
+    tls = private_ca_fixture(root) if use_tls else None
+    context = ssl.create_default_context(cafile=str(tls / "ca.crt")) if tls else None
+    if tls:
+        env.update({
+            "MAXIO_TLS_CERT_PATH": str(tls / "server.crt"),
+            "MAXIO_TLS_KEY_PATH": str(tls / "server.key"),
+            "MAXIO_SYNC_CA_CERT": str(tls / "ca.crt"),
+        })
+    node = Node(binary, root, "peer", port, 0, env, tls_context=context)
+    client = S3(port, env["MAXIO_ACCESS_KEY"], env["MAXIO_SECRET_KEY"], tls_context=context)
     bucket = "device-sync-smoke"
     runner = SyncProcess(sync_binary, client.endpoint, bucket, env, root)
     folders = [root / "device-a", root / "device-b"]
@@ -109,6 +152,22 @@ def run(binary, sync_binary, keep_data):
         reservation.close()
         node.start(clustered=False)
         expect(client.request("PUT", f"/{bucket}"), 200, "create sync bucket")
+
+        if tls:
+            (a / "precious.txt").write_bytes(b"must survive an untrusted endpoint\n")
+            before = snapshot(a)
+            runner.ca_cert = tls / "wrong-ca.crt"
+            runner.once(a, should_succeed=False)
+            if snapshot(a) != before or list_keys(client, bucket):
+                raise AssertionError("wrong-CA failure mutated local or remote user files")
+            if (a / ".maxio-sync").exists():
+                # The registry may be initialized before the first network request,
+                # but an unverified peer must never advance the persisted baseline.
+                if list((a / ".maxio-sync").rglob("journal.json")):
+                    raise AssertionError("wrong-CA failure advanced a journal")
+            runner.ca_cert = None
+            (a / "precious.txt").unlink()
+            print("PASS: wrong CA rejects HTTPS without changing user files or advancing the baseline")
 
         (a / "work").mkdir()
         unicode_key = "work/café + #%.txt"
@@ -173,7 +232,7 @@ def run(binary, sync_binary, keep_data):
         print(json.dumps({
             "result": "pass", "devices": 2, "peer_servers": 1,
             "files": len(snapshot(a)), "fresh_client_processes": runner.invocations,
-            "cloud_services": 0,
+            "cloud_services": 0, "transport": "https" if use_tls else "http",
         }))
         success = True
     finally:
@@ -190,12 +249,13 @@ def main():
     parser.add_argument("--binary", type=Path, default=Path("target/debug/maxio"))
     parser.add_argument("--sync-binary", type=Path, default=Path("target/debug/maxio-sync"))
     parser.add_argument("--keep-data", action="store_true")
+    parser.add_argument("--tls", action="store_true", help="exercise native HTTPS with a private CA (requires OpenSSL)")
     args = parser.parse_args()
     binary, sync_binary = args.binary.resolve(), args.sync_binary.resolve()
     for executable in (binary, sync_binary):
         if not executable.is_file():
             parser.error(f"build both binaries first; executable not found: {executable}")
-    run(binary, sync_binary, args.keep_data)
+    run(binary, sync_binary, args.keep_data, args.tls)
 
 
 if __name__ == "__main__":

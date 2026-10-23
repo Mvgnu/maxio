@@ -39,6 +39,14 @@ Replace loopback with the chosen device's private/VPN address or a verified HTTP
 endpoint. Omit `--once` to poll; default interval is 15 seconds. Ctrl+C stops the
 client. There is no OS service installation or automatic peer discovery.
 
+For a private CA, run the standalone server with `--tls-cert-path` and
+`--tls-key-path`, then use an HTTPS origin and `--ca-cert ./tls/ca.crt` on each sync
+client. `MAXIO_SYNC_CA_CERT` is equivalent. The explicit bundle supplies the only
+trust roots for that client; ordinary hostname, expiry and chain validation stay
+enabled. Without it, the normal system roots apply. Invalid/empty/unreadable
+bundles and use with an HTTP endpoint fail before journal creation. No insecure
+certificate switch is provided.
+
 ## Reconciliation contract
 
 | Observed state | Action |
@@ -62,6 +70,8 @@ sync process; unsafe paths, symlinks and case/file-directory aliases are rejecte
 ```bash
 python3 scripts/smoke_device_sync.py --binary ./target/debug/maxio \
   --sync-binary ./target/debug/maxio-sync
+python3 scripts/smoke_device_sync.py --binary ./target/debug/maxio \
+  --sync-binary ./target/debug/maxio-sync --tls
 ```
 
 A critic must inspect actual folders after initial transfer, updates, restart,
@@ -69,6 +79,11 @@ simultaneous differing edits, an offline peer and recovery. Both conflict conten
 must remain accessible. Also test an endpoint that ignores conditions; no user file
 may be uploaded to it. `cargo test --test device_sync` supplies focused regressions,
 but the executable drill establishes CLI wiring.
+
+The HTTPS variant creates a disposable private CA and standalone server certificate,
+rejects an unrelated CA without changing user files or advancing the baseline,
+then repeats the complete conflict/restart/offline journey with verified transport.
+OpenSSL is required to issue those temporary test certificates.
 
 ## Deliberate limits
 

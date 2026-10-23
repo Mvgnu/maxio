@@ -107,6 +107,25 @@ async fn test_console_auth_login_check_logout_flow() {
     assert!(logout_cookie.contains("maxio_session="));
     assert!(logout_cookie.contains("Max-Age=0"));
 
+    // Clearing a browser cookie must also revoke copies held elsewhere.
+    for path in ["/api/auth/check", "/api/auth/me", "/api/buckets"] {
+        let replay = client
+            .get(format!("{base_url}{path}"))
+            .header("cookie", &set_cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(replay.status(), 401, "logged-out cookie accepted by {path}");
+    }
+    let replay = client
+        .post(format!("{base_url}/api/buckets"))
+        .header("cookie", &set_cookie)
+        .json(&serde_json::json!({"name": "revoked-session-bucket"}))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), 401);
+
     // No cookie means unauthenticated again
     let resp = client
         .get(format!("{}/api/auth/check", base_url))
@@ -114,6 +133,150 @@ async fn test_console_auth_login_check_logout_flow() {
         .await
         .unwrap();
     assert_eq!(resp.status(), 401);
+}
+
+#[tokio::test]
+async fn test_console_auth_concurrent_sessions_have_independent_logout() {
+    let (base_url, _tmp) = start_server().await;
+    let client = client();
+    let (first, second) = tokio::join!(
+        console_login_cookie(&base_url),
+        console_login_cookie(&base_url)
+    );
+    assert_ne!(first, second, "each login must create a distinct session");
+
+    let forged_logout = client
+        .post(format!("{base_url}/api/auth/logout"))
+        .header("cookie", format!("maxio_session={}", "0".repeat(64)))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(forged_logout.status(), 401);
+
+    let logout = client
+        .post(format!("{base_url}/api/auth/logout"))
+        .header("cookie", &first)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), 200);
+
+    for path in ["/api/auth/check", "/api/auth/me", "/api/buckets"] {
+        for (cookie, expected) in [(&first, 401), (&second, 200)] {
+            let response = client
+                .get(format!("{base_url}{path}"))
+                .header("cookie", cookie)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), expected, "session result for {path}");
+        }
+    }
+
+    let create = client
+        .post(format!("{base_url}/api/buckets"))
+        .header("cookie", &second)
+        .json(&serde_json::json!({"name": "independent-session-bucket"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(create.status().is_success());
+    let replay_logout = client
+        .post(format!("{base_url}/api/auth/logout"))
+        .header("cookie", &first)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay_logout.status(), 401);
+}
+
+#[tokio::test]
+async fn test_console_auth_restart_invalidates_copied_cookie() {
+    async fn start(
+        data_dir: &std::path::Path,
+    ) -> (
+        String,
+        tokio::sync::oneshot::Sender<()>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let config = make_test_config(
+            data_dir.to_str().unwrap().to_owned(),
+            false,
+            10 * 1024 * 1024,
+            0,
+        );
+        let state = maxio::server::AppState::from_config(config).await.unwrap();
+        let app = maxio::server::build_router(state);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            axum::serve(
+                listener,
+                app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            )
+            .with_graceful_shutdown(async {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+        (base_url, shutdown_tx, task)
+    }
+
+    let tmp = tempfile::TempDir::new().unwrap();
+    let client = client();
+    let (before, shutdown, task) = start(tmp.path()).await;
+    let cookie = console_login_cookie(&before).await;
+    let create = client
+        .post(format!("{before}/api/buckets"))
+        .header("cookie", &cookie)
+        .json(&serde_json::json!({"name": "restart-session-bucket"}))
+        .send()
+        .await
+        .unwrap();
+    assert!(create.status().is_success());
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+
+    // Same credentials and persisted data, but a newly constructed server state.
+    let (after, shutdown, task) = start(tmp.path()).await;
+    for path in ["/api/auth/check", "/api/auth/me", "/api/buckets"] {
+        let replay = client
+            .get(format!("{after}{path}"))
+            .header("cookie", &cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(
+            replay.status(),
+            401,
+            "pre-restart cookie accepted by {path}"
+        );
+    }
+    let fresh_cookie = console_login_cookie(&after).await;
+    let buckets = client
+        .get(format!("{after}/api/buckets"))
+        .header("cookie", fresh_cookie)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(buckets.status(), 200);
+    assert!(
+        buckets
+            .text()
+            .await
+            .unwrap()
+            .contains("restart-session-bucket")
+    );
+    shutdown.send(()).unwrap();
+    tokio::time::timeout(std::time::Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
 }
 
 #[tokio::test]
@@ -371,9 +534,9 @@ fn forge_console_session_cookie(access_key: &str, secret_key: &str, issued_at: i
 }
 
 #[tokio::test]
-async fn test_console_protected_route_rejects_expired_cookie() {
+async fn test_console_protected_route_rejects_expired_legacy_cookie() {
     let (base_url, _tmp) = start_server().await;
-    // TOKEN_MAX_AGE_SECS in auth middleware is 7 days.
+    // A legacy signed cookie is rejected regardless of its embedded timestamp.
     let issued_at = chrono::Utc::now().timestamp() - (8 * 24 * 60 * 60);
     let expired_cookie = forge_console_session_cookie(ACCESS_KEY, SECRET_KEY, issued_at);
 
@@ -387,9 +550,9 @@ async fn test_console_protected_route_rejects_expired_cookie() {
 }
 
 #[tokio::test]
-async fn test_console_protected_route_rejects_future_dated_cookie() {
+async fn test_console_protected_route_rejects_future_dated_legacy_cookie() {
     let (base_url, _tmp) = start_server().await;
-    // Middleware allows max +60 seconds skew.
+    // A legacy signed cookie is rejected regardless of its embedded timestamp.
     let issued_at = chrono::Utc::now().timestamp() + 120;
     let future_cookie = forge_console_session_cookie(ACCESS_KEY, SECRET_KEY, issued_at);
 
@@ -403,9 +566,9 @@ async fn test_console_protected_route_rejects_future_dated_cookie() {
 }
 
 #[tokio::test]
-async fn test_console_auth_me_rejects_expired_cookie() {
+async fn test_console_auth_me_rejects_expired_legacy_cookie() {
     let (base_url, _tmp) = start_server().await;
-    // TOKEN_MAX_AGE_SECS in auth middleware is 7 days.
+    // A legacy signed cookie is rejected regardless of its embedded timestamp.
     let issued_at = chrono::Utc::now().timestamp() - (8 * 24 * 60 * 60);
     let expired_cookie = forge_console_session_cookie(ACCESS_KEY, SECRET_KEY, issued_at);
 
@@ -419,9 +582,9 @@ async fn test_console_auth_me_rejects_expired_cookie() {
 }
 
 #[tokio::test]
-async fn test_console_auth_me_rejects_future_dated_cookie() {
+async fn test_console_auth_me_rejects_future_dated_legacy_cookie() {
     let (base_url, _tmp) = start_server().await;
-    // Middleware allows max +60 seconds skew.
+    // A legacy signed cookie is rejected regardless of its embedded timestamp.
     let issued_at = chrono::Utc::now().timestamp() + 120;
     let future_cookie = forge_console_session_cookie(ACCESS_KEY, SECRET_KEY, issued_at);
 
@@ -435,7 +598,7 @@ async fn test_console_auth_me_rejects_future_dated_cookie() {
 }
 
 #[tokio::test]
-async fn test_console_auth_me_rejects_unknown_access_key_cookie() {
+async fn test_console_auth_me_rejects_unknown_access_key_legacy_cookie() {
     let (base_url, _tmp) = start_server().await;
     let issued_at = chrono::Utc::now().timestamp();
     let unknown_cookie = forge_console_session_cookie("unknown-access-key", SECRET_KEY, issued_at);
@@ -450,16 +613,33 @@ async fn test_console_auth_me_rejects_unknown_access_key_cookie() {
 }
 
 #[tokio::test]
-async fn test_console_login_rate_limit_enforced() {
+async fn test_console_auth_rejects_previously_valid_stateless_cookie() {
+    let (base_url, _tmp) = start_server().await;
+    let legacy_cookie =
+        forge_console_session_cookie(ACCESS_KEY, SECRET_KEY, chrono::Utc::now().timestamp());
+    for path in ["/api/auth/check", "/api/auth/me", "/api/buckets"] {
+        let response = client()
+            .get(format!("{base_url}{path}"))
+            .header("cookie", &legacy_cookie)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 401, "legacy session accepted by {path}");
+    }
+}
+
+#[tokio::test]
+async fn test_console_login_rate_limit_cannot_be_bypassed_with_forwarded_for() {
     let (base_url, _tmp) = start_server().await;
     let client = client();
     let mut last_status = reqwest::StatusCode::OK;
     let mut retry_after = None;
 
-    for _ in 0..11 {
+    for attempt in 0..11 {
         let resp = client
             .post(format!("{}/api/auth/login", base_url))
             .header("content-type", "application/json")
+            .header("x-forwarded-for", format!("203.0.113.{attempt}"))
             .json(&serde_json::json!({
                 "accessKey": ACCESS_KEY,
                 "secretKey": "wrong-secret"

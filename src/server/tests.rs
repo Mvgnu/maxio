@@ -43,6 +43,8 @@ fn test_config() -> Config {
         pending_membership_propagation_due_warning_threshold: None,
         pending_metadata_repair_due_warning_threshold: None,
         cluster_auth_token: None,
+        tls_cert_path: None,
+        tls_key_path: None,
         cluster_peer_tls_cert_path: None,
         cluster_peer_tls_key_path: None,
         cluster_peer_tls_ca_path: None,
@@ -1171,96 +1173,114 @@ async fn probe_peer_connectivity_reports_warning_when_mtls_transport_not_ready()
 
 #[test]
 fn build_peer_http_transport_uses_https_when_mtls_identity_is_configured() {
-    fn write_self_signed_identity(
-        cert_path: &std::path::Path,
-        key_path: &std::path::Path,
-    ) -> Result<(), String> {
-        use openssl::asn1::Asn1Time;
-        use openssl::bn::{BigNum, MsbOption};
-        use openssl::hash::MessageDigest;
-        use openssl::pkey::PKey;
-        use openssl::rsa::Rsa;
-        use openssl::x509::{X509, X509NameBuilder};
+    use openssl::asn1::Asn1Time;
+    use openssl::bn::BigNum;
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::PKey;
+    use openssl::rsa::Rsa;
+    use openssl::x509::extension::{
+        BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
+    };
+    use openssl::x509::{X509, X509NameBuilder};
 
-        let rsa = Rsa::generate(2048).map_err(|err| err.to_string())?;
-        let key = PKey::from_rsa(rsa).map_err(|err| err.to_string())?;
-        let mut name_builder = X509NameBuilder::new().map_err(|err| err.to_string())?;
-        name_builder
-            .append_entry_by_text("CN", "maxio-peer")
-            .map_err(|err| err.to_string())?;
-        let name = name_builder.build();
+    let ca_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "MaxIO test CA").unwrap();
+    let ca_name = name.build();
+    let before = Asn1Time::days_from_now(0).unwrap();
+    let after = Asn1Time::days_from_now(1).unwrap();
+    let mut ca = X509::builder().unwrap();
+    ca.set_version(2).unwrap();
+    ca.set_serial_number(
+        BigNum::from_u32(1)
+            .unwrap()
+            .to_asn1_integer()
+            .unwrap()
+            .as_ref(),
+    )
+    .unwrap();
+    ca.set_subject_name(&ca_name).unwrap();
+    ca.set_issuer_name(&ca_name).unwrap();
+    ca.set_pubkey(&ca_key).unwrap();
+    ca.set_not_before(&before).unwrap();
+    ca.set_not_after(&after).unwrap();
+    ca.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+        .unwrap();
+    ca.append_extension(
+        KeyUsage::new()
+            .critical()
+            .key_cert_sign()
+            .crl_sign()
+            .build()
+            .unwrap(),
+    )
+    .unwrap();
+    ca.sign(&ca_key, MessageDigest::sha256()).unwrap();
+    let ca = ca.build();
 
-        let mut serial = BigNum::new().map_err(|err| err.to_string())?;
-        serial
-            .rand(128, MsbOption::MAYBE_ZERO, false)
-            .map_err(|err| err.to_string())?;
-        let serial = serial.to_asn1_integer().map_err(|err| err.to_string())?;
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "MaxIO runtime peer")
+        .unwrap();
+    let mut cert = X509::builder().unwrap();
+    cert.set_version(2).unwrap();
+    cert.set_serial_number(
+        BigNum::from_u32(2)
+            .unwrap()
+            .to_asn1_integer()
+            .unwrap()
+            .as_ref(),
+    )
+    .unwrap();
+    cert.set_subject_name(&name.build()).unwrap();
+    cert.set_issuer_name(ca.subject_name()).unwrap();
+    cert.set_pubkey(&key).unwrap();
+    cert.set_not_before(&before).unwrap();
+    cert.set_not_after(&after).unwrap();
+    cert.append_extension(BasicConstraints::new().critical().build().unwrap())
+        .unwrap();
+    cert.append_extension(
+        KeyUsage::new()
+            .critical()
+            .digital_signature()
+            .key_encipherment()
+            .build()
+            .unwrap(),
+    )
+    .unwrap();
+    cert.append_extension(
+        ExtendedKeyUsage::new()
+            .server_auth()
+            .client_auth()
+            .build()
+            .unwrap(),
+    )
+    .unwrap();
+    let san = SubjectAlternativeName::new()
+        .ip("127.0.0.1")
+        .uri("maxio://127.0.0.1:9000")
+        .build(&cert.x509v3_context(Some(&ca), None))
+        .unwrap();
+    cert.append_extension(san).unwrap();
+    cert.sign(&ca_key, MessageDigest::sha256()).unwrap();
 
-        let mut builder = X509::builder().map_err(|err| err.to_string())?;
-        builder.set_version(2).map_err(|err| err.to_string())?;
-        builder
-            .set_serial_number(&serial)
-            .map_err(|err| err.to_string())?;
-        builder
-            .set_subject_name(&name)
-            .map_err(|err| err.to_string())?;
-        builder
-            .set_issuer_name(&name)
-            .map_err(|err| err.to_string())?;
-        builder.set_pubkey(&key).map_err(|err| err.to_string())?;
-        let not_before = Asn1Time::days_from_now(0).map_err(|err| err.to_string())?;
-        let not_after = Asn1Time::days_from_now(3650).map_err(|err| err.to_string())?;
-        builder
-            .set_not_before(not_before.as_ref())
-            .map_err(|err| err.to_string())?;
-        builder
-            .set_not_after(not_after.as_ref())
-            .map_err(|err| err.to_string())?;
-        builder
-            .sign(&key, MessageDigest::sha256())
-            .map_err(|err| err.to_string())?;
-
-        let cert_pem = builder.build().to_pem().map_err(|err| err.to_string())?;
-        let key_pem = key
-            .private_key_to_pem_pkcs8()
-            .map_err(|err| err.to_string())?;
-        std::fs::write(cert_path, cert_pem).map_err(|err| err.to_string())?;
-        std::fs::write(key_path, key_pem).map_err(|err| err.to_string())?;
-        Ok(())
-    }
-
-    let temp = tempfile::tempdir().expect("temp dir should create");
+    let temp = tempfile::tempdir().unwrap();
     let cert_path = temp.path().join("peer.crt");
     let key_path = temp.path().join("peer.key");
     let ca_path = temp.path().join("ca.pem");
-    write_self_signed_identity(cert_path.as_path(), key_path.as_path())
-        .expect("test fixture certificate/key should generate");
-    let cert_pem = std::fs::read(&cert_path).expect("cert fixture should read");
-    std::fs::write(&ca_path, cert_pem.as_slice()).expect("ca fixture should write");
-
+    std::fs::write(&cert_path, cert.build().to_pem().unwrap()).unwrap();
+    std::fs::write(&key_path, key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+    std::fs::write(&ca_path, ca.to_pem().unwrap()).unwrap();
     let mut config = test_config();
-    config.cluster_peer_tls_cert_path = Some(
-        cert_path
-            .to_str()
-            .expect("cert path should be utf8")
-            .to_string(),
-    );
-    config.cluster_peer_tls_key_path = Some(
-        key_path
-            .to_str()
-            .expect("key path should be utf8")
-            .to_string(),
-    );
-    config.cluster_peer_tls_ca_path = Some(
-        ca_path
-            .to_str()
-            .expect("ca path should be utf8")
-            .to_string(),
-    );
-
-    let transport = build_peer_http_transport(Some(&config), Duration::from_secs(1))
-        .expect("mTLS transport should initialize with parseable cert/key identity");
+    config.node_id = "127.0.0.1:9000".into();
+    config.cluster_peer_tls_cert_path = Some(cert_path.to_string_lossy().into_owned());
+    config.cluster_peer_tls_key_path = Some(key_path.to_string_lossy().into_owned());
+    config.cluster_peer_tls_ca_path = Some(ca_path.to_string_lossy().into_owned());
+    let transport =
+        build_peer_http_transport(Some(&config), "127.0.0.1:9001", Duration::from_secs(1))
+            .expect("valid peer identity should initialize a target-bound HTTPS client");
     assert_eq!(transport.scheme, "https");
+    assert_eq!(ServerTls::from_config(&config).unwrap().scheme(), "https");
 }
 
 #[test]
@@ -1269,30 +1289,108 @@ fn build_peer_http_transport_rejects_missing_mtls_when_required_policy_is_active
     config.cluster_auth_token = Some("shared-token".to_string());
     config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
     config.cluster_peers = vec!["node-b.internal:9000".to_string()];
-
-    let err = match build_peer_http_transport(Some(&config), Duration::from_secs(1)) {
-        Ok(_) => panic!("required policy should fail closed without mTLS identity"),
-        Err(err) => err,
-    };
+    let err = build_peer_http_transport(
+        Some(&config),
+        "node-b.internal:9000",
+        Duration::from_secs(1),
+    )
+    .err()
+    .expect("required policy must reject missing mTLS");
     assert!(err.contains("requires ready peer transport identity"));
     assert!(err.contains("not_configured"));
 }
 
 #[test]
-fn attest_peer_http_target_rejects_missing_mtls_when_required_policy_is_active() {
+fn required_peer_transport_cannot_hide_behind_empty_peers_or_missing_token() {
     let mut config = test_config();
-    config.cluster_auth_token = Some("shared-token".to_string());
     config.cluster_peer_transport_mode = ClusterPeerTransportMode::Required;
-    config.cluster_peers = vec!["node-b.internal:9000".to_string()];
+    let error = ServerTls::from_config(&config)
+        .err()
+        .expect("token is required even with zero peers");
+    assert!(error.contains("--cluster-auth-token"));
+    config.cluster_auth_token = Some("shared-token".into());
+    let error = ServerTls::from_config(&config)
+        .err()
+        .expect("TLS is required even with zero peers");
+    assert!(error.contains("not_configured"));
+}
 
-    let err = attest_peer_http_target(
-        Some(&config),
-        "node-b.internal:9000",
-        Duration::from_secs(1),
-    )
-    .expect_err("required policy should fail closed without mTLS attestation posture");
-    assert!(err.contains("requires ready peer transport identity"));
-    assert!(err.contains("not_configured"));
+#[test]
+fn native_tls_rejects_partial_conflicting_and_distributed_standalone_settings() {
+    assert_eq!(
+        ServerTls::from_config(&test_config()).unwrap().scheme(),
+        "http"
+    );
+    let mut config = test_config();
+    config.tls_cert_path = Some("missing.crt".into());
+    assert!(
+        ServerTls::from_config(&config)
+            .err()
+            .unwrap()
+            .contains("both --tls-cert-path")
+    );
+    config.tls_key_path = Some("missing.key".into());
+    assert!(
+        ServerTls::from_config(&config)
+            .err()
+            .unwrap()
+            .contains("invalid native HTTPS")
+    );
+    config.cluster_peers = vec!["node-b:9000".into()];
+    assert!(
+        ServerTls::from_config(&config)
+            .err()
+            .unwrap()
+            .contains("use the cluster peer TLS")
+    );
+    config.cluster_peer_tls_cert_path = Some("peer.crt".into());
+    config.cluster_peer_tls_key_path = Some("peer.key".into());
+    config.cluster_peer_tls_ca_path = Some("ca.pem".into());
+    assert!(
+        ServerTls::from_config(&config)
+            .err()
+            .unwrap()
+            .contains("mutually exclusive")
+    );
+    config.tls_cert_path = None;
+    config.tls_key_path = None;
+    config.cluster_peer_tls_key_path = None;
+    assert!(
+        ServerTls::from_config(&config)
+            .err()
+            .unwrap()
+            .contains("all three")
+    );
+}
+
+#[tokio::test]
+async fn internal_protocol_headers_cannot_substitute_for_connection_identity() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut config = test_config();
+    config.data_dir = temp.path().to_string_lossy().into_owned();
+    config.node_id = "node-a:9000".into();
+    config.cluster_peers = vec!["node-b:9000".into()];
+    config.cluster_auth_token = Some("shared-token".into());
+    config.cluster_peer_tls_cert_path = Some("diagnostic-only-unreadable.crt".into());
+    let app = build_router(AppState::from_config(config).await.unwrap());
+    for path in [
+        "/ui/",
+        "/internal/cluster/join/authorize",
+        "/guard-bucket/object",
+    ] {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(path)
+            .header(FORWARDED_BY_HEADER, "node-b:9000")
+            .header(INTERNAL_AUTH_TOKEN_HEADER, "shared-token")
+            .header("x-forwarded-proto", "https")
+            .body(Body::empty())
+            .unwrap();
+        // Even a TLS-only marker is not a peer certificate identity.
+        request.extensions_mut().insert(TlsConnection);
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN, "{path}");
+    }
 }
 
 #[test]
@@ -2046,6 +2144,7 @@ async fn runtime_topology_snapshot_reports_standalone_mode() {
             RuntimeInternalHeaderRejectDimensions::default(),
         ),
         login_rate_limiter: Arc::new(LoginRateLimiter::new()),
+        console_sessions: Arc::new(ConsoleSessionStore::new()),
         request_count: Arc::new(AtomicU64::new(0)),
         started_at: Instant::now(),
     };
@@ -2113,6 +2212,7 @@ async fn runtime_topology_snapshot_reports_distributed_mode_and_view_id() {
             RuntimeInternalHeaderRejectDimensions::default(),
         ),
         login_rate_limiter: Arc::new(LoginRateLimiter::new()),
+        console_sessions: Arc::new(ConsoleSessionStore::new()),
         request_count: Arc::new(AtomicU64::new(0)),
         started_at: Instant::now(),
     };
@@ -2184,6 +2284,7 @@ async fn runtime_topology_snapshot_uses_observed_membership_last_update_timestam
             RuntimeInternalHeaderRejectDimensions::default(),
         ),
         login_rate_limiter: Arc::new(LoginRateLimiter::new()),
+        console_sessions: Arc::new(ConsoleSessionStore::new()),
         request_count: Arc::new(AtomicU64::new(0)),
         started_at: Instant::now(),
     };
@@ -2245,6 +2346,7 @@ async fn runtime_topology_snapshot_uses_observed_static_bootstrap_convergence_st
             RuntimeInternalHeaderRejectDimensions::default(),
         ),
         login_rate_limiter: Arc::new(LoginRateLimiter::new()),
+        console_sessions: Arc::new(ConsoleSessionStore::new()),
         request_count: Arc::new(AtomicU64::new(0)),
         started_at: Instant::now(),
     };

@@ -15,24 +15,25 @@
   "exports": [
     "session/auth JSON",
     "bucket/object/version/lifecycle JSON",
-    "system diagnostics DTOs"
+    "system diagnostics DTOs",
+    "ConsoleSessionStore"
   ],
   "consumes": [
-    "runtime_platform.AppState",
+    "runtime_platform.AppState and trusted TlsConnection metadata",
     "storage_engine",
     "cluster_metadata_plane",
     "s3_api_surface shared services"
   ],
   "verification": {
     "check": "cargo check --locked --all-targets",
-    "test": "cargo test --locked --test integration console_tests::",
+    "test": "cargo test --locked --lib api::console:: && cargo test --locked --test integration console_tests::",
     "build": "cargo build --locked --bins",
     "architecture": "python3 scripts/check_architecture.py"
   },
   "bar": {
-    "reference": "MinIO Console object management",
-    "url": "https://github.com/minio/console",
-    "property": "An authenticated operator can upload and retrieve identical bytes; unauthenticated callers cannot perform that task."
+    "reference": "OWASP Session Management Cheat Sheet",
+    "url": "https://cheatsheetseries.owasp.org/cheatsheets/Session_Management_Cheat_Sheet.html",
+    "property": "After logout, replaying a copied cookie cannot read or mutate protected management data; independent active sessions remain usable."
   },
   "artifact": "Live cookie login, bucket creation, upload/download, logout, unauthorized controls and typed error responses."
 }
@@ -50,10 +51,23 @@
 ## Known limits / next decision
 
 - Credentials currently have equal management rights; authorization policy is not provided.
-- Logout clears the browser cookie but does not revoke a copied stateless session.
-  The critic reproduced replay until expiry (seven days) or credential change.
-  PM stops session revocation work in this wave; treat the cookie as a bearer
-  credential. Server-side revocation is an explicit next decision.
+- Sessions are node-local, in-memory and limited to 4,096 active entries. Restart
+  invalidates every previous cookie. The seven-day absolute expiry remains.
+- Logout removes only the presented active session. Concurrent logins have distinct
+  opaque random tokens; legacy stateless cookies are rejected. No raw bearer token
+  is retained in the registry. Credential changes invalidate affected sessions.
+- Full capacity fails explicitly after pruning expired entries; it does not evict
+  another active operator. Already-admitted requests may finish after logout.
+- Session tokens contain 32 random bytes encoded as 64 lowercase hex characters.
+  Only SHA-256 verifiers and credential bindings are retained. Missing, malformed,
+  duplicate, expired and revoked cookies receive the same unauthenticated response.
+  A full registry returns HTTP 503 with an actionable JSON error.
+- Login throttling uses the actual socket IP. Forwarded headers cannot create a
+  new rate-limit bucket. At most 4,096 IP buckets are retained for the five-minute
+  window; capacity denies new IPs without evicting existing limits. A reverse proxy's
+  clients share its socket IP and login allowance. TLS connection metadata makes
+  native HTTPS cookies Secure; forwarded protocol can only add that restriction.
+- The recovery replay gap remains open pending an independent live-session review.
 
 ## Review
 

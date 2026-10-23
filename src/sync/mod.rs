@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 pub struct SyncOptions {
     pub local: PathBuf,
     pub endpoint: String,
+    /// Optional explicit PEM roots for a private HTTPS peer; system trust otherwise.
+    pub ca_cert: Option<PathBuf>,
     pub bucket: String,
     pub prefix: String,
     pub access_key: String,

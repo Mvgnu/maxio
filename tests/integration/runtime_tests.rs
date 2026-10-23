@@ -1,7 +1,5 @@
 use super::*;
 use axum::http::StatusCode;
-use base64::Engine;
-use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use maxio::config::{ClusterPeerTransportMode, MembershipProtocol, WriteDurabilityMode};
 use maxio::metadata::{
     ClusterMetadataListingStrategy, MetadataReconcileAction, MetadataRepairPlan,
@@ -304,25 +302,6 @@ async fn start_gossip_stale_reconciliation_retry_stub_with_local_view(
     (peer, membership_view_id, retry)
 }
 
-fn decode_first_pem_block(payload: &str, label: &str) -> Option<Vec<u8>> {
-    let begin_marker = format!("-----BEGIN {label}-----");
-    let end_marker = format!("-----END {label}-----");
-    let begin = payload.find(begin_marker.as_str())? + begin_marker.len();
-    let end = payload[begin..].find(end_marker.as_str())? + begin;
-    let body = &payload[begin..end];
-    let mut encoded = String::new();
-    for line in body.lines().map(str::trim) {
-        if line.is_empty() || line.contains(':') {
-            continue;
-        }
-        encoded.push_str(line);
-    }
-    if encoded.is_empty() {
-        return None;
-    }
-    BASE64_STANDARD.decode(encoded.as_bytes()).ok()
-}
-
 fn write_valid_mtls_identity_fixture(
     tmp: &tempfile::TempDir,
 ) -> (
@@ -331,82 +310,141 @@ fn write_valid_mtls_identity_fixture(
     std::path::PathBuf,
     String,
 ) {
+    use openssl::asn1::Asn1Time;
+    use openssl::bn::BigNum;
+    use openssl::hash::MessageDigest;
+    use openssl::pkey::PKey;
+    use openssl::rsa::Rsa;
+    use openssl::x509::extension::{
+        BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
+    };
+    use openssl::x509::{X509, X509NameBuilder};
+
+    let ca_key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let key = PKey::from_rsa(Rsa::generate(2048).unwrap()).unwrap();
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "MaxIO test CA").unwrap();
+    let ca_name = name.build();
+    let before = Asn1Time::days_from_now(0).unwrap();
+    let after = Asn1Time::days_from_now(1).unwrap();
+    let mut ca = X509::builder().unwrap();
+    ca.set_version(2).unwrap();
+    ca.set_serial_number(
+        BigNum::from_u32(1)
+            .unwrap()
+            .to_asn1_integer()
+            .unwrap()
+            .as_ref(),
+    )
+    .unwrap();
+    ca.set_subject_name(&ca_name).unwrap();
+    ca.set_issuer_name(&ca_name).unwrap();
+    ca.set_pubkey(&ca_key).unwrap();
+    ca.set_not_before(&before).unwrap();
+    ca.set_not_after(&after).unwrap();
+    ca.append_extension(BasicConstraints::new().critical().ca().build().unwrap())
+        .unwrap();
+    ca.append_extension(
+        KeyUsage::new()
+            .critical()
+            .key_cert_sign()
+            .crl_sign()
+            .build()
+            .unwrap(),
+    )
+    .unwrap();
+    ca.sign(&ca_key, MessageDigest::sha256()).unwrap();
+    let ca = ca.build();
+
+    let mut name = X509NameBuilder::new().unwrap();
+    name.append_entry_by_text("CN", "MaxIO runtime peer")
+        .unwrap();
+    let mut cert = X509::builder().unwrap();
+    cert.set_version(2).unwrap();
+    cert.set_serial_number(
+        BigNum::from_u32(2)
+            .unwrap()
+            .to_asn1_integer()
+            .unwrap()
+            .as_ref(),
+    )
+    .unwrap();
+    cert.set_subject_name(&name.build()).unwrap();
+    cert.set_issuer_name(ca.subject_name()).unwrap();
+    cert.set_pubkey(&key).unwrap();
+    cert.set_not_before(&before).unwrap();
+    cert.set_not_after(&after).unwrap();
+    cert.append_extension(BasicConstraints::new().critical().build().unwrap())
+        .unwrap();
+    cert.append_extension(
+        KeyUsage::new()
+            .critical()
+            .digital_signature()
+            .key_encipherment()
+            .build()
+            .unwrap(),
+    )
+    .unwrap();
+    cert.append_extension(
+        ExtendedKeyUsage::new()
+            .server_auth()
+            .client_auth()
+            .build()
+            .unwrap(),
+    )
+    .unwrap();
+    let san = SubjectAlternativeName::new()
+        .ip("127.0.0.1")
+        .dns("maxio-peer")
+        .uri("maxio://maxio-peer:9000")
+        .build(&cert.x509v3_context(Some(&ca), None))
+        .unwrap();
+    cert.append_extension(san).unwrap();
+    cert.sign(&ca_key, MessageDigest::sha256()).unwrap();
+
     let cert_path = tmp.path().join("peer.crt");
     let key_path = tmp.path().join("peer.key");
     let ca_path = tmp.path().join("ca.pem");
-    let cert_pem_raw = "-----BEGIN CERTIFICATE-----\n\
-                    MIIDKDCCAhCgAwIBAgIUSQnaqIrYDWiCpyUekIzvcQ4BPZwwDQYJKoZIhvcNAQEL\n\
-                    BQAwFTETMBEGA1UEAwwKbWF4aW8tcGVlcjAeFw0yNjAzMDQxNTQyMzdaFw0zNjAz\n\
-                    MDExNTQyMzdaMBUxEzARBgNVBAMMCm1heGlvLXBlZXIwggEiMA0GCSqGSIb3DQEB\n\
-                    AQUAA4IBDwAwggEKAoIBAQDjI1gmjkZivK7EEVdJokcPHPrW9MdiQqvVdRkA9i8q\n\
-                    BeCWeo9TW/il4EKddPeergUh6NTpNBVeBQZZKjGIUbJAMQqaNrFnCksC1XoCTL+2\n\
-                    CCfdDjY3SRQR7wvCznWSLBskJyPqDswttb+CU1XDydXTda43O2fdGdjkiXAtXwPa\n\
-                    cA1Gj/izc+eumExGVWLNy+EghnKqaEUMudp0PEQXGzwFiNbOMHoL98qIBHONP1U1\n\
-                    xu+WUbgf4NPUEj6j2YY8p/cP7F2ibeY+dgdGMHjWYB9Ybp8ZI9jsr11GaL+7Qoxh\n\
-                    nD3ZKHhSsTgES1haTiT1b/Don/b6gwztsAAgzgCiGhs9AgMBAAGjcDBuMB0GA1Ud\n\
-                    DgQWBBSaCWCIhdoL7L27bd8T6GAEID2tSTAfBgNVHSMEGDAWgBSaCWCIhdoL7L27\n\
-                    bd8T6GAEID2tSTAPBgNVHRMBAf8EBTADAQH/MBsGA1UdEQQUMBKCCm1heGlvLXBl\n\
-                    ZXKHBH8AAAEwDQYJKoZIhvcNAQELBQADggEBAHYxBWftqrZHKRVvzFyHRwX9vXh8\n\
-                    uAlC1T5zR599gjP78Zq1KZWfHPw9UQdmhpjgl8kkDIvBp7QHfbT35eHegv/wLhQW\n\
-                    RbqS1CWpKNLeyDR93BHLl4mTan7M8fIGfwecCLvf/pbjL4gcO1BYcxC0o+3sn0CC\n\
-                    MuMFGbzFcasZ05jhk9cHsU7YfH3V60oTfn8VUSVUD7IIaSc/TmAMNWNoJbvVy7Xf\n\
-                    gtwaVdL8f4WDaLdUrO1RvSAhECW7mSdSRqDu99WH4ON3hh31BfU2cogIQ6hA1n07\n\
-                    wbJcBbcynFXmQPDYiafFrVFEmC5EOuCyyNExf2kYibSefxtPWM57/g7sG6g=\n\
-                    -----END CERTIFICATE-----\n";
-    let key_pem_raw = "-----BEGIN PRIVATE KEY-----\n\
-                   MIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQDjI1gmjkZivK7E\n\
-                   EVdJokcPHPrW9MdiQqvVdRkA9i8qBeCWeo9TW/il4EKddPeergUh6NTpNBVeBQZZ\n\
-                   KjGIUbJAMQqaNrFnCksC1XoCTL+2CCfdDjY3SRQR7wvCznWSLBskJyPqDswttb+C\n\
-                   U1XDydXTda43O2fdGdjkiXAtXwPacA1Gj/izc+eumExGVWLNy+EghnKqaEUMudp0\n\
-                   PEQXGzwFiNbOMHoL98qIBHONP1U1xu+WUbgf4NPUEj6j2YY8p/cP7F2ibeY+dgdG\n\
-                   MHjWYB9Ybp8ZI9jsr11GaL+7QoxhnD3ZKHhSsTgES1haTiT1b/Don/b6gwztsAAg\n\
-                   zgCiGhs9AgMBAAECggEAKm8zPArHEBG/lc5GkDFi1Ko9m7Sh3lPl3exxRip4H8H2\n\
-                   1i4iAjkTwEugLmIIk+rfdxkUU9gg6M6IA9b754OZyV/QIwT2SjGUV3xx/aWAiH3I\n\
-                   Esahrtz2hK4z9IpVUUBvtqagUU0/7IdAttSiWIBn9AhPiq6MxjQavwGFRVizs9Zy\n\
-                   rR8WtLcTseYq9Jicjp7hj03ResLeSektvLl0jcA4HZZdPdezbMNHrG6QJdu3Zk0T\n\
-                   ic3uTRmQsAs8LUTy8Vk4BQifqrOXSB1m6Y1l7cuBkkr7mmhk4sliU9wH2jVZlHmO\n\
-                   bwda43GDqnUIaWiq+PQb9nxzNPTSxDpQXguzTiu3OQKBgQDz65orCSVtSRViZ8pQ\n\
-                   PtTmUHZO9hisdofN0hSWK1RSmNAxkubSbScQrJdMDPFIwDuSntoGCFH4UFYdL8qh\n\
-                   ThRupxQfAwpHy9KIic55EpCWnLgq/hJkk3TiGV8/kvEpKSjvkx3mykmj9rFIXnFn\n\
-                   HXDgEojbHqLhQoH0iJQ5OATRaQKBgQDuYvpy3lDqdPHfmlaBR8xekbSjLBAjJx0n\n\
-                   PzTEgNQyYliFh6BWGocDk5cAUfAHEyd0YwcEUd1SUKwi3VXxTGPSdm6sOrLA0pBH\n\
-                   ixQ5gAFfZAFPAByeaF8AO7vOEYijSHFSQ+8V+OfPBBxAs8CBx/qHxI4TKweliexK\n\
-                   eEVK0pQstQKBgF24b+MLP5svEo1d7clJawoXbm3GdxKE9IcrqgdNHLgjyRLTK+c8\n\
-                   U18/wV5SNr9KRVl/uavJtJ0hWQUb4NJ7qrQddEi6JVASy5D0yiWQ8Yc9LjIuryh/\n\
-                   09AwCX3m2syC6RysPTf5D7R1TAbPaulA0ab22CjBK7o7kK1BcRpPIOLJAoGAIMx7\n\
-                   evx9k5Sdhs9cYZM4Wjaf7OduHPgPucunffXfvELtvQmJFO+3bdWLrB6Z8M9A2XGa\n\
-                   kIyW7/Frjax4W6fQADANUCMPXxpZgY5wLO0gwzgmOfFg/qaLk6OkVljxPM4F0XTJ\n\
-                   W3OQqVn+bSSOMw0Juk5f4eFEvxD38tMTbZUFkBUCgYAo2Hjmt46jJsKvOW6nqBGW\n\
-                   RZTxRHHUWdzDfsSogg50dRvx6JFp5Y5DlQ5A0qgHoyaKZ+tMxvlQ9UoTGWRimRJn\n\
-                   ti3O/aSCL8f19MvfdFLPB8dMqmZ//+CCdRv5IxB1SQNZXLwlS7eY0RGDqO6ai3L0\n\
-                   2LC+Q4XHvuze/HVPrw/QRQ==\n\
-                   -----END PRIVATE KEY-----\n";
-    let cert_pem = cert_pem_raw
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-    let key_pem = key_pem_raw
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect::<Vec<_>>()
-        .join("\n")
-        + "\n";
-
-    std::fs::write(&cert_path, cert_pem.as_bytes()).expect("cert fixture should write");
-    std::fs::write(&key_path, key_pem.as_bytes()).expect("key fixture should write");
-    std::fs::write(&ca_path, cert_pem.as_bytes()).expect("ca fixture should write");
-
-    let cert_der =
-        decode_first_pem_block(cert_pem.as_str(), "CERTIFICATE").expect("cert block should parse");
-    let cert_sha256_pin = format!(
+    let cert = cert.build();
+    std::fs::write(&cert_path, cert.to_pem().unwrap()).unwrap();
+    std::fs::write(&key_path, key.private_key_to_pem_pkcs8().unwrap()).unwrap();
+    std::fs::write(&ca_path, ca.to_pem().unwrap()).unwrap();
+    let fingerprint = format!(
         "sha256:{}",
-        hex::encode(Sha256::digest(cert_der.as_slice()))
+        hex::encode(Sha256::digest(cert.to_der().unwrap()))
     );
-    (cert_path, key_path, ca_path, cert_sha256_pin)
+    (cert_path, key_path, ca_path, fingerprint)
+}
+
+async fn start_native_tls_diagnostic_server(
+    config: maxio::config::Config,
+    tmp: tempfile::TempDir,
+) -> (
+    String,
+    reqwest::Client,
+    tokio::sync::watch::Sender<bool>,
+    tempfile::TempDir,
+) {
+    let tls = maxio::server::ServerTls::from_config(&config).unwrap();
+    let ca = std::fs::read(config.cluster_peer_tls_ca_path().unwrap()).unwrap();
+    let client = reqwest::Client::builder()
+        .add_root_certificate(reqwest::Certificate::from_pem(&ca).unwrap())
+        .no_proxy()
+        .timeout(Duration::from_secs(5))
+        .build()
+        .unwrap();
+    let state = AppState::from_config(config).await.unwrap();
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base_url = format!("https://{}", listener.local_addr().unwrap());
+    let (shutdown, receiver) = tokio::sync::watch::channel(false);
+    tokio::spawn(maxio::server::serve_listener(
+        listener,
+        maxio::server::build_router(state),
+        tls,
+        false,
+        receiver,
+    ));
+    (base_url, client, shutdown, tmp)
 }
 
 #[derive(Clone, Debug)]
@@ -3231,21 +3269,22 @@ async fn test_healthz_and_metrics_report_required_peer_transport_mode_when_confi
 }
 
 #[tokio::test]
-async fn test_healthz_and_metrics_require_certificate_pin_for_mtls_node_id_binding() {
+async fn test_healthz_and_metrics_bind_mtls_identity_without_optional_certificate_pin() {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
     let (cert_path, key_path, ca_path, _) = write_valid_mtls_identity_fixture(&tmp);
 
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "maxio-peer:9000".into();
     config.cluster_peers = vec!["127.0.0.1:1".to_string()];
     config.membership_protocol = MembershipProtocol::Gossip;
     config.cluster_auth_token = Some("shared-secret".to_string());
     config.cluster_peer_tls_cert_path = Some(cert_path.to_string_lossy().to_string());
     config.cluster_peer_tls_key_path = Some(key_path.to_string_lossy().to_string());
     config.cluster_peer_tls_ca_path = Some(ca_path.to_string_lossy().to_string());
-    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let (base_url, client, _shutdown, _tmp) = start_native_tls_diagnostic_server(config, tmp).await;
 
-    let health = client()
+    let health = client
         .get(format!("{}/healthz", base_url))
         .send()
         .await
@@ -3253,17 +3292,11 @@ async fn test_healthz_and_metrics_require_certificate_pin_for_mtls_node_id_bindi
     assert_eq!(health.status(), 200);
     let health_body: serde_json::Value = health.json().await.unwrap();
     assert_eq!(health_body["clusterAuthTransportIdentity"], "mtls-path");
-    assert_eq!(
-        health_body["clusterAuthTransportReason"],
-        "node_identity_binding_pin_required"
-    );
-    assert_eq!(
-        health_body["checks"]["clusterPeerAuthTransportReady"],
-        false
-    );
-    assert_eq!(health_body["checks"]["clusterPeerAuthIdentityBound"], false);
+    assert_eq!(health_body["clusterAuthTransportReason"], "ready");
+    assert_eq!(health_body["checks"]["clusterPeerAuthTransportReady"], true);
+    assert_eq!(health_body["checks"]["clusterPeerAuthIdentityBound"], true);
 
-    let metrics = client()
+    let metrics = client
         .get(format!("{}/metrics", base_url))
         .send()
         .await
@@ -3276,11 +3309,11 @@ async fn test_healthz_and_metrics_require_certificate_pin_for_mtls_node_id_bindi
     );
     assert_eq!(
         metric_value(&metrics_body, "maxio_cluster_peer_auth_transport_ready"),
-        Some(0.0)
+        Some(1.0)
     );
-    assert!(metrics_body.contains(
-        "maxio_cluster_peer_auth_transport_reason_info{reason=\"node_identity_binding_pin_required\"} 1"
-    ));
+    assert!(
+        metrics_body.contains("maxio_cluster_peer_auth_transport_reason_info{reason=\"ready\"} 1")
+    );
 }
 
 #[tokio::test]
@@ -3298,9 +3331,9 @@ async fn test_healthz_and_metrics_report_mtls_transport_ready_when_pin_matches()
     config.cluster_peer_tls_ca_path = Some(ca_path.to_string_lossy().to_string());
     config.cluster_peer_tls_cert_sha256 = Some(cert_sha256_pin);
     config.node_id = "maxio-peer:9000".to_string();
-    let (base_url, _tmp) = start_server_with_config(config, tmp).await;
+    let (base_url, client, _shutdown, _tmp) = start_native_tls_diagnostic_server(config, tmp).await;
 
-    let health = client()
+    let health = client
         .get(format!("{}/healthz", base_url))
         .send()
         .await
@@ -3310,9 +3343,9 @@ async fn test_healthz_and_metrics_report_mtls_transport_ready_when_pin_matches()
     assert_eq!(health_body["clusterAuthTransportIdentity"], "mtls-path");
     assert_eq!(health_body["clusterAuthTransportReason"], "ready");
     assert_eq!(health_body["checks"]["clusterPeerAuthTransportReady"], true);
-    assert_eq!(health_body["checks"]["clusterPeerAuthIdentityBound"], false);
+    assert_eq!(health_body["checks"]["clusterPeerAuthIdentityBound"], true);
 
-    let metrics = client()
+    let metrics = client
         .get(format!("{}/metrics", base_url))
         .send()
         .await
@@ -3390,6 +3423,7 @@ async fn test_healthz_and_metrics_report_mtls_transport_pin_mismatch_as_unready(
     let (cert_path, key_path, ca_path, _) = write_valid_mtls_identity_fixture(&tmp);
 
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "maxio-peer:9000".into();
     config.cluster_peers = vec!["127.0.0.1:1".to_string()];
     config.membership_protocol = MembershipProtocol::Gossip;
     config.cluster_auth_token = Some("shared-secret".to_string());
@@ -3440,6 +3474,7 @@ async fn test_healthz_and_metrics_report_mtls_transport_revoked_certificate_as_u
     let (cert_path, key_path, ca_path, cert_sha256_pin) = write_valid_mtls_identity_fixture(&tmp);
 
     let mut config = make_test_config(data_dir, false, 10 * 1024 * 1024, 0);
+    config.node_id = "maxio-peer:9000".into();
     config.cluster_peers = vec!["127.0.0.1:1".to_string()];
     config.membership_protocol = MembershipProtocol::Gossip;
     config.cluster_auth_token = Some("shared-secret".to_string());
@@ -3966,7 +4001,7 @@ async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_c
 }
 
 #[tokio::test]
-async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready()
+async fn test_cluster_join_authorize_endpoint_rejects_unverified_http_when_cluster_peer_transport_mtls_not_ready()
  {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
@@ -3998,16 +4033,29 @@ async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_c
         .send()
         .await
         .unwrap();
-    assert_eq!(rejected.status(), 503);
+    assert_eq!(rejected.status(), 403);
     let rejected_body: serde_json::Value = rejected.json().await.unwrap();
-    assert_eq!(rejected_body["authorized"], false);
-    assert_eq!(rejected_body["status"], "misconfigured");
-    assert_eq!(rejected_body["mode"], "shared_token");
-    assert_eq!(rejected_body["reason"], "cluster_peer_transport_not_ready");
+    assert_eq!(rejected_body["error"], "peer_tls_identity_required");
+    assert!(
+        rejected_body["reason"]
+            .as_str()
+            .unwrap()
+            .contains("verified client certificate")
+    );
+    let unchanged: serde_json::Value = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(unchanged["clusterPeers"], health_body["clusterPeers"]);
+    assert_eq!(unchanged["placementEpoch"], health_body["placementEpoch"]);
 }
 
 #[tokio::test]
-async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_cluster_peer_transport_required_without_mtls()
+async fn test_cluster_join_authorize_endpoint_rejects_unverified_http_when_cluster_peer_transport_required_without_mtls()
  {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
@@ -4037,12 +4085,25 @@ async fn test_cluster_join_authorize_endpoint_returns_service_unavailable_when_c
         .send()
         .await
         .unwrap();
-    assert_eq!(rejected.status(), 503);
+    assert_eq!(rejected.status(), 403);
     let rejected_body: serde_json::Value = rejected.json().await.unwrap();
-    assert_eq!(rejected_body["authorized"], false);
-    assert_eq!(rejected_body["status"], "misconfigured");
-    assert_eq!(rejected_body["mode"], "shared_token");
-    assert_eq!(rejected_body["reason"], "cluster_peer_transport_not_ready");
+    assert_eq!(rejected_body["error"], "peer_tls_identity_required");
+    assert!(
+        rejected_body["reason"]
+            .as_str()
+            .unwrap()
+            .contains("verified client certificate")
+    );
+    let unchanged: serde_json::Value = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(unchanged["clusterPeers"], health_body["clusterPeers"]);
+    assert_eq!(unchanged["placementEpoch"], health_body["placementEpoch"]);
 }
 
 #[tokio::test]
@@ -5781,7 +5842,7 @@ async fn test_cluster_membership_update_endpoint_metrics_track_status_and_reason
 }
 
 #[tokio::test]
-async fn test_cluster_join_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready()
+async fn test_cluster_join_endpoint_rejects_unverified_http_when_cluster_peer_transport_mtls_not_ready()
  {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
@@ -5815,13 +5876,25 @@ async fn test_cluster_join_endpoint_returns_service_unavailable_when_cluster_pee
         .send()
         .await
         .unwrap();
-    assert_eq!(response.status(), 503);
+    assert_eq!(response.status(), 403);
     let body: serde_json::Value = response.json().await.unwrap();
-    assert_eq!(body["status"], "misconfigured");
-    assert_eq!(body["reason"], "cluster_peer_transport_not_ready");
-    assert_eq!(body["authReason"], serde_json::Value::Null);
-    assert_eq!(body["mode"], "shared_token");
-    assert_eq!(body["updated"], false);
+    assert_eq!(body["error"], "peer_tls_identity_required");
+    assert!(
+        body["reason"]
+            .as_str()
+            .unwrap()
+            .contains("verified client certificate")
+    );
+    let unchanged: serde_json::Value = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(unchanged["clusterPeers"], health_body["clusterPeers"]);
+    assert_eq!(unchanged["placementEpoch"], health_body["placementEpoch"]);
 }
 
 #[tokio::test]
@@ -5892,7 +5965,7 @@ async fn test_cluster_membership_update_endpoint_returns_service_unavailable_whe
 }
 
 #[tokio::test]
-async fn test_cluster_membership_update_endpoint_returns_service_unavailable_when_cluster_peer_transport_mtls_not_ready()
+async fn test_cluster_membership_update_endpoint_rejects_unverified_http_when_cluster_peer_transport_mtls_not_ready()
  {
     let tmp = tempfile::TempDir::new().unwrap();
     let data_dir = tmp.path().to_str().unwrap().to_string();
@@ -5931,13 +6004,25 @@ async fn test_cluster_membership_update_endpoint_returns_service_unavailable_whe
         .send()
         .await
         .unwrap();
-    assert_eq!(rejected.status(), 503);
+    assert_eq!(rejected.status(), 403);
     let rejected_body: serde_json::Value = rejected.json().await.unwrap();
-    assert_eq!(rejected_body["status"], "misconfigured");
-    assert_eq!(rejected_body["reason"], "cluster_peer_transport_not_ready");
-    assert_eq!(rejected_body["authReason"], serde_json::Value::Null);
-    assert_eq!(rejected_body["mode"], "shared_token");
-    assert_eq!(rejected_body["updated"], false);
+    assert_eq!(rejected_body["error"], "peer_tls_identity_required");
+    assert!(
+        rejected_body["reason"]
+            .as_str()
+            .unwrap()
+            .contains("verified client certificate")
+    );
+    let unchanged: serde_json::Value = client()
+        .get(format!("{}/healthz", base_url))
+        .send()
+        .await
+        .unwrap()
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(unchanged["clusterPeers"], health_body["clusterPeers"]);
+    assert_eq!(unchanged["placementEpoch"], health_body["placementEpoch"]);
 }
 
 #[tokio::test]

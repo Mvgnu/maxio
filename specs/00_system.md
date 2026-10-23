@@ -94,10 +94,11 @@ runtime dependencies into signing primitives.
 ## Security and compatibility boundaries
 
 Credentials currently share administrative capabilities; there is no IAM policy
-engine or per-device read/write grant system. HTTP must be confined to a trusted
-local/VPN channel or terminated behind correctly configured TLS. Shared peer
-tokens do not encrypt traffic. Configuring outgoing peer certificates does not
-create an inbound TLS listener.
+engine or per-device read/write grant system. Plain HTTP belongs on a trusted
+local/encrypted channel. Optional native HTTPS protects standalone traffic; the
+secure-peer triplet provides native mutual TLS with exact node identity binding.
+Shared tokens are an additional authorization factor, not transport encryption.
+Certificate provisioning and revocation remain explicit operator responsibilities.
 
 S3 support is a tested subset. Path-style requests are supported. The inherited
 filesystem format cannot represent every S3 key; reserved sidecar names and path
@@ -137,6 +138,96 @@ format migration as explicit future work, not claims inferred from green tests.
   with observed gaps in their specs. Neither receives a broader security pass.
 - Remove runtime third-party font requests. Build/release belongs to this fork;
   do not publish or recommend upstream images as if they contain this work.
+
+## PM ruling: secure peers and revocable sessions (2026-10-23)
+
+This wave reopens the two explicit security stops above. Its acceptance artifacts
+are real HTTPS processes and replay/impersonation attempts. Historical review
+verdicts stay in their original record until superseded by new evidence.
+
+### Transport contracts
+
+- Add optional `Config::{tls_cert_path,tls_key_path}` with matching `--tls-*-path`
+  flags and `MAXIO_TLS_*_PATH` variables. This pair enables ordinary native HTTPS.
+  The generic pair and existing peer TLS certificate/key/CA triplet are mutually
+  exclusive. The generic pair is standalone-only; configured peers require the peer
+  triplet so advertised HTTPS and outbound transport cannot disagree. No TLS flags
+  means the existing standalone HTTP default.
+- A complete peer triplet enables native HTTPS on the public node endpoint and
+  dedicated internal listener. The public listener requests optional client
+  certificates so ordinary S3/console clients work; internal traffic still requires
+  verified peer identity. A dedicated internal listener requires client certificates.
+- Any partial family, invalid certificate/key/CA, or required peer mode without
+  both a token and complete peer triplet fails before storage initialization.
+- Secure certificates contain exactly one canonical `maxio://HOST:PORT` URI SAN,
+  including brackets for IPv6. It must equal the canonical node ID, have an explicit
+  port and contain no path, query, fragment or user information. Other URI schemes
+  do not establish MaxIO identity. DNS/IP SANs, chain, validity, key correspondence
+  and standard TLS signature verification remain independent requirements.
+- Peer trust comes only from the configured CA bundle, plus optional fingerprint
+  restrictions and revocations. Disable outbound internal redirects and proxy
+  discovery. No insecure hostname/certificate switch is authorized.
+- Freeze these additions in `cluster::transport_identity`: `PeerTlsConfig<'a>`
+  (node ID, certificate/key/CA paths and `PeerCertificatePolicy`), private-state
+  `VerifiedPeerIdentity` with `node_id()`, `peer_node_identity_uri`,
+  `build_peer_tls_acceptor`, `verified_peer_identity_from_tls`, and
+  `build_peer_mtls_http_client(config, expected_node_id, connect_timeout, timeout)`.
+  The identity helper returns `Result<Option<VerifiedPeerIdentity>, String>`;
+  missing client certificates return `None`, failed verification returns an error.
+  The client verifies the expected full identity during its actual handshake.
+- Runtime derives connection metadata from the completed TLS stream. Internal
+  routes or protocol headers require a known nonlocal peer certificate when peer
+  TLS is active. Bind forwarding's last hop and join claims to that identity before
+  mutation. Shared-token and signed-request authorization remain additional checks.
+  A separate TLS preflight is never authorization for a later connection.
+- Runtime exports the crate-private `TlsConnection` marker, installed only for
+  native TLS connections, and preserves socket `ConnectInfo` for login throttling.
+  Bound concurrent handshakes and their duration; graceful shutdown must wake both
+  listeners reliably. Invalid programmatic configs remain inspectable in unit
+  health fixtures, but cannot start a live server.
+- Approve `tokio-openssl`, direct Rustls with its existing Ring provider, and
+  Reqwest's manual-root Rustls feature. Cluster code must remain independent of
+  runtime configuration and HTTP handlers.
+
+### Session contract
+
+- Add `AppState::console_sessions: Arc<ConsoleSessionStore>`; console owns the
+  store exported from `api::console`. Each process constructs a new empty registry.
+- Use 256-bit cryptographic random opaque tokens, stored only as verifiers with
+  account, credential binding, issuance and expiry. Maximum 4,096 active sessions;
+  prune expired entries before issuance, then report full capacity explicitly.
+- Logout revokes that session. Independent logins survive; restart invalidates all
+  old cookies. Preserve existing frontend JSON fields and seven-day absolute expiry.
+  Credential removal/change rejects and removes affected entries. Reject old
+  deterministic cookies. Revocation governs subsequent admission, not work already
+  admitted before logout.
+- Login throttling uses socket IP, not caller-controlled forwarding headers.
+  Native TLS always produces Secure cookies; forwarded-proto may only tighten that
+  setting, never downgrade an actual TLS connection.
+
+### Implementation bubbles and integration
+
+Cluster owns its transport implementation and adjacent regressions. Runtime owns
+listeners, startup validation, connection gates, background/control clients and
+`scripts/smoke_secure_peers.py`. Console owns session/auth implementation and console
+tests. The PM seeds shared fields and fixture literals before isolation and owns
+API transport adapter/call-site integration in `api/object/peer_transport.rs`,
+`api/object/service.rs`, `api/list.rs`, `api/bucket.rs`, and
+`api/console/storage.rs`. The console builder does not edit that last file during
+this wave. PM also owns journey documentation and adding secure smoke to the full
+gate. These are explicit integration grants, not expanded permanent ownership.
+
+### HTTPS for the optional sync client
+
+The device-sync bubble may add `SyncOptions::ca_cert: Option<PathBuf>`, exposed as
+`maxio-sync --ca-cert` / `MAXIO_SYNC_CA_CERT`. A supplied PEM bundle becomes the
+explicit server trust roots; ordinary hostname, validity and chain checks remain
+enabled. No supplied bundle retains the normal system trust configuration. Reject
+the option for HTTP endpoints and reject unreadable, empty or invalid bundles before
+local journal creation. Do not add an insecure verification switch. Exercise the
+existing two-folder conflict/restart journey over native standalone HTTPS, including
+wrong-CA rejection. Runtime may add optional TLS contexts to the shared smoke Node
+and S3 helpers so the journey uses the same signing and process fixtures.
 
 ## Evidence and next decisions
 

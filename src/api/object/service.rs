@@ -11,9 +11,7 @@ use std::path::PathBuf;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt};
 
 use super::parsing::to_http_date;
-use super::peer_transport::{
-    attest_internal_peer_target, build_internal_peer_http_client, internal_peer_transport_scheme,
-};
+use super::peer_transport::{build_internal_peer_http_client, internal_peer_transport_scheme};
 use crate::auth::signature_v4::{PresignRequest, generate_presigned_url};
 use crate::cluster::authenticator::{
     FORWARDED_BY_HEADER, INTERNAL_FORWARDING_PROTOCOL_HEADERS, authenticate_forwarded_request,
@@ -958,8 +956,7 @@ pub(crate) async fn forward_write_to_target(
     envelope: &ForwardedWriteEnvelope,
 ) -> Result<Response<Body>, S3Error> {
     let transport =
-        build_internal_peer_http_client(state, None, std::time::Duration::from_secs(10))?;
-    attest_internal_peer_target(state, target, std::time::Duration::from_secs(10))?;
+        build_internal_peer_http_client(state, target, None, std::time::Duration::from_secs(10))?;
     let url = format!("{}://{target}{path_and_query}", transport.scheme);
     let client = transport.client;
     let mut request_builder = client.request(method, &url);
@@ -3003,6 +3000,8 @@ mod tests {
             write_durability_mode: WriteDurabilityMode::DegradedSuccess,
             metadata_listing_strategy: ClusterMetadataListingStrategy::LocalNodeOnly,
             cluster_auth_token: None,
+            tls_cert_path: None,
+            tls_key_path: None,
             cluster_peer_tls_cert_path: None,
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,

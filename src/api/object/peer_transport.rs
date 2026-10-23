@@ -1,10 +1,9 @@
-use std::fs;
 use std::time::Duration;
 
 use crate::cluster::transport_identity::{
-    PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityMode,
-    assess_peer_transport_policy_with_context,
-    attest_peer_transport_identity_with_mtls_with_policy, peer_transport_policy_effective_reason,
+    PeerCertificatePolicy, PeerTlsConfig, PeerTransportEnforcementMode, PeerTransportIdentityMode,
+    assess_peer_transport_policy_with_context, build_peer_mtls_http_client,
+    peer_transport_policy_effective_reason,
     probe_peer_transport_identity_with_certificate_policy_and_node_id_binding,
 };
 use crate::config::Config;
@@ -32,7 +31,7 @@ fn resolve_internal_peer_transport_with_cluster_peer_presence(
         PeerTransportEnforcementMode::Compatibility
     };
     let auth_configured = config.cluster_auth_token().is_some();
-    let expected_node_id = config.cluster_auth_token().map(|_| config.node_id.as_str());
+    let expected_node_id = Some(config.node_id.as_str());
     let status = probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
         config.cluster_peer_tls_cert_path(),
         config.cluster_peer_tls_key_path(),
@@ -95,134 +94,67 @@ pub(crate) fn internal_peer_transport_scheme(state: &AppState) -> Result<&'stati
     .map(|resolved| resolved.scheme)
 }
 
+/// Construct a client whose TLS handshake binds the actual request to this target.
+/// A probe on another socket cannot authorize forwarding headers or payload bytes.
 pub(crate) fn build_internal_peer_http_client(
     state: &AppState,
+    target: &str,
     connect_timeout: Option<Duration>,
     timeout: Duration,
 ) -> Result<InternalPeerHttpClient, S3Error> {
-    let has_active_cluster_peers = !state.active_cluster_peers().is_empty();
+    let config = state.config.as_ref();
     let transport = resolve_internal_peer_transport_with_cluster_peer_presence(
-        state.config.as_ref(),
-        has_active_cluster_peers,
+        config,
+        !state.active_cluster_peers().is_empty(),
     )?;
-
-    let mut builder = reqwest::Client::builder().timeout(timeout);
-    if let Some(connect_timeout) = connect_timeout {
-        builder = builder.connect_timeout(connect_timeout);
-    }
-
-    if let Some(ca_path) = transport.ca_path.as_deref() {
-        let ca_bytes = fs::read(ca_path).map_err(|err| {
-            S3Error::service_unavailable(&format!(
-                "Internal peer transport could not read trust store '{}': {}",
-                ca_path, err
-            ))
+    let client = if let Some(ca_path) = transport.ca_path.as_deref() {
+        let cert_path = config.cluster_peer_tls_cert_path().ok_or_else(|| {
+            S3Error::service_unavailable("Internal peer transport requires a certificate path")
         })?;
-        let ca_certificate = reqwest::Certificate::from_pem(&ca_bytes).map_err(|err| {
-            S3Error::service_unavailable(&format!(
-                "Internal peer transport trust store '{}' is not valid PEM: {}",
-                ca_path, err
-            ))
+        let key_path = config.cluster_peer_tls_key_path().ok_or_else(|| {
+            S3Error::service_unavailable("Internal peer transport requires a private key path")
         })?;
-        let identity = load_internal_peer_client_identity(state.config.as_ref())?;
-        builder = builder.add_root_certificate(ca_certificate);
-        builder = builder.identity(identity);
-    }
-
-    let client = builder.build().map_err(S3Error::internal)?;
+        build_peer_mtls_http_client(
+            PeerTlsConfig {
+                node_id: state.node_id.as_str(),
+                cert_path,
+                key_path,
+                ca_path,
+                certificate_policy: PeerCertificatePolicy {
+                    sha256_pin: config.cluster_peer_tls_cert_sha256(),
+                    sha256_revocations: config.cluster_peer_tls_cert_sha256_revocations(),
+                },
+            },
+            target,
+            connect_timeout,
+            timeout,
+        )
+        .map_err(|error| {
+            S3Error::service_unavailable(&format!(
+                "Internal peer transport for '{target}' is not ready: {error}"
+            ))
+        })?
+    } else {
+        // Even compatibility traffic must not leak its internal token to a proxy
+        // or a redirect target that is not the configured peer.
+        let mut builder = reqwest::Client::builder()
+            .timeout(timeout)
+            .redirect(reqwest::redirect::Policy::none())
+            .no_proxy();
+        if let Some(connect_timeout) = connect_timeout {
+            builder = builder.connect_timeout(connect_timeout);
+        }
+        builder.build().map_err(S3Error::internal)?
+    };
     Ok(InternalPeerHttpClient {
         client,
         scheme: transport.scheme,
     })
 }
 
-pub(crate) fn attest_internal_peer_target(
-    state: &AppState,
-    target: &str,
-    timeout: Duration,
-) -> Result<(), S3Error> {
-    let has_active_cluster_peers = !state.active_cluster_peers().is_empty();
-    let transport = resolve_internal_peer_transport_with_cluster_peer_presence(
-        state.config.as_ref(),
-        has_active_cluster_peers,
-    )?;
-    if transport.scheme != "https" {
-        return Ok(());
-    }
-
-    let cert_path = state.config.cluster_peer_tls_cert_path().ok_or_else(|| {
-        S3Error::service_unavailable(
-            "Internal peer transport mTLS mode requires cluster peer certificate path",
-        )
-    })?;
-    let key_path = state.config.cluster_peer_tls_key_path().ok_or_else(|| {
-        S3Error::service_unavailable(
-            "Internal peer transport mTLS mode requires cluster peer private key path",
-        )
-    })?;
-    let trust_store_path = state.config.cluster_peer_tls_ca_path().ok_or_else(|| {
-        S3Error::service_unavailable(
-            "Internal peer transport mTLS mode requires cluster peer CA trust store path",
-        )
-    })?;
-
-    attest_peer_transport_identity_with_mtls_with_policy(
-        target,
-        target,
-        cert_path,
-        key_path,
-        trust_store_path,
-        PeerCertificatePolicy {
-            sha256_pin: None,
-            sha256_revocations: state.config.cluster_peer_tls_cert_sha256_revocations(),
-        },
-        timeout,
-    )
-    .map_err(|error| {
-        S3Error::service_unavailable(&format!(
-            "Internal peer transport attestation failed for '{target}' ({}).",
-            error.as_str()
-        ))
-    })
-}
-
-fn load_internal_peer_client_identity(config: &Config) -> Result<reqwest::Identity, S3Error> {
-    let cert_path = config.cluster_peer_tls_cert_path().ok_or_else(|| {
-        S3Error::service_unavailable(
-            "Internal peer transport mTLS mode requires cluster peer certificate path",
-        )
-    })?;
-    let key_path = config.cluster_peer_tls_key_path().ok_or_else(|| {
-        S3Error::service_unavailable(
-            "Internal peer transport mTLS mode requires cluster peer private key path",
-        )
-    })?;
-    let cert_pem = fs::read(cert_path).map_err(|err| {
-        S3Error::service_unavailable(&format!(
-            "Internal peer transport could not read certificate '{}': {}",
-            cert_path, err
-        ))
-    })?;
-    let key_pem = fs::read(key_path).map_err(|err| {
-        S3Error::service_unavailable(&format!(
-            "Internal peer transport could not read private key '{}': {}",
-            key_path, err
-        ))
-    })?;
-    reqwest::Identity::from_pkcs8_pem(cert_pem.as_slice(), key_pem.as_slice()).map_err(|err| {
-        S3Error::service_unavailable(&format!(
-            "Internal peer transport certificate/key pair is invalid: {}",
-            err
-        ))
-    })
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        load_internal_peer_client_identity,
-        resolve_internal_peer_transport_with_cluster_peer_presence,
-    };
+    use super::resolve_internal_peer_transport_with_cluster_peer_presence;
     use crate::config::{
         ClusterPeerTransportMode, Config, MembershipProtocol, WriteDurabilityMode,
     };
@@ -252,6 +184,8 @@ mod tests {
             pending_membership_propagation_due_warning_threshold: None,
             pending_metadata_repair_due_warning_threshold: None,
             cluster_auth_token: None,
+            tls_cert_path: None,
+            tls_key_path: None,
             cluster_peer_tls_cert_path: None,
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,
@@ -338,7 +272,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_internal_peer_transport_rejects_unpinned_mtls_when_shared_token_trust_is_enabled() {
+    fn resolve_internal_peer_transport_rejects_invalid_pem_even_without_a_local_pin() {
         let dir = tempfile::tempdir().expect("tempdir");
         let cert_path = dir.path().join("peer.crt");
         let key_path = dir.path().join("peer.key");
@@ -381,39 +315,6 @@ mod tests {
         )
         .expect_err("should fail closed");
         assert!(err.message.contains("Internal peer transport is not ready"));
-        assert!(
-            err.message.contains("node_identity_binding_pin_required")
-                || err.message.contains("certificate")
-                || err.message.contains("private key")
-        );
-    }
-
-    #[test]
-    fn load_internal_peer_client_identity_rejects_invalid_certificate_key_pair() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let cert_path = dir.path().join("peer.crt");
-        let key_path = dir.path().join("peer.key");
-        std::fs::write(
-            &cert_path,
-            "-----BEGIN CERTIFICATE-----\n\
-             dGVzdA==\n\
-             -----END CERTIFICATE-----\n",
-        )
-        .expect("write cert");
-        std::fs::write(
-            &key_path,
-            "-----BEGIN PRIVATE KEY-----\n\
-             dGVzdA==\n\
-             -----END PRIVATE KEY-----\n",
-        )
-        .expect("write key");
-
-        let mut config = test_config();
-        config.cluster_peer_tls_cert_path = Some(cert_path.to_string_lossy().to_string());
-        config.cluster_peer_tls_key_path = Some(key_path.to_string_lossy().to_string());
-
-        let err =
-            load_internal_peer_client_identity(&config).expect_err("identity should fail closed");
-        assert!(err.message.contains("certificate/key pair is invalid"));
+        assert!(err.message.contains("certificate") || err.message.contains("private key"));
     }
 }
