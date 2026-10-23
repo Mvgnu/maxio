@@ -194,6 +194,7 @@ impl FilesystemStorage {
         content_type: &str,
         checksum_algorithm: Option<ChecksumAlgorithm>,
     ) -> Result<MultipartUploadMeta, StorageError> {
+        let _guard = self.mutation_lock.lock().await;
         self.ensure_bucket_exists(bucket).await?;
         validation::validate_key(key)?;
         let upload_id = uuid::Uuid::new_v4().to_string();
@@ -217,6 +218,36 @@ impl FilesystemStorage {
     }
 
     pub async fn upload_part(
+        &self,
+        bucket: &str,
+        upload_id: &str,
+        part_number: u32,
+        body: ByteStream,
+        checksum: Option<(ChecksumAlgorithm, Option<String>)>,
+    ) -> Result<PartMeta, StorageError> {
+        validation::validate_upload_id(upload_id)?;
+        let guard = self.mutation_lock.clone().lock_owned().await;
+        let upload_meta = self.read_upload_meta(bucket, upload_id).await?;
+        let staged = staged_write::StagedWrite::new(self, bucket).await?;
+        // Seed metadata only. Linking an existing target part before truncating it
+        // would mutate the original inode and defeat isolation.
+        fs::create_dir_all(staged.storage.upload_dir(bucket, upload_id)).await?;
+        fs::write(
+            staged.storage.upload_meta_path(bucket, upload_id),
+            serde_json::to_vec(&upload_meta)?,
+        )
+        .await?;
+        let result = staged
+            .storage
+            .upload_part_unstaged(bucket, upload_id, part_number, body, checksum)
+            .await?;
+        let _guard = staged
+            .finish_part(self, bucket, upload_id, part_number, guard)
+            .await?;
+        Ok(result)
+    }
+
+    async fn upload_part_unstaged(
         &self,
         bucket: &str,
         upload_id: &str,
@@ -293,6 +324,55 @@ impl FilesystemStorage {
     }
 
     pub async fn complete_multipart_upload(
+        &self,
+        bucket: &str,
+        upload_id: &str,
+        parts: &[(u32, String)],
+    ) -> Result<PutResult, StorageError> {
+        validation::validate_upload_id(upload_id)?;
+        let guard = self.mutation_lock.clone().lock_owned().await;
+        let upload_meta = self.read_upload_meta(bucket, upload_id).await?;
+        validation::validate_key(&upload_meta.key)?;
+        let staged = staged_write::StagedWrite::new(self, bucket).await?;
+        staged.copy_multipart(self, bucket, upload_id).await?;
+        let mut result = staged
+            .storage
+            .complete_multipart_unstaged(bucket, upload_id, parts)
+            .await?;
+        if staged.storage.is_versioned(bucket).await? {
+            let version_id = Self::generate_version_id();
+            let mut meta = staged
+                .storage
+                .read_object_meta(bucket, &upload_meta.key)
+                .await?;
+            meta.version_id = Some(version_id.clone());
+            if meta.storage_format.is_some() {
+                staged
+                    .storage
+                    .write_version_chunked(bucket, &upload_meta.key, &meta)
+                    .await?;
+            } else {
+                let data_path = staged.storage.object_path(bucket, &upload_meta.key);
+                staged
+                    .storage
+                    .write_version(bucket, &upload_meta.key, &meta, &data_path)
+                    .await?;
+            }
+            fs::write(
+                staged.storage.meta_path(bucket, &upload_meta.key),
+                serde_json::to_vec(&meta)?,
+            )
+            .await?;
+            result.version_id = Some(version_id);
+        }
+        let (result, _guard) = staged
+            .finish(self, bucket, &upload_meta.key, result, guard)
+            .await?;
+        let _ = fs::remove_dir_all(self.upload_dir(bucket, upload_id)).await;
+        Ok(result)
+    }
+
+    async fn complete_multipart_unstaged(
         &self,
         bucket: &str,
         upload_id: &str,
@@ -424,6 +504,7 @@ impl FilesystemStorage {
         bucket: &str,
         upload_id: &str,
     ) -> Result<(), StorageError> {
+        let _guard = self.mutation_lock.lock().await;
         validation::validate_upload_id(upload_id)?;
         let upload_dir = self.upload_dir(bucket, upload_id);
         if !fs::try_exists(&upload_dir).await? {

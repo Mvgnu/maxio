@@ -70,6 +70,16 @@ pub async fn put_object(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
+    let write_condition = super::conditions::parse_write_condition(&headers)?;
+    if write_condition.is_some()
+        && (!state.active_cluster_peers().is_empty()
+            || headers.contains_key("x-amz-copy-source")
+            || params.contains_key("uploadId"))
+    {
+        return Err(S3Error::not_implemented(
+            "Conditional writes are supported only for standalone PutObject",
+        ));
+    }
     let internal_replica_put = is_internal_replica_put_request(
         &headers,
         state.config.cluster_auth_token(),
@@ -178,18 +188,27 @@ pub async fn put_object(
         state.node_id.as_ref(),
         state.active_cluster_peers().as_slice(),
     );
-    let result = state
-        .storage
-        .put_object_with_version_id(
-            &bucket,
-            &key,
-            content_type,
-            reader,
-            checksum,
-            replica_version_id.as_deref(),
-        )
-        .await
-        .map_err(|e| map_object_put_err(&bucket, e))?;
+    let result = if let Some(condition) = write_condition {
+        state
+            .storage
+            .put_object_conditional(&bucket, &key, content_type, reader, checksum, condition)
+            .await
+            .map_err(|e| map_object_put_err(&bucket, e))?
+            .ok_or_else(S3Error::precondition_failed)?
+    } else {
+        state
+            .storage
+            .put_object_with_version_id(
+                &bucket,
+                &key,
+                content_type,
+                reader,
+                checksum,
+                replica_version_id.as_deref(),
+            )
+            .await
+            .map_err(|e| map_object_put_err(&bucket, e))?
+    };
 
     persist_current_object_metadata_state(
         &state,
@@ -663,7 +682,22 @@ async fn replicate_put_to_replica_owners(
         node: request.state.node_id.to_string(),
         acked: true,
     }];
-    let path_and_query = object_path_and_query(request.bucket, request.key, request.params);
+    // CopyObject becomes a PUT of the stored source bytes. Its original
+    // signature covers an empty copy request, so the replica needs a new one.
+    // Ordinary PUT replicas keep the original authenticated request unchanged.
+    let path_and_query = if request.replication_operation
+        == ReplicationMutationOperation::CopyObject
+    {
+        resolve_signed_host_for_internal_presign(request.headers).and_then(|host| {
+            presigned_replica_put_path_and_query(request.state, host, request.bucket, request.key)
+        })
+    } else {
+        Some(object_path_and_query(
+            request.bucket,
+            request.key,
+            request.params,
+        ))
+    };
     let mut envelope = ForwardedWriteEnvelope::new(
         ForwardedWriteOperation::ReplicatePutObject,
         request.bucket,
@@ -682,10 +716,17 @@ async fn replicate_put_to_replica_owners(
         .iter()
         .filter(|owner| owner.as_str() != request.state.node_id.as_ref())
     {
+        let Some(path_and_query) = path_and_query.as_deref() else {
+            observations.push(WriteAckObservation {
+                node: target.clone(),
+                acked: false,
+            });
+            continue;
+        };
         let acked = match forward_replica_put_to_target(
             request.state,
             target,
-            &path_and_query,
+            path_and_query,
             request.headers,
             request.raw_body_bytes.to_vec(),
             request.version_id,
@@ -878,9 +919,25 @@ fn checksum_algorithm_header_value(algorithm: ChecksumAlgorithm) -> &'static str
     }
 }
 
+fn replica_request_headers(request_headers: &HeaderMap) -> HeaderMap {
+    // A transformed request is a new HTTP operation: do not inherit the old
+    // signature, body checksum, range, condition, or content encoding. Forward
+    // routing/authentication headers are added from its own envelope later.
+    let mut headers = HeaderMap::new();
+    if let Some(host) = request_headers.get(header::HOST) {
+        headers.insert(header::HOST, host.clone());
+    }
+    headers
+}
+
 fn replica_delete_headers(request_headers: &HeaderMap) -> HeaderMap {
-    let mut headers = request_headers.clone();
-    headers.remove(header::AUTHORIZATION);
+    let mut headers = replica_request_headers(request_headers);
+    headers.insert(
+        "x-amz-content-sha256",
+        HeaderValue::from_static(
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        ),
+    );
     headers
 }
 
@@ -974,12 +1031,20 @@ fn presigned_replica_head_path_and_query(
     }
 }
 
-fn replica_put_headers_for_copy(
+pub(super) fn replica_put_headers(
     request_headers: &HeaderMap,
     content_type: &str,
+    payload: &[u8],
     checksum_algorithm: Option<ChecksumAlgorithm>,
-) -> HeaderMap {
-    let mut headers = request_headers.clone();
+    checksum_value: Option<&str>,
+) -> Result<HeaderMap, S3Error> {
+    use sha2::{Digest, Sha256};
+
+    let mut headers = replica_request_headers(request_headers);
+    headers.insert(
+        "x-amz-content-sha256",
+        HeaderValue::from_str(&hex::encode(Sha256::digest(payload))).map_err(S3Error::internal)?,
+    );
     let content_type = HeaderValue::from_str(content_type)
         .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
     headers.insert(header::CONTENT_TYPE, content_type);
@@ -988,26 +1053,28 @@ fn replica_put_headers_for_copy(
             header::HeaderName::from_static("x-amz-checksum-algorithm"),
             HeaderValue::from_static(checksum_algorithm_header_value(algorithm)),
         );
+        if let Some(value) = checksum_value {
+            headers.insert(
+                header::HeaderName::from_static(algorithm.header_name()),
+                HeaderValue::from_str(value).map_err(S3Error::internal)?,
+            );
+        }
     }
-    headers
+    Ok(headers)
 }
 
 fn replica_put_headers_for_read_repair(
     request_headers: &HeaderMap,
     meta: &ObjectMeta,
-) -> HeaderMap {
-    let mut headers =
-        replica_put_headers_for_copy(request_headers, &meta.content_type, meta.checksum_algorithm);
-    headers.remove(header::AUTHORIZATION);
-    if let (Some(algorithm), Some(value)) = (meta.checksum_algorithm, meta.checksum_value.as_ref())
-        && let Ok(header_value) = HeaderValue::from_str(value)
-    {
-        headers.insert(
-            header::HeaderName::from_static(algorithm.header_name()),
-            header_value,
-        );
-    }
-    headers
+    payload: &[u8],
+) -> Result<HeaderMap, S3Error> {
+    replica_put_headers(
+        request_headers,
+        &meta.content_type,
+        payload,
+        meta.checksum_algorithm,
+        meta.checksum_value.as_deref(),
+    )
 }
 
 async fn replicate_delete_to_replica_owners(
@@ -1043,7 +1110,7 @@ async fn replicate_delete_to_replica_owners(
         .iter()
         .filter(|owner| owner.as_str() != request.state.node_id.as_ref())
     {
-        let path_and_query = if request.params.is_empty() {
+        let path_and_query = {
             let Some(signed_host) = resolve_signed_host_for_internal_presign(&replica_headers)
             else {
                 tracing::warn!(
@@ -1073,19 +1140,12 @@ async fn replicate_delete_to_replica_owners(
                 continue;
             };
             path_and_query
-        } else {
-            object_path_and_query(request.bucket, request.key, request.params)
-        };
-        let request_headers = if request.params.is_empty() {
-            &replica_headers
-        } else {
-            request.headers
         };
         let acked = match forward_replica_delete_to_target(
             request.state,
             target,
             &path_and_query,
-            request_headers,
+            &replica_headers,
             &envelope,
         )
         .await
@@ -1142,7 +1202,6 @@ struct ReplicaDeleteRequest<'a> {
     key: &'a str,
     version_id: Option<&'a str>,
     replication_operation: ReplicationMutationOperation,
-    params: &'a HashMap<String, String>,
     headers: &'a HeaderMap,
     placement: &'a PlacementViewState,
 }
@@ -1288,7 +1347,6 @@ async fn execute_primary_read_repair(
         return;
     }
 
-    let put_headers = replica_put_headers_for_read_repair(headers, local_meta);
     let delete_headers = replica_delete_headers(headers);
     let mut put_envelope = ForwardedWriteEnvelope::new(
         ForwardedWriteOperation::ReplicatePutObject,
@@ -1350,6 +1408,14 @@ async fn execute_primary_read_repair(
                     repair_payload = Some(body);
                 }
 
+                let payload = repair_payload.clone().unwrap_or_default();
+                let Ok(put_headers) =
+                    replica_put_headers_for_read_repair(headers, local_meta, &payload)
+                else {
+                    tracing::warn!(operation = "read-repair-upsert", bucket = %bucket, key = %key,
+                        "Skipping read-repair upsert because fresh payload headers could not be constructed");
+                    continue;
+                };
                 let Some(signed_host) = resolve_signed_host_for_internal_presign(&put_headers)
                 else {
                     tracing::warn!(
@@ -1373,7 +1439,6 @@ async fn execute_primary_read_repair(
                     );
                     continue;
                 };
-                let payload = repair_payload.clone().unwrap_or_default();
                 match forward_replica_put_to_target(
                     state,
                     &node,
@@ -1604,8 +1669,13 @@ async fn copy_object(
     let quorum_outcome =
         if routing_hint.distributed && routing_hint.is_local_primary_owner && !internal_replica_put
         {
-            let replica_headers =
-                replica_put_headers_for_copy(&headers, &content_type, result.checksum_algorithm);
+            let replica_headers = replica_put_headers(
+                &headers,
+                &content_type,
+                &source_body,
+                result.checksum_algorithm,
+                result.checksum_value.as_deref(),
+            )?;
             Some(
                 replicate_put_to_replica_owners(ReplicaPutRequest {
                     state: &state,
@@ -1893,6 +1963,7 @@ pub async fn delete_object(
     Query(params): Query<HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Result<Response<Body>, S3Error> {
+    super::conditions::reject_unsupported_write_condition(&headers)?;
     if params.contains_key("uploadId") {
         return multipart::abort_multipart_upload(
             State(state),
@@ -1989,7 +2060,6 @@ pub async fn delete_object(
                 key: &key,
                 version_id: Some(version_id.as_str()),
                 replication_operation: ReplicationMutationOperation::DeleteObjectVersion,
-                params: &params,
                 headers: &headers,
                 placement: &placement,
             })
@@ -2034,7 +2104,6 @@ pub async fn delete_object(
             key: &key,
             version_id: None,
             replication_operation: ReplicationMutationOperation::DeleteObject,
-            params: &params,
             headers: &headers,
             placement: &placement,
         })
@@ -2149,6 +2218,7 @@ pub async fn delete_objects(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
+    super::conditions::reject_unsupported_write_condition(&headers)?;
     let bytes = axum::body::to_bytes(body, DELETE_BODY_MAX)
         .await
         .map_err(S3Error::internal)?;
@@ -2224,7 +2294,6 @@ pub async fn delete_objects(
     let mut outcomes = Vec::with_capacity(planned_entries.len());
     let mut quorum_aggregate = BatchWriteQuorumAggregate::new();
     let mut strict_quorum_not_reached = false;
-    let empty_params = HashMap::new();
     let forwarded_delete_headers = replica_delete_headers(&headers);
     for entry in planned_entries {
         if let Some(forward) = entry.forward_target {
@@ -2325,7 +2394,6 @@ pub async fn delete_objects(
                         key: &key,
                         version_id: None,
                         replication_operation: ReplicationMutationOperation::DeleteObject,
-                        params: &empty_params,
                         headers: &headers,
                         placement: &placement,
                     })

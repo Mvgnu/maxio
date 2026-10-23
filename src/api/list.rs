@@ -256,7 +256,7 @@ async fn list_objects_v2(
     let next_token = if is_truncated {
         page.last().map(|meta| {
             service::encode_continuation_token_with_snapshot(
-                &meta.key,
+                &service::listing_entry_key(meta, &query.prefix, query.delimiter.as_deref()),
                 metadata_coverage
                     .as_ref()
                     .map(|coverage| coverage.snapshot_id.as_str()),
@@ -363,7 +363,8 @@ async fn list_objects_v1(
         service::split_by_delimiter(&page_refs, &query.prefix, query.delimiter.as_deref());
 
     let next_marker = if is_truncated {
-        page.last().map(|meta| meta.key.clone())
+        page.last()
+            .map(|meta| service::listing_entry_key(meta, &query.prefix, query.delimiter.as_deref()))
     } else {
         None
     };

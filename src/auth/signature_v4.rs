@@ -6,11 +6,13 @@
 //! - Canonical query normalization by decode -> sort -> re-encode.
 //! - Canonical header handling for duplicate values (`v1,v2`) with whitespace collapse.
 //! - `x-amz-content-sha256` payload hash and `UNSIGNED-PAYLOAD`.
+//! - Chained `STREAMING-AWS4-HMAC-SHA256-PAYLOAD` signatures, including the final
+//!   empty chunk. The middleware verifies the complete body before invoking a handler.
 //!
 //! Intentionally not modeled here:
 //! - IAM/policy evaluation and fine-grained authorization policy decisions.
 //! - SigV4a / region-agnostic signing variants.
-//! - Chunk-signature streaming semantics beyond request-level signature verification.
+//! - Streaming trailer signatures and unsigned aws-chunked trailer encodings.
 
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
@@ -33,6 +35,49 @@ pub struct ParsedAuth {
     pub region: String,
     pub signed_headers: Vec<String>,
     pub signature: String,
+}
+
+/// The request signature is the seed for a chain covering every chunk in order.
+/// Keep this next to the canonical signing primitives so middleware does not
+/// invent a second key-derivation or constant-time comparison implementation.
+pub(super) struct ChunkSignatureVerifier {
+    signing_key: Vec<u8>,
+    timestamp: String,
+    scope: String,
+    previous_signature: String,
+}
+
+impl ChunkSignatureVerifier {
+    pub(super) fn new(parsed: &ParsedAuth, timestamp: &str, secret_key: &str) -> Self {
+        Self {
+            signing_key: derive_signing_key(secret_key, &parsed.date, &parsed.region),
+            timestamp: timestamp.to_owned(),
+            scope: format!("{}/{}/s3/aws4_request", parsed.date, parsed.region),
+            previous_signature: parsed.signature.clone(),
+        }
+    }
+
+    pub(super) fn verify(&mut self, payload_digest: &[u8], signature: &str) -> bool {
+        if self.signing_key.is_empty() {
+            return false;
+        }
+        let string_to_sign = format!(
+            "AWS4-HMAC-SHA256-PAYLOAD\n{}\n{}\n{}\n{}\n{}",
+            self.timestamp,
+            self.scope,
+            self.previous_signature,
+            hex::encode(Sha256::digest(b"")),
+            hex::encode(payload_digest),
+        );
+        let Some(expected) = hmac_sha256_hex(&self.signing_key, string_to_sign.as_bytes()) else {
+            return false;
+        };
+        if !constant_time_eq(expected.as_bytes(), signature.as_bytes()) {
+            return false;
+        }
+        self.previous_signature = expected;
+        true
+    }
 }
 
 fn is_valid_header_name_token(token: &str) -> bool {
@@ -609,6 +654,40 @@ mod tests {
     use super::*;
     use http::HeaderValue;
     use std::str::FromStr;
+
+    #[test]
+    fn chunk_signatures_match_aws_published_three_chunk_vector() {
+        // AWS's 65 KiB example supplies an independent interoperability vector:
+        // https://docs.aws.amazon.com/AmazonS3/latest/developerguide/sigv4-streaming.html
+        let parsed = ParsedAuth {
+            access_key: "AKIAIOSFODNN7EXAMPLE".into(),
+            date: "20130524".into(),
+            region: "us-east-1".into(),
+            signed_headers: vec!["host".into()],
+            signature: "4f232c4386841ef735655705268965c44a0e4690baa4adea153f7db9fa80a0a9".into(),
+        };
+        let mut verifier = ChunkSignatureVerifier::new(
+            &parsed,
+            "20130524T000000Z",
+            "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+        );
+        for (size, expected) in [
+            (
+                65536,
+                "ad80c730a21e5b8d04586a2213dd63b9a0e99e0e2307b0ade35a65485a288648",
+            ),
+            (
+                1024,
+                "0055627c9e194cb4542bae2aa5492e3c1575bbb81b612b7d234b86a503ef5497",
+            ),
+            (
+                0,
+                "b6c6ea8a5354eaf15b3cb7646744f4275b71ea724fed81ceb9323e279d449df9",
+            ),
+        ] {
+            assert!(verifier.verify(&Sha256::digest(vec![b'a'; size]), expected));
+        }
+    }
 
     #[test]
     fn parse_authorization_header_accepts_spaces_and_compact_format() {

@@ -32,6 +32,7 @@ pub enum S3ErrorCode {
     ExpiredPresignedUrl,
     SignatureDoesNotMatch,
     ServiceUnavailable,
+    PreconditionFailed,
 }
 
 impl S3ErrorCode {
@@ -58,6 +59,7 @@ impl S3ErrorCode {
             Self::ExpiredPresignedUrl => "AccessDenied",
             Self::SignatureDoesNotMatch => "SignatureDoesNotMatch",
             Self::ServiceUnavailable => "ServiceUnavailable",
+            Self::PreconditionFailed => "PreconditionFailed",
         }
     }
 
@@ -77,12 +79,21 @@ impl S3ErrorCode {
             Self::InvalidRange => StatusCode::RANGE_NOT_SATISFIABLE,
             Self::NotImplemented => StatusCode::NOT_IMPLEMENTED,
             Self::ServiceUnavailable => StatusCode::SERVICE_UNAVAILABLE,
+            Self::PreconditionFailed => StatusCode::PRECONDITION_FAILED,
             _ => StatusCode::BAD_REQUEST,
         }
     }
 }
 
 impl S3Error {
+    pub fn precondition_failed() -> Self {
+        Self {
+            code: S3ErrorCode::PreconditionFailed,
+            message: "At least one of the preconditions you specified did not hold.".into(),
+            resource: None,
+        }
+    }
+
     pub fn internal(err: impl std::fmt::Display) -> Self {
         tracing::error!("Internal error: {}", err);
         Self {

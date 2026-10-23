@@ -12,6 +12,31 @@ pub(crate) fn validate_key(key: &str) -> Result<(), StorageError> {
             "Key must not exceed 1024 bytes".into(),
         ));
     }
+    if key.contains('\0') || key.contains('\\') {
+        return Err(StorageError::InvalidKey(
+            "Key contains an unsupported path character".into(),
+        ));
+    }
+    // The legacy on-disk layout shares a namespace with its sidecars. Until a
+    // migration to encoded keys exists, reject collisions instead of corrupting
+    // bucket settings, another object's metadata, or a multipart/version store.
+    for segment in key.strip_suffix('/').unwrap_or(key).split('/') {
+        if segment.is_empty() || matches!(segment, "." | "..") {
+            return Err(StorageError::InvalidKey(
+                "Key must not contain empty or relative path segments".into(),
+            ));
+        }
+        if matches!(
+            segment,
+            ".bucket.json" | ".lifecycle.json" | ".uploads" | ".versions" | ".folder"
+        ) || segment.ends_with(".meta.json")
+            || segment.ends_with(".ec")
+        {
+            return Err(StorageError::InvalidKey(
+                "Key collides with reserved storage metadata".into(),
+            ));
+        }
+    }
     let path = Path::new(key);
     for component in path.components() {
         match component {
@@ -27,6 +52,21 @@ pub(crate) fn validate_key(key: &str) -> Result<(), StorageError> {
             }
             _ => {}
         }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_version_id(version_id: &str) -> Result<(), StorageError> {
+    if version_id.is_empty()
+        || version_id.len() > 1024
+        || matches!(version_id, "." | "..")
+        || version_id.contains(['/', '\\', '\0'])
+        || !matches!(
+            Path::new(version_id).components().next(),
+            Some(Component::Normal(_))
+        )
+    {
+        return Err(StorageError::VersionNotFound(version_id.to_string()));
     }
     Ok(())
 }

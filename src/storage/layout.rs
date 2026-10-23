@@ -81,7 +81,7 @@ pub(crate) fn version_data_path(
     key: &str,
     version_id: &str,
 ) -> PathBuf {
-    versions_dir(buckets_dir, bucket, key).join(format!("{}.data", version_id))
+    version_directory(buckets_dir, bucket, key, version_id).join(format!("{}.data", version_id))
 }
 
 pub(crate) fn version_meta_path(
@@ -90,7 +90,25 @@ pub(crate) fn version_meta_path(
     key: &str,
     version_id: &str,
 ) -> PathBuf {
-    versions_dir(buckets_dir, bucket, key).join(format!("{}.meta.json", version_id))
+    version_directory(buckets_dir, bucket, key, version_id)
+        .join(format!("{}.meta.json", version_id))
+}
+
+pub(crate) fn version_directory(
+    buckets_dir: &Path,
+    bucket: &str,
+    key: &str,
+    version_id: &str,
+) -> PathBuf {
+    let directory = versions_dir(buckets_dir, bucket, key);
+    // `docs` and the folder marker `docs/` share a legacy history directory.
+    // Generated IDs are distinct; the stable null ID needs a separate location.
+    // Keep all existing generated-version paths unchanged.
+    if key.ends_with('/') && version_id == "null" {
+        directory.join(".folder-null")
+    } else {
+        directory
+    }
 }
 
 #[cfg(test)]

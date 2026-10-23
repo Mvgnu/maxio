@@ -167,6 +167,18 @@ pub(super) fn parse_delete_objects_request(xml: &str) -> Result<DeleteObjectsReq
 
     loop {
         match reader.read_event() {
+            Ok(quick_xml::events::Event::Start(e) | quick_xml::events::Event::Empty(e))
+                if matches!(
+                    e.name().as_ref(),
+                    b"ETag" | b"LastModifiedTime" | b"Size" | b"VersionId"
+                ) =>
+            {
+                // The batch executor currently deletes current keys only. Ignoring a
+                // predicate or version selector would destroy a different object.
+                return Err(S3Error::not_implemented(
+                    "Conditional and version-specific batch deletes are not supported",
+                ));
+            }
             Ok(quick_xml::events::Event::Start(e)) if e.name().as_ref() == b"Delete" => {
                 if saw_delete_root || in_delete {
                     return Err(S3Error::malformed_xml());

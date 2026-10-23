@@ -386,6 +386,22 @@ pub(super) fn paginate_objects_v2_from_consensus_index_persisted_state(
 ) -> Result<(Vec<ObjectMeta>, bool), S3Error> {
     let persisted_state = load_consensus_index_persisted_metadata_state(state, "ListObjectsV2")?;
     let metadata_query = build_consensus_v2_query(topology, bucket, query, snapshot_id);
+    if query.delimiter.is_some() {
+        let canonical = hydrate_all_consensus_objects_for_delimiter(
+            "ListObjectsV2",
+            &persisted_state,
+            metadata_query,
+            all_objects,
+        )?;
+        let grouped = listing_representatives(
+            &canonical,
+            &query.prefix,
+            query.delimiter.as_deref(),
+            query.effective_start.as_deref(),
+        );
+        let (page, truncated) = paginate_objects(grouped, query.max_keys);
+        return Ok((page.into_iter().cloned().collect(), truncated));
+    }
     let canonical_page = list_objects_page_from_persisted_state(&persisted_state, &metadata_query)
         .map_err(|err| map_persisted_metadata_query_error("ListObjectsV2", err))?;
     let hydrated = hydrate_objects_from_consensus_states(
@@ -406,6 +422,22 @@ pub(super) fn paginate_objects_v1_from_consensus_index_persisted_state(
 ) -> Result<(Vec<ObjectMeta>, bool), S3Error> {
     let persisted_state = load_consensus_index_persisted_metadata_state(state, "ListObjectsV1")?;
     let metadata_query = build_consensus_v1_query(topology, bucket, query, snapshot_id);
+    if query.delimiter.is_some() {
+        let canonical = hydrate_all_consensus_objects_for_delimiter(
+            "ListObjectsV1",
+            &persisted_state,
+            metadata_query,
+            all_objects,
+        )?;
+        let grouped = listing_representatives(
+            &canonical,
+            &query.prefix,
+            query.delimiter.as_deref(),
+            query.marker.as_deref(),
+        );
+        let (page, truncated) = paginate_objects(grouped, query.max_keys);
+        return Ok((page.into_iter().cloned().collect(), truncated));
+    }
     let canonical_page = list_objects_page_from_persisted_state(&persisted_state, &metadata_query)
         .map_err(|err| map_persisted_metadata_query_error("ListObjectsV1", err))?;
     let hydrated = hydrate_objects_from_consensus_states(
@@ -414,6 +446,36 @@ pub(super) fn paginate_objects_v1_from_consensus_index_persisted_state(
         canonical_page.objects.as_slice(),
     )?;
     Ok((hydrated, canonical_page.is_truncated))
+}
+
+// Grouping must follow canonical state selection but precede the user-visible
+// page limit. Read a stable persisted snapshot through its validated query API;
+// do not replace consensus membership/version checks with a raw disk listing.
+fn hydrate_all_consensus_objects_for_delimiter(
+    operation: &str,
+    persisted_state: &crate::metadata::PersistedMetadataState,
+    mut query: MetadataQuery,
+    all_objects: &[ObjectMeta],
+) -> Result<Vec<ObjectMeta>, S3Error> {
+    query.max_keys = MAX_KEYS_CAP;
+    query.continuation_token = None;
+    let mut canonical = Vec::new();
+    loop {
+        let page = list_objects_page_from_persisted_state(persisted_state, &query)
+            .map_err(|err| map_persisted_metadata_query_error(operation, err))?;
+        canonical.extend(page.objects);
+        if !page.is_truncated {
+            break;
+        }
+        let next = page.next_continuation_token.ok_or_else(|| {
+            S3Error::internal("Truncated metadata page has no continuation token")
+        })?;
+        if query.continuation_token.as_deref() == Some(next.as_str()) {
+            return Err(S3Error::internal("Metadata pagination did not advance"));
+        }
+        query.continuation_token = Some(next);
+    }
+    hydrate_objects_from_consensus_states(operation, all_objects, &canonical)
 }
 
 pub(super) fn paginate_versions_from_consensus_index_persisted_state(
@@ -678,6 +740,58 @@ pub(super) fn filter_objects_after<'a>(
         .collect()
 }
 
+/// A rolled-up common prefix is one S3 listing entry, regardless of how many
+/// objects it contains. Keep one real object as its representative so no
+/// synthetic metadata leaks into storage or the metadata plane.
+fn listing_representatives<'a>(
+    objects: &'a [ObjectMeta],
+    prefix: &str,
+    delimiter: Option<&str>,
+    start_after: Option<&str>,
+) -> Vec<&'a ObjectMeta> {
+    let Some(delimiter) = delimiter else {
+        return filter_objects_after(objects, start_after);
+    };
+    let mut entries = std::collections::BTreeMap::new();
+    let mut ungrouped = Vec::new();
+    for object in objects
+        .iter()
+        .filter(|object| object.key.starts_with(prefix))
+    {
+        let entry_key = listing_entry_key(object, prefix, Some(delimiter));
+        if start_after.is_some_and(|start| entry_key.as_str() <= start) {
+            continue;
+        }
+        if object
+            .key
+            .strip_prefix(prefix)
+            .is_some_and(|suffix| suffix.contains(delimiter))
+        {
+            entries.entry(entry_key).or_insert(object);
+        } else {
+            // Preserve duplicate version observations for the metadata merge.
+            ungrouped.push(object);
+        }
+    }
+    ungrouped.extend(entries.into_values());
+    ungrouped.sort_by(|a, b| a.key.cmp(&b.key));
+    ungrouped
+}
+
+pub(super) fn listing_entry_key(
+    object: &ObjectMeta,
+    prefix: &str,
+    delimiter: Option<&str>,
+) -> String {
+    if let Some(delimiter) = delimiter
+        && let Some(suffix) = object.key.strip_prefix(prefix)
+        && let Some(position) = suffix.find(delimiter)
+    {
+        return object.key[..prefix.len() + position + delimiter.len()].to_owned();
+    }
+    object.key.clone()
+}
+
 pub(super) fn paginate_objects(
     filtered_objects: Vec<&ObjectMeta>,
     max_keys: usize,
@@ -694,21 +808,19 @@ pub(super) fn paginate_objects_v2_for_topology(
     query: &ListV2Query,
     all_objects: &[ObjectMeta],
 ) -> Result<(Vec<ObjectMeta>, bool), S3Error> {
+    let representatives = listing_representatives(
+        all_objects,
+        &query.prefix,
+        query.delimiter.as_deref(),
+        query.effective_start.as_deref(),
+    );
     if !topology.is_distributed() {
-        let filtered = filter_objects_after(all_objects, query.effective_start.as_deref());
-        let (page, is_truncated) = paginate_objects(filtered, query.max_keys);
+        let (page, is_truncated) = paginate_objects(representatives, query.max_keys);
         return Ok((page.into_iter().cloned().collect(), is_truncated));
     }
 
-    let filtered_states = all_objects
-        .iter()
-        .filter(|object| {
-            query
-                .effective_start
-                .as_deref()
-                .map(|start| object.key.as_str() > start)
-                .unwrap_or(true)
-        })
+    let filtered_states = representatives
+        .into_iter()
         .map(|object| ObjectMetadataState {
             bucket: bucket.to_string(),
             key: object.key.clone(),
@@ -761,14 +873,19 @@ pub(super) fn paginate_objects_v1_for_topology(
     query: &ListV1Query,
     all_objects: &[ObjectMeta],
 ) -> Result<(Vec<ObjectMeta>, bool), S3Error> {
+    let representatives = listing_representatives(
+        all_objects,
+        &query.prefix,
+        query.delimiter.as_deref(),
+        query.marker.as_deref(),
+    );
     if !topology.is_distributed() {
-        let filtered = filter_objects_after(all_objects, query.marker.as_deref());
-        let (page, is_truncated) = paginate_objects(filtered, query.max_keys);
+        let (page, is_truncated) = paginate_objects(representatives, query.max_keys);
         return Ok((page.into_iter().cloned().collect(), is_truncated));
     }
 
-    let object_states = all_objects
-        .iter()
+    let object_states = representatives
+        .into_iter()
         .map(|object| ObjectMetadataState {
             bucket: bucket.to_string(),
             key: object.key.clone(),
@@ -988,8 +1105,13 @@ pub(super) fn filter_versions_after<'a>(
                 return false;
             };
             let candidate_version_id = version.version_id.as_deref().unwrap_or("null");
-            // Storage ordering is key asc + version_id desc, so "after marker" means lower version id.
-            candidate_version_id < marker_version_id
+            // Existing unversioned bytes retain the null ID when versioning is
+            // enabled. Null is older than generated IDs, not lexically newer.
+            match (candidate_version_id == "null", marker_version_id == "null") {
+                (true, false) => true,
+                (false, true) => false,
+                _ => candidate_version_id < marker_version_id,
+            }
         })
         .collect()
 }

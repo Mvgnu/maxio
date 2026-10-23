@@ -2,6 +2,7 @@ mod bucket;
 mod checksum;
 mod multipart;
 mod object;
+mod staged_write;
 mod versioning;
 
 use super::chunk_reader::VerifiedChunkReader;
@@ -10,7 +11,7 @@ use super::lifecycle;
 use super::validation;
 use super::{
     BucketMeta, ByteStream, ChecksumAlgorithm, ChunkInfo, ChunkKind, ChunkManifest, DeleteResult,
-    MultipartUploadMeta, ObjectMeta, PartMeta, PutResult, StorageError,
+    MultipartUploadMeta, ObjectMeta, ObjectWriteCondition, PartMeta, PutResult, StorageError,
 };
 use base64::Engine;
 use checksum::{ChecksumHasher, finalize_checksum};
@@ -21,12 +22,14 @@ use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt, BufReader};
 
 fn version_id_from_meta<'a>(meta: &'a ObjectMeta, context: &str) -> Result<&'a str, StorageError> {
-    meta.version_id.as_deref().ok_or_else(|| {
+    let version_id = meta.version_id.as_deref().ok_or_else(|| {
         StorageError::Io(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("missing version_id while {} for key {}", context, meta.key),
         ))
-    })
+    })?;
+    validation::validate_version_id(version_id)?;
+    Ok(version_id)
 }
 
 pub struct FilesystemStorage {
@@ -34,6 +37,9 @@ pub struct FilesystemStorage {
     erasure_coding: bool,
     chunk_size: u64,
     parity_shards: u32,
+    // A single process owns a data directory. Coarse serialization makes conditional
+    // writes meaningful across every object mutator; a later keyed lock can improve throughput.
+    mutation_lock: std::sync::Arc<tokio::sync::Mutex<()>>,
 }
 
 #[cfg(test)]
@@ -1027,6 +1033,7 @@ impl FilesystemStorage {
             erasure_coding,
             chunk_size,
             parity_shards,
+            mutation_lock: std::sync::Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 }

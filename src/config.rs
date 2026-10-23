@@ -2,6 +2,7 @@ use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
 use std::env;
 
+use crate::cluster::peer_identity::{canonical_peer_identity, parse_peer_identity};
 use crate::metadata::ClusterMetadataListingStrategy;
 
 fn first_env_value(keys: &[&str]) -> Option<String> {
@@ -26,6 +27,41 @@ fn default_region() -> String {
 
 fn default_node_id() -> String {
     first_env_value(&["MAXIO_NODE_ID", "HOSTNAME"]).unwrap_or_else(|| "maxio-node".to_string())
+}
+
+fn parse_node_id(value: &str) -> Result<String, String> {
+    canonical_peer_identity(value).ok_or_else(|| {
+        "Invalid node id: expected a hostname or bracketed IPv6 address, optionally with a port"
+            .to_string()
+    })
+}
+
+/// One address parser for startup and live membership updates. Placement and peer
+/// authentication must see the same identity, including DNS case and IPv6 forms.
+pub(crate) fn parse_cluster_peer_addresses(entries: &[String]) -> Result<Vec<String>, String> {
+    let mut peers = Vec::new();
+    for entry in entries {
+        let peer = entry.trim();
+        if peer.is_empty() {
+            continue;
+        }
+        let (host, port) = peer
+            .rsplit_once(':')
+            .ok_or_else(|| format!("Invalid cluster peer '{peer}': expected host:port"))?;
+        let address = format!("{}:{}", host.trim(), port.trim());
+        let normalized = parse_peer_identity(&address)
+            .filter(|(_, port)| port.is_some())
+            .and_then(|_| canonical_peer_identity(&address))
+            .ok_or_else(|| {
+                format!(
+                    "Invalid cluster peer '{peer}': expected a hostname or bracketed IPv6 address and a port between 1 and 65535"
+                )
+            })?;
+        if !peers.contains(&normalized) {
+            peers.push(normalized);
+        }
+    }
+    Ok(peers)
 }
 
 fn parse_cluster_id(value: &str) -> Result<String, String> {
@@ -159,8 +195,8 @@ pub struct Config {
     #[arg(long, env = "MAXIO_REGION", default_value_t = default_region())]
     pub region: String,
 
-    /// Stable node identifier for future distributed mode coordination.
-    #[arg(long, env = "MAXIO_NODE_ID", default_value_t = default_node_id())]
+    /// Node identity; distributed mode requires this node's reachable host:port.
+    #[arg(long, env = "MAXIO_NODE_ID", default_value_t = default_node_id(), value_parser = parse_node_id)]
     pub node_id: String,
 
     /// Comma-separated cluster peer addresses (host:port) for distributed bootstrap wiring.
@@ -433,42 +469,7 @@ impl Config {
     }
 
     pub fn parsed_cluster_peers(&self) -> Result<Vec<String>, String> {
-        let mut peers = Vec::new();
-        for entry in &self.cluster_peers {
-            let peer = entry.trim();
-            if peer.is_empty() {
-                continue;
-            }
-
-            let (host, port) = peer
-                .rsplit_once(':')
-                .ok_or_else(|| format!("Invalid cluster peer '{}': expected host:port", peer))?;
-            let host = host.trim();
-            let port = port.trim();
-
-            if host.is_empty() {
-                return Err(format!(
-                    "Invalid cluster peer '{}': host must be non-empty",
-                    peer
-                ));
-            }
-
-            let parsed_port = port
-                .parse::<u16>()
-                .map_err(|_| format!("Invalid cluster peer '{}': invalid port", peer))?;
-            if parsed_port == 0 {
-                return Err(format!(
-                    "Invalid cluster peer '{}': port must be between 1 and 65535",
-                    peer
-                ));
-            }
-
-            let normalized = format!("{}:{}", host, parsed_port);
-            if !peers.iter().any(|p| p == &normalized) {
-                peers.push(normalized);
-            }
-        }
-        Ok(peers)
+        parse_cluster_peer_addresses(&self.cluster_peers)
     }
 }
 

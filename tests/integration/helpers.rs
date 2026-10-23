@@ -813,8 +813,11 @@ pub(crate) async fn s3_request_compact(
     builder.send().await.unwrap()
 }
 
-/// Build a PUT request with STREAMING-AWS4-HMAC-SHA256-PAYLOAD (AWS chunked encoding).
-pub(crate) async fn s3_put_chunked(url: &str, data: &[u8]) -> reqwest::Response {
+/// Sign each AWS chunk, including the terminating empty chunk, independently of the server.
+pub(crate) fn signed_chunked_request(
+    url: &str,
+    chunks: &[&[u8]],
+) -> (Vec<(String, String)>, Vec<u8>) {
     let parsed = reqwest::Url::parse(url).unwrap();
     let host = parsed.host_str().unwrap();
     let port = parsed.port().unwrap();
@@ -835,7 +838,11 @@ pub(crate) async fn s3_put_chunked(url: &str, data: &[u8]) -> reqwest::Response 
         ("x-amz-date".to_string(), amz_date.clone()),
         (
             "x-amz-decoded-content-length".to_string(),
-            data.len().to_string(),
+            chunks
+                .iter()
+                .map(|chunk| chunk.len())
+                .sum::<usize>()
+                .to_string(),
         ),
     ];
     sign_headers.sort_by(|a, b| a.0.cmp(&b.0));
@@ -885,29 +892,62 @@ pub(crate) async fn s3_put_chunked(url: &str, data: &[u8]) -> reqwest::Response 
         ACCESS_KEY, scope, signed_headers_str, seed_signature
     );
 
-    // Build AWS chunked body: "<hex_size>;chunk-signature=<sig>\r\n<data>\r\n0;chunk-signature=<sig>\r\n"
-    // For simplicity, compute chunk signatures with a dummy (real mc would chain them)
-    let chunk_sig = "0".repeat(64); // placeholder — server doesn't verify chunk sigs
+    let mut previous_signature = seed_signature;
+    let empty_hash = hex::encode(Sha256::digest(b""));
     let mut chunked_body = Vec::new();
-    chunked_body.extend_from_slice(
-        format!("{:x};chunk-signature={}\r\n", data.len(), chunk_sig).as_bytes(),
-    );
-    chunked_body.extend_from_slice(data);
-    chunked_body.extend_from_slice(b"\r\n");
-    chunked_body.extend_from_slice(format!("0;chunk-signature={}\r\n", chunk_sig).as_bytes());
+    for chunk in chunks.iter().copied().chain(std::iter::once(&b""[..])) {
+        let string_to_sign = format!(
+            "AWS4-HMAC-SHA256-PAYLOAD\n{}\n{}\n{}\n{}\n{}",
+            amz_date,
+            scope,
+            previous_signature,
+            empty_hash,
+            hex::encode(Sha256::digest(chunk)),
+        );
+        let mut mac = HmacSha256::new_from_slice(&signing_key).unwrap();
+        mac.update(string_to_sign.as_bytes());
+        previous_signature = hex::encode(mac.finalize().into_bytes());
+        chunked_body.extend_from_slice(
+            format!(
+                "{:x};chunk-signature={}\r\n",
+                chunk.len(),
+                previous_signature
+            )
+            .as_bytes(),
+        );
+        chunked_body.extend_from_slice(chunk);
+        chunked_body.extend_from_slice(b"\r\n");
+    }
+    let headers = vec![
+        ("host".into(), host_header),
+        ("x-amz-date".into(), amz_date),
+        ("x-amz-content-sha256".into(), payload_hash.into()),
+        (
+            "x-amz-decoded-content-length".into(),
+            chunks
+                .iter()
+                .map(|chunk| chunk.len())
+                .sum::<usize>()
+                .to_string(),
+        ),
+        ("authorization".into(), auth),
+        ("content-type".into(), "application/octet-stream".into()),
+    ];
+    (headers, chunked_body)
+}
 
-    client()
-        .put(url)
-        .header("host", &host_header)
-        .header("x-amz-date", &amz_date)
-        .header("x-amz-content-sha256", payload_hash)
-        .header("x-amz-decoded-content-length", data.len().to_string())
-        .header("authorization", &auth)
-        .header("content-type", "application/octet-stream")
-        .body(chunked_body)
-        .send()
-        .await
-        .unwrap()
+pub(crate) async fn s3_put_chunks(url: &str, chunks: &[&[u8]]) -> reqwest::Response {
+    let (headers, body) = signed_chunked_request(url, chunks);
+    let mut request = client().put(url).body(body);
+    for (name, value) in headers {
+        request = request.header(name, value);
+    }
+    request.send().await.unwrap()
+}
+
+/// Build a signed streaming PUT as used by mc.
+pub(crate) async fn s3_put_chunked(url: &str, data: &[u8]) -> reqwest::Response {
+    s3_put_chunks(url, &[data]).await
 }
 
 pub(crate) fn extract_xml_tag(body: &str, tag: &str) -> Option<String> {

@@ -1605,7 +1605,7 @@ pub(super) fn put_object_response(
     let mut builder = Response::builder()
         .status(StatusCode::OK)
         .header("ETag", &result.etag)
-        .header("Content-Length", result.size.to_string());
+        .header("Content-Length", "0");
     if let Some(vid) = &result.version_id {
         builder = builder.header("x-amz-version-id", vid.as_str());
     }
@@ -1994,7 +1994,7 @@ mod tests {
                 .headers()
                 .get("content-length")
                 .and_then(|v| v.to_str().ok()),
-            Some("12")
+            Some("0")
         );
         assert_eq!(
             response.headers().get("etag").and_then(|v| v.to_str().ok()),

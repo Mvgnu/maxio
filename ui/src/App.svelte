@@ -22,7 +22,7 @@
   let authenticated = $state<boolean | null>(null);
   let activeAccessKey = $state<string | null>(null);
   let sessionExpiresAt = $state<number | null>(null);
-  let collapsed = $state(localStorage.getItem("sidebar-collapsed") === "true");
+  let collapsed = $state(window.innerWidth < 640 || localStorage.getItem("sidebar-collapsed") === "true");
   let selectedBucket = $state<string | null>(null);
   let currentView = $state<"objects" | "settings" | "metrics">("objects");
   let objectBrowserRef = $state<ObjectBrowser | null>(null);
@@ -82,6 +82,9 @@
   }
 
   onMount(() => {
+    const phone = window.matchMedia("(max-width: 639px)");
+    const collapseOnPhone = () => { if (phone.matches) collapsed = true; };
+    phone.addEventListener("change", collapseOnPhone);
     refreshAuthState()
       .catch(() => {
         authenticated = false;
@@ -94,7 +97,10 @@
       applyHash();
     }
 
-    return () => window.removeEventListener("hashchange", applyHash);
+    return () => {
+      phone.removeEventListener("change", collapseOnPhone);
+      window.removeEventListener("hashchange", applyHash);
+    };
   });
 
   function handleLogin(accessKey: string) {
@@ -167,7 +173,7 @@
 {:else}
   <div class="relative flex h-screen bg-background">
     <nav
-      class="relative flex flex-col border-r bg-sidebar-background transition-[width] duration-200"
+      class="relative flex shrink-0 flex-col border-r bg-sidebar-background transition-[width] duration-200"
       class:w-56={!collapsed}
       class:w-14={collapsed}
       style="border-color: var(--cool-sidebar-border);"
@@ -278,10 +284,10 @@
       </div>
     </nav>
 
-    <main class="flex flex-1 flex-col overflow-hidden">
+    <main class="flex min-w-0 flex-1 flex-col overflow-hidden">
       <!-- Header bar -->
       <div
-        class="flex h-14 shrink-0 items-center gap-2 px-6"
+        class="flex h-14 shrink-0 items-center gap-2 px-4 sm:px-6"
         style="border-bottom: 1px solid var(--cool-sidebar-border);"
       >
         {#if selectedBucket}
@@ -331,7 +337,7 @@
         {/if}
       </div>
       <!-- Scrollable content -->
-      <div class="flex-1 overflow-auto p-6">
+      <div class="flex-1 overflow-auto p-4 sm:p-6">
         {#if currentView === "metrics"}
           <SystemMetrics />
         {:else if selectedBucket && currentView === "settings"}
