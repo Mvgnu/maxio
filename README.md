@@ -1,16 +1,19 @@
 # MaxIO
 
-**S3 storage and direct file movement on your own devices.**
+**S3 storage, selective workspaces and optional local agent execution on your own infrastructure.**
 
 MaxIO is a Rust S3 server with an embedded Svelte console. Start with one process
 and a data directory. Add explicit storage peers or the optional folder-sync
-client when you need them.
+client when you need them. The optional workspace and agent tools are separate
+executables; none is required to start the S3 server.
 
 | I want… | Start here | Status |
 |---|---|---|
 | One straightforward S3 service | [Standalone](#one-s3-server) | Default mode; ordinary S3 clients and built-in console |
 | S3 data on multiple devices | [Peer S3](specs/journeys/peer_s3.md) | Experimental static peers; tested replication and honest outage behavior |
 | My folders on my devices, without a cloud intermediary | [Device sync](#direct-device-folder-sync) | Additive sync through a chosen peer; preserves conflicts; no deletion propagation |
+| See files without copying everything | [Selective workspace](#selective-workspace) | Experimental versioned catalog and selected transfers; no eviction yet |
+| Run a command, Codex or Claude on selected files | [Local agents](#local-agents) | Optional supervised local runner; remote locality scheduling remains planned |
 
 This is an actively developed fork. Its supported behavior and limits are recorded
 in [the system contract](specs/00_system.md), with independent evidence in
@@ -31,7 +34,7 @@ cd ..
 cargo build --locked --bins
 ```
 
-This creates `target/debug/maxio` and `target/debug/maxio-sync`. For optimized,
+This creates `target/debug/maxio`, `maxio-sync`, `maxio-workspace` and `maxio-agent`. For optimized,
 self-contained console assets, use `cargo build --locked --release --bins` and the
 executables under `target/release/`. Release executables embed the console; no Node
 or Bun runtime is needed. Debug builds read `ui/dist/` from the checkout.
@@ -131,6 +134,196 @@ There is no automatic device pairing, NAT traversal, mesh discovery, filesystem
 watcher, deletion propagation or permission/symlink synchronization in this version.
 See the [complete device-sync contract](specs/journeys/device_sync.md).
 
+## Selective workspace
+
+Use this when a project should be discoverable everywhere while file contents are
+present only where requested. It is a separate, experimental client protocol over
+ordinary S3. It does not change server startup or the additive `maxio-sync` behavior.
+
+Start the standalone server above, create a bucket named `workspaces` using AWS CLI
+or `mc`, and keep `MAXIO_ACCESS_KEY` / `MAXIO_SECRET_KEY` set for that target. Do not
+point a workspace at the server's data directory. A local example:
+
+```bash
+mkdir -p demo-mini/src demo-mini/datasets demo-book
+printf 'initial project note\n' > demo-mini/src/note.txt
+printf 'a dataset only the Mini initially needs\n' > demo-mini/datasets/example.txt
+
+ws() {
+  ./target/debug/maxio-workspace \
+    --endpoint http://127.0.0.1:9000 --allow-http \
+    --bucket workspaces --workspace personal "$@"
+}
+
+ws --root ./demo-mini init
+ws --root ./demo-mini publish src datasets
+ws --root ./demo-book refresh             # metadata only, no dataset contents
+ws --root ./demo-book pull src            # datasets/ remains absent
+./target/debug/maxio-workspace --root ./demo-book list
+./target/debug/maxio-workspace --root ./demo-book status
+./target/debug/maxio-workspace --root ./demo-book pin src
+
+printf 'edited on the MacBook\n' > demo-book/src/note.txt
+ws --root ./demo-book publish src/note.txt
+ws --root ./demo-mini pull src/note.txt
+```
+
+Every response is JSON with the observed revision and transfer counters. `list`
+uses the cached catalog; `refresh` fetches current metadata. `status` verifies local
+hashes. `list`, `status`, `pin` and `unpin` work offline without storage credentials.
+A pin covers the currently hydrated selected files, not future directory members.
+
+Use HTTPS for cross-device traffic. `--ca-cert /path/to/ca.pem` selects only those
+roots while retaining normal hostname validation; `--allow-http` is explicit for a
+trusted local or encrypted network. Set `MAXIO_SESSION_TOKEN` when an explicitly
+configured S3 credential needs a session token. There is no implicit host IAM lookup.
+External S3 providers use this same adapter, but provider interoperability must be
+verified per endpoint; this wave's process evidence uses MaxIO.
+
+### Versions, conflicts and local recovery
+
+Published references look like:
+
+```text
+maxio-workspace://<workspace-uuid>/src/note.txt?revision=<revision-uuid>
+```
+
+These are logical identities, not HTTPS download links or permission grants. To
+hydrate an earlier committed version, use `pull src/note.txt --revision <uuid>`.
+The observed current catalog stays current; status reports an unchanged older copy
+as `stale`. Pull the current version again before publishing against it.
+
+`publish` uses the last observed head and each selected file's working baseline.
+Another publication can make that head stale; the command then fails without losing
+local edits. `refresh` alone cannot turn conflicting edits into a valid overwrite.
+Inspect/reconcile the preserved changes and pull a clean current version before
+publishing again. MaxIO does not merge source code; use Git branches/worktrees for
+concurrent coding and Git to resolve source history.
+
+Local state, staged publication copies, receipts and replaced-file history live under
+`.maxio-workspace`. Failed or interrupted transfers remain recoverable there. The
+root must be operator-owned; these checks are not protection against a hostile
+process replacing directory ancestors while an operation runs. No global delete
+operation exists, and unavailability is never treated as deletion evidence.
+
+**Eviction is deliberately unavailable in this slice.** A matching remote read proves
+current recoverability, not enforced retention or crash-safe durability. `evict`
+returns an error and leaves local files intact. History/stages are not automatically
+pruned. This is M1a, with safe disk reclamation still open in
+[the roadmap](01_product_roadmap.md). It is not yet the complete distributed fabric.
+
+Reproduce the real selective-transfer and failure journey:
+
+```bash
+python3 scripts/smoke_workspace.py \
+  --binary ./target/debug/maxio \
+  --workspace-binary ./target/debug/maxio-workspace --keep-data
+```
+
+It uses three isolated local roots, an actual 128 MiB dataset, byte-counting transport,
+conditional publication races, truncated downloads, failed uploads, a lost publication
+response and server restart. It is a one-host test, not a physical three-device/WAN
+claim. Client counters separate payload and metadata bytes and exclude HTTP framing
+and SDK retries; the fixture additionally counts bytes forwarded through its proxy.
+
+## Local agents
+
+`maxio-agent` is an independent local runner for an owner-selected executable,
+Codex CLI or Claude Code. It prepares a fresh run workspace from explicit inputs,
+records input/output hashes, streams logs, enforces a deadline and retains failed or
+cancelled work. It never automatically publishes outputs or deletes a run directory.
+
+### Run an ordinary command
+
+This example reads only the selected `src` directory in a fresh working copy. Use
+the absolute path of your Python executable if it is installed elsewhere:
+
+```bash
+mkdir -p agent-example/src
+printf 'a selected input\n' > agent-example/src/note.txt
+
+./target/debug/maxio-agent run \
+  --adapter command --executable /usr/bin/python3 \
+  --source ./agent-example --input src --output result.txt \
+  --records ./agent-runs --timeout-seconds 60 \
+  -- -c 'from pathlib import Path; Path("result.txt").write_text(Path("src/note.txt").read_text().upper())'
+```
+
+The JSON result names the run UUID, retained workspace and log paths, input/output
+hashes, status and exit code. `output_files` are candidates for review; `published`
+stays false. Review the result, then explicitly copy accepted outputs into a tracked
+workspace and publish selected files with `maxio-workspace`. The source tree is not
+changed automatically. Records must be outside the source tree.
+
+```bash
+./target/debug/maxio-agent inspect --run ./agent-runs/<run-uuid>
+./target/debug/maxio-agent cancel --run ./agent-runs/<active-run-uuid>
+```
+
+`cancel` confirms that a cancellation request was recorded. Inspect the run again
+for the live runner's terminal `cancelled` state; a request is not proof that an
+abandoned worker has stopped. Failed, cancelled and timed-out runs keep their edits
+and logs. Nothing kills a process based on a saved PID.
+
+### Codex CLI and Claude Code
+
+Install and authenticate the CLI you choose using its own instructions. MaxIO does
+not install a provider, perform login or make a model request during `doctor`. Use
+an absolute executable path and an explicitly chosen owner-managed credential
+directory outside the source tree:
+
+```bash
+./target/debug/maxio-agent doctor --adapter codex --executable /absolute/path/to/codex
+./target/debug/maxio-agent doctor --adapter claude --executable /absolute/path/to/claude
+
+printf 'Read src/note.txt and write a concise summary to result.md.\n' > task.txt
+
+./target/debug/maxio-agent run \
+  --adapter codex --executable /absolute/path/to/codex \
+  --provider-home /absolute/path/to/owner-managed-codex-home \
+  --source ./agent-example --input src --output result.md \
+  --records ./codex-runs --prompt-file ./task.txt \
+  --permission workspace-write --timeout-seconds 900
+
+./target/debug/maxio-agent run \
+  --adapter claude --executable /absolute/path/to/claude \
+  --provider-home /absolute/path/to/owner-managed-claude-config \
+  --source ./agent-example --input src --output result.md \
+  --records ./claude-runs --prompt-file ./task.txt \
+  --permission workspace-write --timeout-seconds 900
+```
+
+`--provider-home` selects `CODEX_HOME` or `CLAUDE_CONFIG_DIR`; MaxIO references that
+directory rather than copying credentials into task inputs. Instead, API users can
+select an already-set credential with `--env CODEX_API_KEY` or
+`--env ANTHROPIC_API_KEY`. Do not put secret values in arguments. Provider adapters
+reject arbitrary extra flags and inherited provider overrides.
+
+Providers default to `read-only`; the examples explicitly permit workspace edits.
+Codex keeps its native sandbox and unattended approval policy. Claude requires
+restricted-mode and unattended-permission capabilities (at least version 2.1.259)
+and currently exposes **file read/edit tools only, without Bash or MCP**. A full
+sandboxed Claude command-execution profile remains open.
+
+The baseline child environment supplies `/usr/local/bin:/usr/bin:/bin`. If an npm
+wrapper needs Node elsewhere, select the native provider executable or explicitly
+pass `--env PATH` to `run` for that trusted runtime path. `doctor` uses the baseline
+path; it does not inherit your shell's runtime configuration. Provider capability
+checks use real `--version` / `--help` output. Provider protocol fixtures are not
+evidence of an authenticated model run.
+
+See [the local-agent journey](specs/journeys/local_agents.md) and
+`maxio-agent run --help` for the full invocation contract. A successful child process
+is separate from validated output and storage publication. Logs can contain task
+content; keep the retained records private.
+
+This foundation does not yet register remote workers, schedule by dataset locality,
+issue leases or fence stale publishers. Ordinary commands are trusted-user execution;
+a working directory and cleared environment are not an OS sandbox. Agent credentials
+are explicitly selected, storage credentials are excluded, and vendor safety controls
+are preserved. Git remains responsible for source merges. Full remote execution is
+an upcoming independent milestone, not a flag hidden in the S3 startup command.
+
 ## Peer S3
 
 The [two-peer recipe](specs/journeys/peer_s3.md) gives exact commands for explicit
@@ -166,7 +359,8 @@ issuance and rotation remain explicit operator responsibilities.
 
 ## Configuration
 
-`maxio --help` and `maxio-sync --help` are the complete flag reference.
+Each executable's `--help` is its complete flag reference: `maxio`, `maxio-sync`,
+`maxio-workspace`, and `maxio-agent`.
 
 | Setting | Environment | Default / meaning |
 |---|---|---|

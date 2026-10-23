@@ -28,6 +28,11 @@ optional erasure-coded chunks. Cluster code adds membership, placement, forwardi
 replication and metadata reconciliation. The optional `maxio-sync` client talks
 through the S3 HTTP contract, not private storage paths.
 
+The optional `maxio-workspace` client adds immutable logical revisions and selective
+transfers through S3. The independent `maxio-agent` executable prepares selected
+input copies and supervises a local command or coding CLI. Neither participates in
+S3 startup; remote scheduling remains a later layer.
+
 Keep these boundaries before considering crate extraction. Source moves must
 remove a concrete responsibility tangle, not merely distribute a long file into
 arbitrary numbered fragments. Unit tests may live beside their module or in a
@@ -45,6 +50,9 @@ named adjacent test module. Cross-process acceptance lives in scripts/tests.
 | Embedded console | [web_console_ui](domains/web_console_ui.md) |
 | Ordinary directory synchronization | [device_sync](domains/device_sync.md) |
 | Verification infrastructure | [quality_harness](domains/quality_harness.md) |
+| Published workspace catalog | [workspace_catalog](domains/workspace_catalog.md) |
+| Local workspace state and hydration | [workspace_cache](domains/workspace_cache.md) |
+| Optional local agent execution | [agent_execution](domains/agent_execution.md) |
 
 ## Shared contracts and ownership
 
@@ -241,3 +249,65 @@ loopback scenario establishes its stated property only. Production durability,
 power-loss behavior, internet peer security, WAN partitions and all-device UX
 require additional evidence. The next wave is chosen by the largest observed gap,
 not a list of previously imagined distributed features.
+
+
+## PM ruling: optional workspace and execution foundation (2026-10-23)
+
+PR #2 is merged at `7afd102bd7013b55e17f1642380ea5f3e5e5f1d6`. Its historical
+review still contains an unperformed independent certificate-identity recheck.
+Merge state does not change that evidence. Do not repeat the platform-blocked probe.
+
+The product evolves as three independently usable layers: **A standalone S3**,
+**B selective logical workspaces**, **C storage-aware execution**. Layer A has no
+startup dependency on B/C, a cloud account, a coordinator or quorum. Existing peer
+S3 and additive folder sync stay available. Git keeps source history and merges.
+
+The first workspace wave is M1a, not the whole vision: logical discovery, immutable
+revisions, selective publication/hydration, verified local state, pins and conflict
+rejection, plus a local execution foundation with Codex/Claude adapters. Destructive
+eviction is explicitly blocked until retention and durability authority is enforced.
+No new lease, device-security, remote-scheduling or automatic-failover claims arise.
+
+Approve these disjoint domains:
+
+| Domain | Ownership and purpose |
+|---|---|
+| [workspace_catalog](domains/workspace_catalog.md) | S3 adapter, immutable catalog and CAS publication |
+| [workspace_cache](domains/workspace_cache.md) | Local baselines, selective staging/hydration, pins, CLI |
+| [agent_execution](domains/agent_execution.md) | Local isolated work directories, supervised commands, Codex/Claude adapters |
+
+Freeze `workspace/contract.rs`, `execution/contract.rs` and their public facades as
+PM-owned. Promote existing portable filesystem helpers into PM-owned `src/files.rs`
+so sync and workspace reuse one path rule. Additional workspace rules protect its
+control directories and Git internals. The PM integrates CLI/gates/docs and shared
+facades; builders cannot widen their scope to implement a convenient dependency.
+
+Approve object_store **0.12.5**, S3-only, for streaming transfers and conditional
+metadata; it matches the existing Reqwest generation. Use a strict custom HTTP
+connector. Approve direct libc at the already resolved major for owned Unix process
+group termination. No arbitrary shell-string runner. No storage credential forwarding.
+
+Local cancellation has a durable control-file contract: `maxio-agent cancel --run
+DIR` records a request for that validated run. Only the live runner may confirm a
+terminal `cancelled` state and terminate its owned process group. A request receipt
+is not confirmed termination, and an abandoned record never authorizes killing a
+saved PID. SIGINT/SIGTERM handling remains separately verifiable; the explicit
+request path must have an actual process-level cancellation test.
+
+The complete per-domain contracts are the specs above. Namespace references use
+`maxio-workspace://<workspace-uuid>/<percent-encoded-logical-path>?revision=<uuid>`.
+They identify a published logical version, not a temporary URL or access grant.
+Changing physical placement must preserve workspace/revision identity. There is no
+HTTPS share-link issuer or independent authorization service yet.
+
+Publication uses fresh immutable blobs, immutable SHA-256-verified manifests, and
+one opaque-ETag conditional head. CAS prevents publishing against an old head; it
+is explicitly not renewable ownership or fencing against a revoked credential.
+No timestamp wins a conflict. Missing/unavailable data never authorizes deletion.
+S3 readback verifies bytes, not retention. Acknowledgment uncertainty preserves work.
+
+Implement and judge [selective workspaces](journeys/selective_workspace.md) and
+[local agents](journeys/local_agents.md). Full Journey B/C/D/E remain incomplete
+until their named missing properties are implemented and tested. The roadmap is
+`01_product_roadmap.md`; it separates implemented, verified, experimental, planned
+and explicitly deferred work instead of treating green unit tests as delivery.
