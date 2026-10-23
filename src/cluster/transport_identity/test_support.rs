@@ -110,11 +110,15 @@ impl TestCa {
         uris: &[String],
         hostname: Option<&str>,
     ) -> TestIdentity {
-        self.issue_certificate(node_id, uris, hostname, false)
+        self.issue_certificate(node_id, uris, hostname, false, true)
     }
 
     pub fn issue_expired(&self, node_id: &str) -> TestIdentity {
-        self.issue_certificate(node_id, &[format!("maxio://{node_id}")], None, true)
+        self.issue_certificate(node_id, &[format!("maxio://{node_id}")], None, true, true)
+    }
+
+    pub fn issue_without_dns_ip_san(&self, node_id: &str) -> TestIdentity {
+        self.issue_certificate(node_id, &[format!("maxio://{node_id}")], None, false, false)
     }
 
     fn issue_certificate(
@@ -123,11 +127,14 @@ impl TestCa {
         uris: &[String],
         hostname: Option<&str>,
         expired: bool,
+        include_host_san: bool,
     ) -> TestIdentity {
         let key = key();
         let number = self.serial.fetch_add(1, Ordering::Relaxed);
+        let (node_host, _) = crate::cluster::peer_identity::parse_peer_identity(node_id)
+            .expect("test node identity");
         let mut name = X509NameBuilder::new().expect("peer name");
-        name.append_entry_by_text("CN", node_id)
+        name.append_entry_by_text("CN", &node_host)
             .expect("peer common name");
         let name = name.build();
         let mut builder = X509::builder().expect("peer builder");
@@ -185,14 +192,14 @@ impl TestCa {
                     .expect("peer EKU"),
             )
             .expect("peer EKU");
-        let (node_host, _) = crate::cluster::peer_identity::parse_peer_identity(node_id)
-            .expect("test node identity");
         let hostname = hostname.unwrap_or(&node_host);
         let mut san = SubjectAlternativeName::new();
-        if hostname.parse::<std::net::IpAddr>().is_ok() {
-            san.ip(hostname);
-        } else {
-            san.dns(hostname);
+        if include_host_san {
+            if hostname.parse::<std::net::IpAddr>().is_ok() {
+                san.ip(hostname);
+            } else {
+                san.dns(hostname);
+            }
         }
         for uri in uris {
             san.uri(uri);

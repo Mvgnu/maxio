@@ -527,6 +527,95 @@ async fn inbound_revoked_or_unbound_certificate_never_mints_identity() {
 }
 
 #[tokio::test]
+async fn inbound_uri_identity_requires_matching_dns_ip_san_on_actual_connection() {
+    let ca = TestCa::new();
+    let mut admitted = Vec::new();
+    for (node_id, wrong_host) in [
+        ("127.0.0.1:9001", "127.0.0.2"),
+        ("node-a.example:9001", "node-b.example"),
+        ("[::1]:9001", "::2"),
+    ] {
+        for missing_san in [false, true] {
+            let (listener, server_id) = listener();
+            let server_identity = ca.issue(&server_id);
+            let client = if missing_san {
+                ca.issue_without_dns_ip_san(node_id)
+            } else {
+                ca.issue_with_sans(node_id, &[format!("maxio://{node_id}")], Some(wrong_host))
+            };
+            let http = ordinary_client(&ca, Some(&client));
+            let server = serve_once(
+                listener,
+                build_peer_tls_acceptor(server_identity.config()).unwrap(),
+                None,
+                RESPONSE,
+            );
+            let response = http
+                .put(format!("https://{server_id}/internal-replication/object"))
+                .header("x-maxio-forwarded-by", node_id)
+                .body("a trusted URI must not admit this mismatched certificate")
+                .send()
+                .await;
+            let observed = server.join().unwrap();
+            assert!(
+                observed.tls_version.is_some(),
+                "the trusted certificate must complete the normal TLS handshake: {observed:?}"
+            );
+            match observed.identity {
+                Err(error) if response.is_err() && observed.request.is_empty() => {
+                    assert!(
+                        error.contains("DNS/IP SAN does not match node URI host"),
+                        "certificate must be rejected specifically for its host SAN"
+                    );
+                }
+                identity => admitted.push(format!(
+                    "{node_id}, missing SAN: {missing_san}, identity: {identity:?}"
+                )),
+            }
+        }
+    }
+    assert!(
+        admitted.is_empty(),
+        "inbound SAN-invalid peers were admitted: {admitted:?}"
+    );
+}
+
+#[tokio::test]
+async fn inbound_matching_dns_ipv4_ipv6_and_wildcard_sans_still_authenticate() {
+    let ca = TestCa::new();
+    for (node_id, san_host) in [
+        ("127.0.0.1:9001", "127.0.0.1"),
+        ("node-a.example:9001", "NODE-A.EXAMPLE"),
+        ("[::1]:9001", "::1"),
+        ("node-a.nodes.example:9001", "*.nodes.example"),
+    ] {
+        let (listener, server_id) = listener();
+        let server_identity = ca.issue(&server_id);
+        let client = ca.issue_with_sans(node_id, &[format!("maxio://{node_id}")], Some(san_host));
+        let http = ordinary_client(&ca, Some(&client));
+        let server = serve_once(
+            listener,
+            build_peer_tls_acceptor(server_identity.config()).unwrap(),
+            None,
+            RESPONSE,
+        );
+        let response = http
+            .get(format!("https://{server_id}/"))
+            .send()
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_success(),
+            "valid SAN rejected for {node_id}"
+        );
+        assert_eq!(
+            server.join().unwrap().identity.unwrap().as_deref(),
+            Some(node_id)
+        );
+    }
+}
+
+#[tokio::test]
 async fn peer_client_refuses_plaintext_and_does_not_follow_redirects() {
     let ca = TestCa::new();
     let (listener, server_id) = listener();

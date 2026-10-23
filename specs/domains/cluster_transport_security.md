@@ -65,6 +65,12 @@ verified TLS connection. Outbound clients verify the expected full node identity
 inside the actual handshake, with normal signature verification, configured CA
 roots, revocation checks, no redirects and no environmental proxies.
 
+Incoming certificates must independently bind the URI host to a normal DNS/IP
+SAN before an identity is minted or HTTP is dispatched. OpenSSL performs DNS
+matching with common-name fallback disabled, and matches IPv4/IPv6 hosts against
+IP SAN bytes. A trusted URI alone, a mismatched host SAN, or a matching common
+name without the required host SAN cannot authenticate a peer.
+
 `PeerTlsConfig` is independent of runtime configuration. Its constructors validate
 the local key pair, validity, full node URI, DNS/IP SAN and certificate chain for
 both server and client use. The CA path accepts a certificate bundle. A local leaf
@@ -82,8 +88,10 @@ functions never authorize an HTTP request on another connection.
 - Compatibility mode is not a safe internet deployment.
 - Certificate issuance, distribution, renewal and revocation are operator tasks;
   automatic device pairing and NAT traversal are outside this milestone.
-- The recovery review's identity gap remains open until an independent critic
-  exercises the native secure transport against impersonation attempts.
+- Independent acceptance of the repaired incoming DNS/IP SAN boundary remains
+  blocked by the platform security gate. The required join/mutation recheck and
+  PM stop are recorded in the [secure-peers review](../reviews/2026-10-23-secure-peers.md).
+  Passing automated handshake tests does not close that artifact review.
 
 ## Review
 

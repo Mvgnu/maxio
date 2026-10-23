@@ -67,7 +67,9 @@
   window; capacity denies new IPs without evicting existing limits. A reverse proxy's
   clients share its socket IP and login allowance. TLS connection metadata makes
   native HTTPS cookies Secure; forwarded protocol can only add that restriction.
-- The recovery replay gap remains open pending an independent live-session review.
+- Copied-cookie revocation meets the selected live-session property in the
+  [secure-peers review](../reviews/2026-10-23-secure-peers.md). That scoped verdict
+  does not claim distributed sessions, in-flight revocation or a complete security audit.
 
 ## Review
 

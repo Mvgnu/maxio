@@ -6,12 +6,13 @@ use super::{
     ensure_certificate_valid_now, normalize_path, normalize_sha256_fingerprint_set,
     peer_certificate_sha256_hex, peer_node_identity_uri,
 };
+use foreign_types::ForeignTypeRef;
 use openssl::pkey::{PKey, Private};
 use openssl::ssl::{SslAcceptor, SslMethod, SslRef, SslVerifyMode, SslVersion};
 use openssl::stack::Stack;
 use openssl::x509::store::{X509Store, X509StoreBuilder};
 use openssl::x509::verify::{X509CheckFlags, X509VerifyParam};
-use openssl::x509::{X509, X509PurposeId, X509StoreContext, X509VerifyResult};
+use openssl::x509::{X509, X509PurposeId, X509Ref, X509StoreContext, X509VerifyResult};
 use rustls::client::WebPkiServerVerifier;
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::pki_types::pem::{PemObject, SectionKind};
@@ -200,6 +201,49 @@ fn reject_revoked(fingerprint: &str, revocations: &[String]) -> Result<(), Strin
     Ok(())
 }
 
+// The TLS handshake already verifies the chain, usages and key possession.
+// This additional name-only check binds the URI's host to a normal DNS/IP SAN.
+fn verify_node_identity_host_san(certificate: &X509Ref, node_id: &str) -> Result<(), String> {
+    let (host, _) = crate::cluster::peer_identity::parse_peer_identity(node_id)
+        .ok_or_else(|| "peer certificate URI contains an invalid node host".to_owned())?;
+    let check_ip = |octets: &[u8]| {
+        // SAFETY: certificate is a live borrowed X509. The slice stays live for
+        // the call and contains exactly 4 or 16 network-order bytes from IpAddr.
+        // OpenSSL only reads these buffers and retains neither pointer.
+        unsafe {
+            openssl_sys::X509_check_ip(certificate.as_ptr(), octets.as_ptr(), octets.len(), 0)
+        }
+    };
+    let result = match host.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => check_ip(&ip.octets()),
+        Ok(IpAddr::V6(ip)) => check_ip(&ip.octets()),
+        Err(_) => {
+            // SAFETY: certificate and host remain live for the call. The parsed
+            // host is nonempty ASCII without NULs; its explicit byte length is
+            // passed, so no terminator is needed. A null peername requests no
+            // allocated output. OpenSSL retains neither input pointer.
+            unsafe {
+                openssl_sys::X509_check_host(
+                    certificate.as_ptr(),
+                    host.as_ptr().cast(),
+                    host.len(),
+                    openssl_sys::X509_CHECK_FLAG_NEVER_CHECK_SUBJECT,
+                    std::ptr::null_mut(),
+                )
+            }
+        }
+    };
+    match result {
+        1 => Ok(()),
+        0 => Err(format!(
+            "peer certificate DNS/IP SAN does not match node URI host {host}"
+        )),
+        result => Err(format!(
+            "peer certificate DNS/IP SAN validation failed for node URI host {host} (OpenSSL result {result})"
+        )),
+    }
+}
+
 /// Build the native node listener. Public S3/console clients may omit a client
 /// certificate; any supplied certificate must verify. Runtime requires a
 /// VerifiedPeerIdentity for internal requests and may require certificates at
@@ -257,9 +301,9 @@ pub fn verified_peer_identity_from_tls(
     };
     ensure_certificate_valid_now(&certificate)?;
     reject_revoked(&peer_certificate_sha256_hex(&certificate)?, &revocations)?;
-    Ok(Some(VerifiedPeerIdentity {
-        node_id: certificate_node_identity(&certificate)?,
-    }))
+    let node_id = certificate_node_identity(&certificate)?;
+    verify_node_identity_host_san(&certificate, &node_id)?;
+    Ok(Some(VerifiedPeerIdentity { node_id }))
 }
 
 #[derive(Debug)]

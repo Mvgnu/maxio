@@ -188,6 +188,11 @@ verdicts stay in their original record until superseded by new evidence.
 - Approve `tokio-openssl`, direct Rustls with its existing Ring provider, and
   Reqwest's manual-root Rustls feature. Cluster code must remain independent of
   runtime configuration and HTTP handlers.
+- Inbound peer extraction must also match the certificate's DNS/IP SAN to the
+  host in its canonical MaxIO URI; an allowed URI does not waive that check.
+  Approve direct `openssl-sys` and `foreign-types` at their already locked versions
+  for a small, documented wrapper around OpenSSL's standard name-check functions,
+  with subject/CN fallback disabled. Do not implement a second hostname matcher.
 
 ### Session contract
 
