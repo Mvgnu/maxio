@@ -964,6 +964,8 @@ pub(crate) struct HealthPayload {
     pub(crate) membership_protocol_reason: String,
     pub(crate) write_durability_mode: String,
     pub(crate) metadata_listing_strategy: String,
+    pub(crate) metadata_listing_probe_scope: String,
+    pub(crate) metadata_listing_probe_status: String,
     pub(crate) metadata_listing_gap: Option<String>,
     pub(crate) metadata_listing_snapshot_id: String,
     pub(crate) metadata_listing_expected_nodes: usize,

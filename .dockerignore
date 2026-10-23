@@ -1,0 +1,9 @@
+.git
+.agents
+.codex
+target
+ui/node_modules
+ui/dist
+data
+__pycache__
+*.log

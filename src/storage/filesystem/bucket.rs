@@ -34,6 +34,7 @@ impl FilesystemStorage {
     }
 
     pub async fn create_bucket(&self, meta: &BucketMeta) -> Result<bool, StorageError> {
+        let _guard = self.mutation_lock.lock().await;
         let bucket_dir = self.buckets_dir.join(&meta.name);
         match fs::create_dir(&bucket_dir).await {
             Ok(()) => {
@@ -56,6 +57,7 @@ impl FilesystemStorage {
     }
 
     pub async fn delete_bucket(&self, name: &str) -> Result<bool, StorageError> {
+        let _guard = self.mutation_lock.lock().await;
         let bucket_dir = self.buckets_dir.join(name);
         if !fs::try_exists(&bucket_dir).await? {
             return Ok(false);
@@ -65,6 +67,7 @@ impl FilesystemStorage {
         if has_objects {
             return Err(StorageError::BucketNotEmpty);
         }
+        let original_meta = self.read_bucket_meta(name).await?;
 
         // Remove metadata and internal dirs before the bucket dir itself.
         // Use remove_dir (not remove_dir_all) for the bucket dir so it fails
@@ -77,15 +80,7 @@ impl FilesystemStorage {
             Err(e) if e.kind() == std::io::ErrorKind::DirectoryNotEmpty => {
                 // A concurrent write added files. Best effort: recreate metadata
                 // so head_bucket reflects the bucket still being present.
-                let meta = BucketMeta {
-                    name: name.to_string(),
-                    created_at: chrono::Utc::now()
-                        .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-                        .to_string(),
-                    region: String::new(),
-                    versioning: false,
-                };
-                let _ = self.write_bucket_meta(name, &meta).await;
+                let _ = self.write_bucket_meta(name, &original_meta).await;
                 Err(StorageError::BucketNotEmpty)
             }
             Err(e) => Err(e.into()),
@@ -142,6 +137,7 @@ impl FilesystemStorage {
         bucket: &str,
         rules: &[lifecycle::LifecycleRule],
     ) -> Result<(), StorageError> {
+        let _guard = self.mutation_lock.lock().await;
         self.ensure_bucket_exists(bucket).await?;
         lifecycle::validate_rules(rules).map_err(StorageError::InvalidKey)?;
 

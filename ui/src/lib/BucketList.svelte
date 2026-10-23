@@ -124,13 +124,14 @@
 
   <div class="flex items-center gap-2">
     {#if showCreate}
-      <form onsubmit={(e) => { e.preventDefault(); createBucket() }} class="flex items-center gap-2">
+      <form onsubmit={(e) => { e.preventDefault(); createBucket() }} class="flex w-full flex-wrap items-center gap-2">
         <input
           use:autofocus
           type="text"
           bind:value={newBucketName}
           placeholder="bucket-name"
-          class="input-cool h-8 w-48"
+          aria-label="Bucket name"
+          class="input-cool h-8 w-full sm:w-48"
           disabled={creating}
         />
         <Button type="submit" variant="brand" class="h-8" disabled={creating || !newBucketName.trim()}>
@@ -155,38 +156,38 @@
       <p class="text-sm">No buckets yet</p>
     </div>
   {:else}
-    <Table.Root>
+    <Table.Root class="table-fixed">
       <Table.Header>
         <Table.Row>
           <Table.Head>Name</Table.Head>
-          <Table.Head>Versioning</Table.Head>
-          <Table.Head>Created</Table.Head>
-          <Table.Head class="w-20"></Table.Head>
+          <Table.Head class="hidden md:table-cell">Versioning</Table.Head>
+          <Table.Head class="hidden md:table-cell">Created</Table.Head>
+          <Table.Head class="w-24"><span class="sr-only">Actions</span></Table.Head>
         </Table.Row>
       </Table.Header>
       <Table.Body>
         {#each buckets as bucket}
           <Table.Row class="cursor-pointer" onclick={() => onSelect(bucket.name)}>
-            <Table.Cell class="font-medium">{bucket.name}</Table.Cell>
-            <Table.Cell>
+            <Table.Cell class="truncate font-medium" title={bucket.name}>{bucket.name}</Table.Cell>
+            <Table.Cell class="hidden md:table-cell">
               {#if bucket.versioning}
                 <span class="inline-flex items-center rounded-sm bg-green-500/10 px-1.5 py-0.5 text-[11px] font-medium text-green-500">Enabled</span>
               {:else}
                 <span class="text-xs text-muted-foreground">Off</span>
               {/if}
             </Table.Cell>
-            <Table.Cell class="text-muted-foreground">{formatDate(bucket.createdAt)}</Table.Cell>
-            <Table.Cell class="w-20">
-              <div class="flex items-center gap-4">
+            <Table.Cell class="hidden text-muted-foreground md:table-cell">{formatDate(bucket.createdAt)}</Table.Cell>
+            <Table.Cell class="w-24">
+              <div class="flex items-center gap-2">
                 <button
-                  class="text-muted-foreground hover:text-foreground transition-colors"
+                  class="flex size-8 items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
                   onclick={(e: Event) => { e.stopPropagation(); onSettings(bucket.name) }}
                   title="Bucket settings"
                 >
                   <Settings class="size-4" />
                 </button>
                 <button
-                  class="text-muted-foreground hover:text-destructive transition-colors"
+                  class="flex size-8 items-center justify-center text-muted-foreground hover:text-destructive transition-colors"
                   onclick={(e: Event) => deleteBucket(bucket.name, e)}
                   title="Delete bucket"
                 >

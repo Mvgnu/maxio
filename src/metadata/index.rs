@@ -2663,7 +2663,11 @@ fn version_state_preferred(
     match (candidate.is_delete_marker, current.is_delete_marker) {
         (false, true) => true,
         (true, false) => false,
-        _ => candidate.version_id > current.version_id,
+        _ => compare_version_rank(
+            Some(candidate.version_id.as_str()),
+            Some(current.version_id.as_str()),
+        )
+        .is_gt(),
     }
 }
 
@@ -2721,9 +2725,12 @@ fn paginate_versions_for_query(
     });
     versions.retain(|version| version_is_after_marker(version, key_marker, version_id_marker));
     versions.sort_by(|left, right| {
-        left.key
-            .cmp(&right.key)
-            .then_with(|| right.version_id.cmp(&left.version_id))
+        left.key.cmp(&right.key).then_with(|| {
+            compare_version_rank(
+                Some(right.version_id.as_str()),
+                Some(left.version_id.as_str()),
+            )
+        })
     });
 
     let max_keys = query.effective_max_keys();
@@ -2777,13 +2784,21 @@ fn version_is_after_marker(
     }
 
     match version_id_marker {
-        Some(version_marker) => entry.version_id.as_str() < version_marker,
+        Some(version_marker) => {
+            compare_version_rank(Some(entry.version_id.as_str()), Some(version_marker)).is_lt()
+        }
         None => false,
     }
 }
 
 fn compare_version_rank(candidate: Option<&str>, current: Option<&str>) -> std::cmp::Ordering {
     match (candidate, current) {
+        // The retained pre-versioning object predates every generated version.
+        // Preserve the existing generated-ID rank and the distinction from an
+        // absent version ID; only the literal S3 null version is special.
+        (Some("null"), Some("null")) => std::cmp::Ordering::Equal,
+        (Some("null"), Some(_)) => std::cmp::Ordering::Less,
+        (Some(_), Some("null")) => std::cmp::Ordering::Greater,
         (Some(left), Some(right)) => left.cmp(right),
         (Some(_), None) => std::cmp::Ordering::Greater,
         (None, Some(_)) => std::cmp::Ordering::Less,
@@ -3431,6 +3446,103 @@ mod tests {
         assert_eq!(second_page.next_continuation_token, None);
         assert_eq!(second_page.next_key_marker, None);
         assert_eq!(second_page.next_version_id_marker, None);
+    }
+
+    #[test]
+    fn retained_null_version_follows_generated_versions_with_tokens_and_markers() {
+        let mut index = InMemoryMetadataIndex::default();
+        for (key, version_id) in [
+            ("docs/a.txt", "null"),
+            ("docs/a.txt", "0000000000002-new"),
+            ("docs/a.txt", "0000000000001-old"),
+            ("docs/b.txt", "null"),
+        ] {
+            index.upsert_object_version(ObjectVersionMetadataState::new("photos", key, version_id));
+        }
+
+        for use_token in [false, true] {
+            let mut query = MetadataVersionsQuery::new("photos");
+            query.max_keys = 1;
+            let mut observed = Vec::new();
+            for _ in 0..5 {
+                let page = index.list_object_versions_page(&query).expect("valid page");
+                observed.extend(
+                    page.versions
+                        .iter()
+                        .map(|version| (version.key.clone(), version.version_id.clone())),
+                );
+                if !page.is_truncated {
+                    break;
+                }
+                if use_token {
+                    query.continuation_token = page.next_continuation_token;
+                } else {
+                    query.key_marker = page.next_key_marker;
+                    query.version_id_marker = page.next_version_id_marker;
+                }
+            }
+            assert_eq!(
+                observed,
+                [
+                    ("docs/a.txt".to_string(), "0000000000002-new".to_string()),
+                    ("docs/a.txt".to_string(), "0000000000001-old".to_string()),
+                    ("docs/a.txt".to_string(), "null".to_string()),
+                    ("docs/b.txt".to_string(), "null".to_string()),
+                ],
+                "pagination must include the retained original once and last for its key"
+            );
+        }
+    }
+
+    #[test]
+    fn retained_null_version_does_not_override_a_generated_current_version() {
+        let mut original = ObjectMetadataState::new("photos", "docs/a.txt");
+        original.latest_version_id = Some("null".to_string());
+        let mut newer = original.clone();
+        newer.latest_version_id = Some("0000000000001-new".to_string());
+        let query = MetadataQuery::new("photos");
+        for node_objects in [
+            vec![vec![original.clone()], vec![newer.clone()]],
+            vec![vec![newer.clone()], vec![original.clone()]],
+        ] {
+            let page = merge_cluster_list_objects_page(&query, &node_objects)
+                .expect("merge should accept both replicas");
+            assert_eq!(page.objects, vec![newer.clone()]);
+        }
+    }
+
+    #[test]
+    fn retained_null_version_cluster_merge_keeps_original_after_generated_marker() {
+        let original = ObjectVersionMetadataState::new("photos", "docs/a.txt", "null");
+        let older = ObjectVersionMetadataState::new("photos", "docs/a.txt", "0001");
+        let newer = ObjectVersionMetadataState::new("photos", "docs/a.txt", "0002");
+        let node_versions = [
+            vec![original.clone(), newer.clone()],
+            vec![original.clone(), older.clone(), newer.clone()],
+        ];
+        let mut query = MetadataVersionsQuery::new("photos");
+        query.max_keys = 2;
+        let first = merge_cluster_list_object_versions_page(&query, &node_versions)
+            .expect("first cluster page");
+        assert_eq!(first.versions, vec![newer, older]);
+        assert!(first.is_truncated);
+        assert_eq!(first.next_version_id_marker.as_deref(), Some("0001"));
+
+        query.key_marker = first.next_key_marker;
+        query.version_id_marker = first.next_version_id_marker;
+        let second = merge_cluster_list_object_versions_page(&query, &node_versions)
+            .expect("continued cluster page");
+        assert_eq!(second.versions, vec![original]);
+        assert!(!second.is_truncated);
+
+        query.key_marker = Some("docs/a.txt".to_string());
+        query.version_id_marker = Some("null".to_string());
+        assert!(
+            merge_cluster_list_object_versions_page(&query, &node_versions)
+                .expect("marker after original")
+                .versions
+                .is_empty()
+        );
     }
 
     #[test]

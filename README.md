@@ -1,191 +1,224 @@
-<div align="center">
-
 # MaxIO
 
-S3-compatible object storage server — single-binary replacement for MinIO.
+**S3 storage and direct file movement on your own devices.**
 
-Rust · Axum · Svelte 5 · Tailwind CSS v4 · shadcn-svelte
+MaxIO is a Rust S3 server with an embedded Svelte console. Start with one process
+and a data directory. Add explicit storage peers or the optional folder-sync
+client when you need them.
 
-</div>
+| I want… | Start here | Status |
+|---|---|---|
+| One straightforward S3 service | [Standalone](#one-s3-server) | Default mode; ordinary S3 clients and built-in console |
+| S3 data on multiple devices | [Peer S3](specs/journeys/peer_s3.md) | Experimental static peers; tested replication and honest outage behavior |
+| My folders on my devices, without a cloud intermediary | [Device sync](#direct-device-folder-sync) | Additive sync through a chosen peer; preserves conflicts; no deletion propagation |
 
-## About the Project
+This is an actively developed fork. Its supported behavior and limits are recorded
+in [the system contract](specs/00_system.md), with independent evidence in
+[dated reviews](specs/reviews/). It does not claim full AWS compatibility or
+production-grade distributed durability.
 
-> **Warning:** MaxIO is under active development. Do not use it in production yet.
+## Build
 
-MaxIO is a lightweight, single-binary S3-compatible object storage server written in Rust. No JVM, no database, no runtime dependencies — just one binary and a data directory. Buckets are directories, objects are files. Back up by copying the data dir.
-
-## Features
-
-- **Single Binary** — Frontend assets are compiled into the binary via `rust-embed`. Nothing extra to deploy
-- **Pure Filesystem Storage** — No database. Buckets are directories, objects are files, metadata in `.meta.json` sidecars
-- **AWS Signature V4** — Compatible with `mc`, AWS CLI, and any S3 SDK
-- **Multi-Credential Auth** — Supports primary plus additional `access:secret` credential pairs for S3 and console login
-- **Web Console** — Built-in UI at `/ui/` for browsing, uploading, and managing objects
-- **S3 API Coverage** — ListBuckets, CreateBucket, HeadBucket, DeleteBucket, GetBucketLocation, ListObjectsV1/V2, PutObject, GetObject, HeadObject, DeleteObject, DeleteObjects (batch), CopyObject, Multipart Upload, Bucket Versioning APIs, Bucket Lifecycle APIs
-- **Range Requests** — HTTP 206 Partial Content support via `Range` header on GetObject
-- **Versioning** — Object version creation, list/get/delete by `versionId`, marker-aware `?versions` pagination, suspend-with-history-preservation semantics
-- **Lifecycle Rules** — Bucket lifecycle rule set/get/delete plus background lifecycle sweep execution
-- **Distributed Routing Foundation** — Placement-aware forwarding for non-owner reads/writes, typed forwarding envelopes with explicit operation semantics (`GET`/`HEAD`/write paths), replica fanout for primary writes (`PUT`/`CopyObject`/multipart complete/`DELETE`), quorum diagnostics headers (including per-entry degraded-quorum surfacing in `DeleteObjects`), placement epoch/view wiring, and internal forwarding trust-gating via optional cluster auth token
-- **Read-Repair Foundation** — Primary-owner `GET`/`HEAD` read-repair (current-version and `versionId`-targeted) with trusted replica probes and replica repair fanout
-- **Runtime Observability** — Prometheus metrics at `/metrics` and probe-backed health/readiness status at `/healthz` (data-dir/storage probes, disk headroom, static-peer connectivity, and self-peer misconfiguration detection)
-- **Checksum Verification** — CRC32, CRC32C, SHA-1, and SHA-256 checksums on upload with automatic validation and persistent storage
-- **Erasure Coding** — Optional chunked storage with per-chunk SHA-256 integrity verification and Reed-Solomon parity for automatic recovery from corrupted or missing data
-
-## Installation
-
-### Build from Source
+Use Rust **1.94.0**, Bun **1.3.10**, and Python 3 for verification. On Debian/Ubuntu,
+install `build-essential`, `pkg-config` and `libssl-dev`. Rustup reads the pinned
+`rust-toolchain.toml`. The Linux executables use the system OpenSSL libraries.
 
 ```bash
-# Build frontend (required — assets are embedded into the binary)
-cd ui && bun run build && cd ..
-
-# Build binary
-cargo build --release
-
-# Run
-./target/release/maxio --data-dir ./data --port 9000
+cd ui
+bun install --frozen-lockfile
+bun run build
+cd ..
+cargo build --locked --bins
 ```
 
-### Docker
+This creates `target/debug/maxio` and `target/debug/maxio-sync`. For optimized,
+self-contained console assets, use `cargo build --locked --release --bins` and the
+executables under `target/release/`. Release executables embed the console; no Node
+or Bun runtime is needed. Debug builds read `ui/dist/` from the checkout.
+
+## One S3 server
 
 ```bash
-docker run -d \
-  -p 9000:9000 \
-  -v $(pwd)/data:/data \
-  ghcr.io/coollabsio/maxio
+export MAXIO_ACCESS_KEY=local-admin
+export MAXIO_SECRET_KEY='replace-with-a-long-local-secret'
+./target/debug/maxio --address 127.0.0.1 --data-dir ./data --port 9000
 ```
 
-Or from Docker Hub:
+Open [the console](http://127.0.0.1:9000/ui/) and sign in with those credentials.
+The console uses local assets and system fonts. No cluster settings are required.
+Use an appropriate private interface or TLS proxy when connecting other devices.
+
+### With MinIO Client
 
 ```bash
-docker run -d \
-  -p 9000:9000 \
-  -v $(pwd)/data:/data \
-  coollabsio/maxio
+mc alias set maxio http://127.0.0.1:9000 "$MAXIO_ACCESS_KEY" "$MAXIO_SECRET_KEY"
+mc mb maxio/files
+mc cp ./example.txt maxio/files/example.txt
+mc cat maxio/files/example.txt
 ```
 
-Configure with environment variables:
+### With AWS CLI
 
 ```bash
-docker run -d \
-  -p 9000:9000 \
-  -v $(pwd)/data:/data \
-  -e MAXIO_ACCESS_KEY=myadmin \
-  -e MAXIO_SECRET_KEY=mysecret \
-  ghcr.io/coollabsio/maxio
+export AWS_ACCESS_KEY_ID="$MAXIO_ACCESS_KEY"
+export AWS_SECRET_ACCESS_KEY="$MAXIO_SECRET_KEY"
+export AWS_DEFAULT_REGION=us-east-1
+aws --endpoint-url http://127.0.0.1:9000 s3 mb s3://files
+aws --endpoint-url http://127.0.0.1:9000 s3 cp ./example.txt s3://files/example.txt
+aws --endpoint-url http://127.0.0.1:9000 s3 ls s3://files/
 ```
 
-Docker Compose:
+S3 credentials default to `minioadmin` / `minioadmin` when omitted. The default
+address is `0.0.0.0`; the example explicitly chooses loopback. Additional
+credentials currently have the same administrative capabilities, not separate IAM
+permissions. One server process must own each data directory.
 
-```yaml
-services:
-  maxio:
-    image: ghcr.io/coollabsio/maxio
-    ports:
-      - "9000:9000"
-    volumes:
-      - maxio-data:/data
-    environment:
-      - MAXIO_ACCESS_KEY=minioadmin
-      - MAXIO_SECRET_KEY=minioadmin
-```
+## Direct device folder sync
+
+Run standalone MaxIO on one chosen device, create a bucket such as `device-files`,
+and run the optional client on each device with its own ordinary folder:
 
 ```bash
-docker compose up -d
+./target/debug/maxio-sync --local ./shared-files \
+  --endpoint http://127.0.0.1:9000 --bucket device-files --prefix shared --once
 ```
 
-Open `http://localhost:9000/ui/` in your browser. Default credentials: `minioadmin` / `minioadmin`
+The client reads `MAXIO_ACCESS_KEY` and `MAXIO_SECRET_KEY`. Replace loopback with the
+chosen device's reachable private/VPN address or verified HTTPS endpoint. Omit
+`--once` to poll every 15 seconds; Ctrl+C stops it. There is no hosted account,
+mandatory discovery service, relay or cloud storage between the devices.
+
+A persistent local baseline detects which side changed. Downloads are staged;
+concurrent differing edits preserve a `.maxio-conflict-<digest>` sibling. The client
+first verifies that the endpoint actually honors conditional writes and refuses
+unsafe endpoints. The current distributed server mode does not support those
+conditions, so this client uses a **standalone peer bucket**.
+
+This first version is **additive**: removing one copy restores it from the surviving
+side. To intentionally delete a file, stop the clients and remove all copies. It
+transfers regular files whole, with a configurable `--max-file-mib` limit of 64 MiB
+by default. Replacement history and the journal stay in local `.maxio-sync/` and
+are not automatically pruned. Do not select a server data directory as a sync folder.
+
+There is no automatic device pairing, NAT traversal, mesh discovery, filesystem
+watcher, deletion propagation or permission/symlink synchronization in this version.
+See the [complete device-sync contract](specs/journeys/device_sync.md).
+
+## Peer S3
+
+The [two-peer recipe](specs/journeys/peer_s3.md) gives exact commands for explicit
+endpoint-shaped node IDs, shared credentials/token, authoritative request-time
+listing and strict write quorum. A client can address either configured node.
+
+The acceptance drill starts two real processes, exercises both placement owners,
+checks two replica acknowledgements, stops/restarts a peer and reads each stored
+copy independently:
+
+```bash
+python3 scripts/smoke_peer_s3.py --binary ./target/debug/maxio
+```
+
+The default peer settings remain `local-node-only` metadata and `degraded-success`
+writes. Use the explicit recipe when testing cluster-wide visibility/durability.
+Two-node strict quorum does not promise availability when one node is offline.
+
+Native listeners currently use HTTP. Outbound certificate configuration does not
+create an inbound TLS server, and shared tokens do not encrypt traffic. Use a
+trusted encrypted private transport or correctly configured TLS termination for
+cross-device deployment. Existing clusters using noncanonical mixed-case/IPv6
+identities need a planned migration because canonicalization changes placement IDs.
 
 ## Configuration
 
-| Variable | CLI Flag | Default | Description |
-|---|---|---|---|
-| `MAXIO_PORT` | `--port` | `9000` | Listen port |
-| `MAXIO_ADDRESS` | `--address` | `0.0.0.0` | Bind address |
-| `MAXIO_DATA_DIR` | `--data-dir` | `./data` | Storage directory |
-| `MAXIO_ACCESS_KEY` | `--access-key` | `minioadmin` | Access key (aliases: `MINIO_ROOT_USER`, `MINIO_ACCESS_KEY`) |
-| `MAXIO_SECRET_KEY` | `--secret-key` | `minioadmin` | Secret key (aliases: `MINIO_ROOT_PASSWORD`, `MINIO_SECRET_KEY`) |
-| `MAXIO_ADDITIONAL_CREDENTIALS` | `--additional-credentials` | _empty_ | Comma-separated `access:secret` pairs for additional S3/console users |
-| `MAXIO_REGION` | `--region` | `us-east-1` | S3 region (aliases: `MINIO_REGION_NAME`, `MINIO_REGION`) |
-| `MAXIO_NODE_ID` | `--node-id` | `HOSTNAME` or `maxio-node` | Stable node identifier for distributed-mode bootstrap wiring |
-| `MAXIO_CLUSTER_PEERS` | `--cluster-peers` | _empty_ | Comma-separated `host:port` peer list for distributed bootstrap wiring |
-| `MAXIO_MEMBERSHIP_PROTOCOL` | `--membership-protocol` | `static-bootstrap` | Membership protocol mode (`static-bootstrap`, `gossip`, `raft`; gossip/raft currently map to explicit unimplemented placeholder engine status) |
-| `MAXIO_CLUSTER_AUTH_TOKEN` | `--cluster-auth-token` | _empty_ | Optional shared token for trusted node-to-node forwarding/replication headers |
-| `MAXIO_ERASURE_CODING` | `--erasure-coding` | `false` | Enable erasure coding with per-chunk integrity checksums |
-| `MAXIO_CHUNK_SIZE` | `--chunk-size` | `10485760` (10MB) | Chunk size in bytes for erasure coding |
-| `MAXIO_PARITY_SHARDS` | `--parity-shards` | `0` | Number of parity shards per object (requires `--erasure-coding`, 0 = no parity) |
-| `MAXIO_MIN_DISK_HEADROOM_BYTES` | `--min-disk-headroom-bytes` | `268435456` (256MB) | Minimum required free bytes for `/healthz` readiness (`0` disables this gate) |
+`maxio --help` and `maxio-sync --help` are the complete flag reference.
 
-## Usage
+| Setting | Environment | Default / meaning |
+|---|---|---|
+| Address / port | `MAXIO_ADDRESS`, `MAXIO_PORT` | `0.0.0.0`, `9000` |
+| Data directory | `MAXIO_DATA_DIR` | `./data` |
+| Credentials | `MAXIO_ACCESS_KEY`, `MAXIO_SECRET_KEY` | `minioadmin`, `minioadmin`; MinIO aliases supported |
+| Region | `MAXIO_REGION` | `us-east-1`; MinIO aliases supported |
+| Extra credentials | `MAXIO_ADDITIONAL_CREDENTIALS` | Comma-separated `access:secret` pairs, equal current rights |
+| Node / peers | `MAXIO_NODE_ID`, `MAXIO_CLUSTER_PEERS` | Explicit reachable `host:port` IDs for peers |
+| Peer token | `MAXIO_CLUSTER_AUTH_TOKEN` | Configure explicitly for peer use |
+| Metadata strategy | `MAXIO_METADATA_LISTING_STRATEGY` | `local-node-only`; peer recipe uses `request-time-aggregation` |
+| Write durability | `MAXIO_WRITE_DURABILITY_MODE` | `degraded-success`; peer recipe uses `strict-quorum` |
+| Membership | `MAXIO_MEMBERSHIP_PROTOCOL` | `static-bootstrap`; gossip is experimental, Raft unimplemented |
+| Erasure coding | `MAXIO_ERASURE_CODING`, `MAXIO_CHUNK_SIZE`, `MAXIO_PARITY_SHARDS` | Off; 10 MiB chunks; zero parity by default |
+| Internal listener | `MAXIO_INTERNAL_BIND_ADDR` | Optional separate control-plane HTTP listener |
 
-### MinIO Client (mc)
+`/healthz` returns diagnostic JSON and `/metrics` Prometheus metrics.
+`/healthz?scope=local` is a nonrecursive local observation used between peers; it
+does not assert cluster readiness. Aggregate readiness uses a bounded authenticated
+bucket-listing probe and labels its scope; individual object requests still report
+their own coverage. Read readiness fields, not just HTTP status.
+
+## Supported S3 surface and limits
+
+Bucket create/head/list/delete/location, ListObjects v1/v2, object
+put/get/head/delete/copy, batch delete, multipart upload, presigned URLs, range
+reads, checksums, versioning and lifecycle foundations are implemented. Standalone
+PutObject supports `If-None-Match: *` and an exact quoted `If-Match` ETag; failures
+return 412. Conditional DELETE, CopyObject, multipart and distributed writes are
+rejected with 501; conditional or version-specific batch deletion is also rejected.
+Ordinary signed payloads and AWS chunk-signature chains are verified before
+mutation. Streaming trailer variants and SigV4a remain unsupported.
+
+The storage format is still path-based with JSON sidecars. It rejects internal
+names (`.bucket.json`, `.uploads`, `.versions`, `.meta.json`/`.ec` suffixes and other
+reserved segments) and ambiguous paths. It cannot represent all S3 flat-namespace
+keys, such as both `a` and `a/b` as ordinary objects. Failed writes preserve existing
+data, but payload and sidecar publication is not a full power-loss transaction.
+Concurrent reads do not provide a guaranteed snapshot during replacement. Mutations
+currently serialize per storage instance. Enabling versioning preserves existing
+bytes as the null version; suspended-versioning semantics are not full AWS parity.
+Console logout clears the browser cookie but cannot revoke a copied stateless
+session before expiry or credential change.
+
+Back up the **whole** data directory while the server is stopped or through a
+consistent filesystem snapshot, preserving sidecars, versions and runtime state.
+Copying only object payload files is not a complete backup.
+
+## Docker from this checkout
 
 ```bash
-mc alias set maxio http://localhost:9000 minioadmin minioadmin
-
-mc mb maxio/my-bucket
-mc cp file.txt maxio/my-bucket/file.txt
-mc ls maxio/my-bucket/
-mc cat maxio/my-bucket/file.txt
-mc rm maxio/my-bucket/file.txt
-mc rb maxio/my-bucket
+docker build -t maxio-local .
+docker run --rm -p 127.0.0.1:9000:9000 -v maxio-data:/data \
+  -e MAXIO_ACCESS_KEY -e MAXIO_SECRET_KEY maxio-local
 ```
 
-### AWS CLI
+The Docker image includes both executables and required native TLS libraries.
+The release workflow targets this fork's `ghcr.io/<owner>/<repo>` namespace.
+No upstream container image is presented as containing this fork's changes.
+
+## Development and verification
+
+Read [AGENTS.md](AGENTS.md), [Lop](lop.md), [Gauntlet](gauntlet.md) and the
+[domain map](specs/00_system.md). Ten tracked specs define write ownership,
+interfaces, verification commands and external quality bars.
 
 ```bash
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
-
-aws --endpoint-url http://localhost:9000 s3 mb s3://my-bucket
-aws --endpoint-url http://localhost:9000 s3 cp file.txt s3://my-bucket/file.txt
-aws --endpoint-url http://localhost:9000 s3 ls s3://my-bucket/
-aws --endpoint-url http://localhost:9000 s3 rm s3://my-bucket/file.txt
-aws --endpoint-url http://localhost:9000 s3 rb s3://my-bucket
-```
-
-## Roadmap
-
-- Done: multipart upload, presigned URLs, CopyObject, CORS, range headers, lifecycle rules, metrics baseline, erasure coding
-- Done: versioning foundation (version lifecycle APIs/flows, versions pagination, version-aware range reads)
-- In progress: distributed mode foundations (placement/epoch state, non-owner read/write forwarding, primary replica fanout + quorum diagnostics, primary read-repair for current-version and `versionId`-targeted GET/HEAD, static-bootstrap readiness guardrails, runtime membership-engine status surface, internal forwarding token trust gate)
-- In progress: replication hardening, read-repair expansion, rebalance executor, cryptographic peer transport auth (mTLS-targeted), dynamic membership engines (gossip/raft), multi-user policy/authorization layers
-
-## Contributing
-
-See [CLAUDE.md](CLAUDE.md) for the full development workflow, architecture details, and testing instructions.
-
-### Domain Verification
-
-Run domain-scoped checks with:
-
-```bash
-./scripts/domain_check.sh <domain>
-```
-
-Note: `quality_harness` also enforces `cargo clippy --all-targets -- -D warnings` and panic-path guards (`cargo clippy --lib --bins -- -D clippy::unwrap_used -D clippy::expect_used`).
-
-Example:
-
-```bash
-./scripts/domain_check.sh s3_auth_sigv4
-./scripts/domain_check.sh web_console_ui
-./scripts/domain_check.sh quality_harness
-```
-
-Run all domain checks:
-
-```bash
+./scripts/domain_check.sh list
+./scripts/domain_check.sh storage_engine
 ./scripts/domain_check.sh all
 ```
 
-## Maintainer
+The full gate runs formatting, strict Clippy, the Rust suite once, frontend checks,
+architecture/ownership checks, and the three real-process journeys. Python 3 and
+loopback networking are required. The existing `tests/mc_test.sh` and
+`tests/aws_cli_test.sh` provide optional extra client compatibility drills.
 
-| [<img src="https://github.com/Mvgnu.png" width="120" /><br />Magnus Ohle](https://github.com/Mvgnu) |
-|---|
+For a domain branch, gate the complete diff against the PM-approved base:
 
-## License
+```bash
+python3 scripts/check_architecture.py --domain storage_engine --base BASE_SHA
+```
 
-[Apache-2.0](LICENSE)
+A domain cannot widen its own scope or lower its bar. A green test command is not
+an independent Gauntlet verdict. Review records state what was actually observed,
+what remains a gap, and any explicit decision to stop.
 
-See [NOTICE](NOTICE) for fork attribution and modification notice.
+## License and attribution
+
+[Apache-2.0](LICENSE). See [NOTICE](NOTICE) for upstream attribution and modification
+notice. Maintained by [Magnus Ohle](https://github.com/Mvgnu).

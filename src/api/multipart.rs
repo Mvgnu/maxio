@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use axum::{
     body::Body,
     extract::{Path, Query, State},
-    http::{HeaderMap, HeaderValue, Method, StatusCode, header},
+    http::{HeaderMap, Method, StatusCode, header},
     response::Response,
 };
 use tokio::io::AsyncReadExt;
@@ -24,7 +24,7 @@ use super::object::{
     ensure_consensus_bucket_authority, ensure_local_write_owner, extract_checksum,
     forward_replica_put_to_target, forward_write_to_target, object_path_and_query,
     object_write_routing_hint, persist_current_object_metadata_state,
-    persist_pending_replication_from_quorum_outcome, write_forward_target,
+    persist_pending_replication_from_quorum_outcome, replica_put_headers, write_forward_target,
     write_replica_count_for_membership_count,
 };
 use crate::api::object::peer_transport::internal_peer_transport_scheme;
@@ -186,6 +186,7 @@ pub async fn complete_multipart_upload(
     headers: HeaderMap,
     body: Body,
 ) -> Result<Response<Body>, S3Error> {
+    super::conditions::reject_unsupported_write_condition(&headers)?;
     let routing_hint = object_write_routing_hint(
         &key,
         state.node_id.as_ref(),
@@ -287,43 +288,6 @@ pub async fn complete_multipart_upload(
     Ok(response)
 }
 
-fn checksum_algorithm_header_value(algorithm: ChecksumAlgorithm) -> &'static str {
-    match algorithm {
-        ChecksumAlgorithm::CRC32 => "CRC32",
-        ChecksumAlgorithm::CRC32C => "CRC32C",
-        ChecksumAlgorithm::SHA1 => "SHA1",
-        ChecksumAlgorithm::SHA256 => "SHA256",
-    }
-}
-
-fn replica_put_headers_for_complete(
-    request_headers: &HeaderMap,
-    content_type: &str,
-    checksum_algorithm: Option<ChecksumAlgorithm>,
-    checksum_value: Option<&str>,
-) -> HeaderMap {
-    let mut headers = request_headers.clone();
-    headers.remove(header::AUTHORIZATION);
-    let content_type = HeaderValue::from_str(content_type)
-        .unwrap_or_else(|_| HeaderValue::from_static("application/octet-stream"));
-    headers.insert(header::CONTENT_TYPE, content_type);
-
-    if let Some(algorithm) = checksum_algorithm {
-        headers.insert(
-            header::HeaderName::from_static("x-amz-checksum-algorithm"),
-            HeaderValue::from_static(checksum_algorithm_header_value(algorithm)),
-        );
-        if let Some(value) = checksum_value.and_then(|raw| HeaderValue::from_str(raw).ok()) {
-            headers.insert(
-                header::HeaderName::from_static(algorithm.header_name()),
-                value,
-            );
-        }
-    }
-
-    headers
-}
-
 fn presigned_replica_put_path_and_query(
     state: &AppState,
     signed_host: &str,
@@ -380,12 +344,16 @@ async fn replicate_completed_object_to_replica_owners(
     if object_reader.read_to_end(&mut object_bytes).await.is_err() {
         return object_write_quorum_outcome(&write_plan, &observations);
     }
-    let replica_headers = replica_put_headers_for_complete(
+    let replica_headers = match replica_put_headers(
         request.headers,
         &object_meta.content_type,
+        &object_bytes,
         request.checksum_algorithm,
         request.checksum_value,
-    );
+    ) {
+        Ok(headers) => headers,
+        Err(_) => return object_write_quorum_outcome(&write_plan, &observations),
+    };
 
     let mut envelope = ForwardedWriteEnvelope::new(
         ForwardedWriteOperation::ReplicatePutObject,

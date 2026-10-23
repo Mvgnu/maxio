@@ -11,6 +11,13 @@ use tokio::io::AsyncRead;
 
 pub type ByteStream = Pin<Box<dyn AsyncRead + Send>>;
 
+/// A precondition evaluated while holding the same mutation lock as ordinary writes.
+pub enum ObjectWriteCondition {
+    IfAbsent,
+    /// The quoted ETag returned by HEAD or PUT must still match exactly.
+    IfMatch(String),
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum ChecksumAlgorithm {
     CRC32,

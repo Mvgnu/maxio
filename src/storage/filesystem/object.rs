@@ -62,6 +62,85 @@ impl FilesystemStorage {
         bucket: &str,
         key: &str,
         content_type: &str,
+        body: ByteStream,
+        checksum: Option<(ChecksumAlgorithm, Option<String>)>,
+        forced_version_id: Option<&str>,
+    ) -> Result<PutResult, StorageError> {
+        validation::validate_key(key)?;
+        if let Some(version_id) = forced_version_id {
+            validation::validate_version_id(version_id)?;
+        }
+        let guard = self.mutation_lock.clone().lock_owned().await;
+        let staged = staged_write::StagedWrite::new(self, bucket).await?;
+        let result = staged
+            .storage
+            .write_object_unstaged(bucket, key, content_type, body, checksum, forced_version_id)
+            .await?;
+        staged
+            .finish(self, bucket, key, result, guard)
+            .await
+            .map(|(result, _guard)| result)
+    }
+
+    /// Returns `None` if the precondition fails without changing the object.
+    /// Serialized with ordinary writes, deletes, version changes and multipart completion.
+    pub async fn put_object_conditional(
+        &self,
+        bucket: &str,
+        key: &str,
+        content_type: &str,
+        body: ByteStream,
+        checksum: Option<(ChecksumAlgorithm, Option<String>)>,
+        condition: ObjectWriteCondition,
+    ) -> Result<Option<PutResult>, StorageError> {
+        validation::validate_key(key)?;
+        let guard = self.mutation_lock.clone().lock_owned().await;
+        self.ensure_bucket_exists(bucket).await?;
+        if !self
+            .write_condition_matches(bucket, key, &condition)
+            .await?
+        {
+            return Ok(None);
+        }
+        let staged = staged_write::StagedWrite::new(self, bucket).await?;
+        let result = staged
+            .storage
+            .write_object_unstaged(bucket, key, content_type, body, checksum, None)
+            .await?;
+        if !self
+            .write_condition_matches(bucket, key, &condition)
+            .await?
+        {
+            return Ok(None);
+        }
+        staged
+            .finish(self, bucket, key, result, guard)
+            .await
+            .map(|(result, _guard)| Some(result))
+    }
+
+    async fn write_condition_matches(
+        &self,
+        bucket: &str,
+        key: &str,
+        condition: &ObjectWriteCondition,
+    ) -> Result<bool, StorageError> {
+        let current = match self.read_object_meta(bucket, key).await {
+            Ok(meta) => Some(meta),
+            Err(StorageError::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        Ok(match condition {
+            ObjectWriteCondition::IfAbsent => current.is_none(),
+            ObjectWriteCondition::IfMatch(etag) => current.is_some_and(|meta| meta.etag == *etag),
+        })
+    }
+
+    async fn write_object_unstaged(
+        &self,
+        bucket: &str,
+        key: &str,
+        content_type: &str,
         mut body: ByteStream,
         checksum: Option<(ChecksumAlgorithm, Option<String>)>,
         forced_version_id: Option<&str>,
@@ -69,20 +148,9 @@ impl FilesystemStorage {
         self.ensure_bucket_exists(bucket).await?;
         validation::validate_key(key)?;
 
-        if key.ends_with('/') {
-            return self.put_folder_marker(bucket, key).await;
-        }
-
-        if self.erasure_coding {
+        if self.erasure_coding && !key.ends_with('/') {
             return self
-                .put_object_chunked(
-                    bucket,
-                    key,
-                    content_type,
-                    body,
-                    checksum.as_ref().map(|(a, _)| *a),
-                    forced_version_id,
-                )
+                .put_object_chunked(bucket, key, content_type, body, checksum, forced_version_id)
                 .await;
         }
 
@@ -182,7 +250,7 @@ impl FilesystemStorage {
         key: &str,
         content_type: &str,
         mut body: ByteStream,
-        checksum_algo: Option<ChecksumAlgorithm>,
+        checksum: Option<(ChecksumAlgorithm, Option<String>)>,
         forced_version_id: Option<&str>,
     ) -> Result<PutResult, StorageError> {
         self.ensure_bucket_exists(bucket).await?;
@@ -193,7 +261,9 @@ impl FilesystemStorage {
         fs::create_dir_all(&ec_dir).await?;
 
         let mut md5_hasher = Md5::new();
-        let mut checksum_hasher = checksum_algo.map(ChecksumHasher::new);
+        let mut checksum_hasher = checksum
+            .as_ref()
+            .map(|(algorithm, _)| ChecksumHasher::new(*algorithm));
         let mut total_size: u64 = 0;
         let mut chunks: Vec<ChunkInfo> = Vec::new();
         let mut chunk_index: u32 = 0;
@@ -264,7 +334,7 @@ impl FilesystemStorage {
 
         let etag = hex::encode(md5_hasher.finalize());
         let etag_quoted = format!("\"{}\"", etag);
-        let checksum_value = checksum_hasher.map(|h| h.finalize_base64());
+        let (checksum_algo, checksum_value) = finalize_checksum(checksum, checksum_hasher)?;
 
         let now = chrono::Utc::now()
             .format("%Y-%m-%dT%H:%M:%S%.3fZ")
@@ -400,47 +470,6 @@ impl FilesystemStorage {
         Ok(parity_infos)
     }
 
-    async fn put_folder_marker(&self, bucket: &str, key: &str) -> Result<PutResult, StorageError> {
-        let folder_dir = self
-            .buckets_dir
-            .join(bucket)
-            .join(key.trim_end_matches('/'));
-        fs::create_dir_all(&folder_dir).await?;
-
-        let marker_path = folder_dir.join(".folder");
-        fs::write(&marker_path, b"").await?;
-
-        let etag = "\"d41d8cd98f00b204e9800998ecf8427e\"".to_string();
-        let now = chrono::Utc::now()
-            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
-            .to_string();
-
-        let meta = ObjectMeta {
-            key: key.to_string(),
-            size: 0,
-            etag: etag.clone(),
-            content_type: "application/x-directory".to_string(),
-            last_modified: now,
-            version_id: None,
-            is_delete_marker: false,
-            storage_format: None,
-            checksum_algorithm: None,
-            checksum_value: None,
-        };
-
-        let meta_path = folder_dir.join(".folder.meta.json");
-        let json = serde_json::to_string_pretty(&meta)?;
-        fs::write(&meta_path, json).await?;
-
-        Ok(PutResult {
-            size: 0,
-            etag,
-            version_id: None,
-            checksum_algorithm: None,
-            checksum_value: None,
-        })
-    }
-
     pub async fn get_object(
         &self,
         bucket: &str,
@@ -565,11 +594,18 @@ impl FilesystemStorage {
         key: &str,
     ) -> Result<DeleteResult, StorageError> {
         validation::validate_key(key)?;
+        let guard = self.mutation_lock.clone().lock_owned().await;
 
         let versioned = self.is_versioned(bucket).await?;
         if versioned {
-            return self.write_delete_marker(bucket, key).await;
+            let staged = staged_write::StagedWrite::new(self, bucket).await?;
+            let result = staged.storage.write_delete_marker(bucket, key).await?;
+            let _guard = staged
+                .finish_delete(self, bucket, key, &result, guard)
+                .await?;
+            return Ok(result);
         }
+        let _guard = guard;
 
         let obj_path = self.object_path(bucket, key);
         let meta_path = self.meta_path(bucket, key);
@@ -620,11 +656,15 @@ impl FilesystemStorage {
             let mut entries = fs::read_dir(dir).await?;
             while let Some(entry) = entries.next_entry().await? {
                 let fname = entry.file_name().to_string_lossy().to_string();
-                if fname == ".bucket.json"
-                    || fname == ".uploads"
-                    || fname == ".versions"
-                    || fname.ends_with(".meta.json")
-                {
+                if fname == ".versions" {
+                    if !entry.file_type().await?.is_dir()
+                        || Self::has_retained_versions(&entry.path()).await?
+                    {
+                        return Ok(true);
+                    }
+                    continue;
+                }
+                if fname == ".bucket.json" || fname == ".uploads" || fname.ends_with(".meta.json") {
                     continue;
                 }
                 if fname.ends_with(".ec") && entry.file_type().await?.is_dir() {
@@ -635,6 +675,23 @@ impl FilesystemStorage {
                         return Ok(true);
                     }
                 } else {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        })
+    }
+
+    fn has_retained_versions(
+        dir: &Path,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, StorageError>> + Send + '_>>
+    {
+        Box::pin(async move {
+            let mut entries = fs::read_dir(dir).await?;
+            while let Some(entry) = entries.next_entry().await? {
+                if !entry.file_type().await?.is_dir()
+                    || Self::has_retained_versions(&entry.path()).await?
+                {
                     return Ok(true);
                 }
             }

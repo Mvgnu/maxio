@@ -127,6 +127,8 @@ pub async fn auth_middleware(
         return Err(S3Error::signature_mismatch());
     }
 
+    request = super::payload::verify_request_payload(request, Some((&parsed, secret_key))).await?;
+
     let active_cluster_peers = state.active_cluster_peers();
     if contains_internal_forwarding_protocol_headers(request.headers()) {
         let peer_auth_result = strip_untrusted_internal_forwarding_headers(
@@ -222,6 +224,8 @@ async fn handle_presigned(
         tracing::debug!("Presigned signature verification FAILED");
         return Err(S3Error::signature_mismatch());
     }
+
+    request = super::payload::verify_request_payload(request, None).await?;
 
     let active_cluster_peers = state.active_cluster_peers();
     if contains_internal_forwarding_protocol_headers(request.headers()) {

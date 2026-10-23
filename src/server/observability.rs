@@ -6,6 +6,7 @@ pub(super) fn health_payload(
     uptime_seconds: f64,
     storage_probe: StorageDataPathProbeResult,
     peer_connectivity_probe: PeerConnectivityProbeResult,
+    metadata_probe: MetadataListingProbeResult,
 ) -> HealthPayload {
     let data_dir_probe = probe_data_dir(&state.config.data_dir);
     let disk_headroom_probe =
@@ -40,10 +41,9 @@ pub(super) fn health_payload(
     );
     let cluster_peer_auth_production_reason = cluster_peer_auth_production.reason.as_str();
     let cluster_peer_auth_production_ready = cluster_peer_auth_production.ready;
-    let metadata_snapshot =
-        metadata_snapshot_for_topology(topology, state.metadata_listing_strategy);
+    let metadata_snapshot = &metadata_probe.snapshot;
     let metadata_readiness =
-        runtime_metadata_listing_readiness_for_topology(state, topology, &metadata_snapshot);
+        runtime_metadata_listing_readiness_for_topology(state, topology, metadata_snapshot);
     let replay_counters = state.pending_replication_replay_counters.snapshot();
     let pending_rebalance_replay_counters = state.pending_rebalance_replay_counters.snapshot();
     let pending_membership_propagation_replay_counters = state
@@ -210,7 +210,8 @@ pub(super) fn health_payload(
         cluster_peer_auth_production_ready,
         cluster_join_auth_ready: cluster_join_auth_status.ready,
         metadata_list_cluster_authoritative: metadata_readiness.cluster_authoritative,
-        metadata_list_ready: !metadata_listing_required || metadata_readiness.ready,
+        metadata_list_ready: storage_probe.readable
+            && (!metadata_listing_required || metadata_readiness.ready),
         membership_protocol_ready: membership_status.ready,
         membership_converged: membership_convergence_probe.converged,
     };
@@ -276,6 +277,8 @@ pub(super) fn health_payload(
         membership_protocol_reason: membership_protocol_reason.to_string(),
         write_durability_mode: state.write_durability_mode.as_str().to_string(),
         metadata_listing_strategy: state.metadata_listing_strategy.as_str().to_string(),
+        metadata_listing_probe_scope: metadata_probe.scope.to_string(),
+        metadata_listing_probe_status: metadata_probe.status.to_string(),
         metadata_listing_gap: metadata_readiness.gap.clone(),
         metadata_listing_snapshot_id: metadata_snapshot.snapshot_id.clone(),
         metadata_listing_expected_nodes: metadata_snapshot.coverage_assessment.expected_nodes,
@@ -405,17 +408,20 @@ pub(crate) async fn runtime_health_payload(state: &AppState) -> HealthPayload {
     let uptime_seconds = state.started_at.elapsed().as_secs_f64();
     let topology = runtime_topology_snapshot(state);
     let storage_probe = probe_storage_data_path(&state.storage).await;
-    let peer_connectivity_probe = probe_peer_connectivity(
-        topology.cluster_peers.as_slice(),
-        Some(state.config.as_ref()),
-    )
-    .await;
+    let (peer_connectivity_probe, metadata_probe) = tokio::join!(
+        probe_peer_connectivity(
+            topology.cluster_peers.as_slice(),
+            Some(state.config.as_ref()),
+        ),
+        probe_metadata_listing(state, &topology, storage_probe.readable),
+    );
     health_payload(
         state,
         &topology,
         uptime_seconds,
         storage_probe,
         peer_connectivity_probe,
+        metadata_probe,
     )
 }
 
@@ -429,20 +435,22 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
     let membership_protocol = topology.membership_protocol.as_str();
     let write_durability_mode = state.write_durability_mode.as_str();
     let metadata_listing_strategy = state.metadata_listing_strategy.as_str();
-    let metadata_snapshot =
-        metadata_snapshot_for_topology(&topology, state.metadata_listing_strategy);
+    let storage_probe = probe_storage_data_path(&state.storage).await;
+    let metadata_probe = probe_metadata_listing(&state, &topology, storage_probe.readable).await;
+    let metadata_snapshot = &metadata_probe.snapshot;
     let metadata_readiness =
-        runtime_metadata_listing_readiness_for_topology(&state, &topology, &metadata_snapshot);
+        runtime_metadata_listing_readiness_for_topology(&state, &topology, metadata_snapshot);
     let metadata_list_cluster_authoritative = if metadata_readiness.cluster_authoritative {
         1
     } else {
         0
     };
-    let metadata_list_ready = if !topology.is_distributed() || metadata_readiness.ready {
-        1
-    } else {
-        0
-    };
+    let metadata_list_ready =
+        if storage_probe.readable && (!topology.is_distributed() || metadata_readiness.ready) {
+            1
+        } else {
+            0
+        };
     let metadata_listing_gap = metadata_readiness.gap.as_deref().unwrap_or("none");
     let metadata_listing_expected_nodes = metadata_snapshot.coverage_assessment.expected_nodes;
     let metadata_listing_responded_nodes = metadata_snapshot.coverage_assessment.responded_nodes;
@@ -1183,18 +1191,23 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
 
     body.push_str(
         format!(
-            "# HELP maxio_metadata_listing_expected_nodes Expected node fan-in cardinality for current metadata strategy/runtime view.\n\
+            "# HELP maxio_metadata_listing_probe_info Scope and result of the current metadata readiness probe; bucket enumeration does not assert object-list coverage.\n\
+             # TYPE maxio_metadata_listing_probe_info gauge\n\
+             maxio_metadata_listing_probe_info{{scope=\"{}\",status=\"{}\"}} 1\n\
+             # HELP maxio_metadata_listing_expected_nodes Expected node cardinality for the metadata readiness probe.\n\
              # TYPE maxio_metadata_listing_expected_nodes gauge\n\
              maxio_metadata_listing_expected_nodes {}\n\
-             # HELP maxio_metadata_listing_responded_nodes Responded node fan-in cardinality observed in current runtime metadata snapshot.\n\
+             # HELP maxio_metadata_listing_responded_nodes Confirmed responders for the named readiness probe; failed fan-in counts only the separately observed local read.\n\
              # TYPE maxio_metadata_listing_responded_nodes gauge\n\
              maxio_metadata_listing_responded_nodes {}\n\
-             # HELP maxio_metadata_listing_missing_nodes Missing expected node fan-in cardinality in current runtime metadata snapshot.\n\
+             # HELP maxio_metadata_listing_missing_nodes Expected nodes not confirmed by the named readiness probe.\n\
              # TYPE maxio_metadata_listing_missing_nodes gauge\n\
              maxio_metadata_listing_missing_nodes {}\n\
              # HELP maxio_metadata_listing_unexpected_nodes Unexpected responder node fan-in cardinality in current runtime metadata snapshot.\n\
              # TYPE maxio_metadata_listing_unexpected_nodes gauge\n\
              maxio_metadata_listing_unexpected_nodes {}\n",
+            metadata_probe.scope,
+            metadata_probe.status,
             metadata_listing_expected_nodes,
             metadata_listing_responded_nodes,
             metadata_listing_missing_nodes,
@@ -1370,7 +1383,48 @@ pub(super) async fn metrics_handler(State(state): State<AppState>) -> Response {
     )
 }
 
-pub(super) async fn health_handler(State(state): State<AppState>) -> Response {
+#[derive(Deserialize, Default)]
+pub(super) struct HealthQuery {
+    scope: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LocalHealthSnapshot<'a> {
+    scope: &'static str,
+    node_id: &'a str,
+    cluster_id: &'a str,
+    membership_view_id: &'a str,
+    placement_epoch: u64,
+    cluster_peers: &'a [String],
+}
+
+pub(super) async fn health_handler(
+    State(state): State<AppState>,
+    axum::extract::Query(query): axum::extract::Query<HealthQuery>,
+) -> Response {
+    if query.scope.as_deref() == Some("local") {
+        let topology = runtime_topology_snapshot(&state);
+        // This is a liveness/topology observation, deliberately without a
+        // cluster readiness claim. No peer I/O occurs on the probe path.
+        let body = LocalHealthSnapshot {
+            scope: "local",
+            node_id: &topology.node_id,
+            cluster_id: &topology.cluster_id,
+            membership_view_id: &topology.membership_view_id,
+            placement_epoch: topology.placement_epoch,
+            cluster_peers: &topology.cluster_peers,
+        };
+        return response_with_content_type(
+            StatusCode::OK,
+            HeaderValue::from_static("application/json"),
+            json_body_or_fallback(
+                &body,
+                b"{\"scope\":\"local\",\"status\":\"error\"}",
+                "local_health_probe",
+            ),
+        );
+    }
     let body = runtime_health_payload(&state).await;
 
     response_with_content_type(

@@ -578,7 +578,10 @@ pub(super) async fn probe_peer_connectivity(
             continue;
         }
 
-        let url = format!("{scheme}://{peer}/healthz");
+        // A full health response probes its peers. Asking that endpoint without
+        // an explicit local scope makes two real nodes recursively probe each
+        // other until their requests time out.
+        let url = format!("{scheme}://{peer}/healthz?scope=local");
         match client.get(url).send().await {
             Ok(response) if response.status().is_success() => {
                 let (view_id, placement_epoch, cluster_id, cluster_peers) =
@@ -700,6 +703,9 @@ pub(super) fn derive_membership_discovery_cluster_peers(
         candidate_peers.extend(peer_view.cluster_peers.iter().cloned());
     }
     prune_gossip_failed_discovery_peers(topology, peer_connectivity_probe, &mut candidate_peers);
+    // A peer's advertised peer set normally includes us. This is expected in a
+    // discovery union, unlike an explicit admin request to add self as a peer.
+    candidate_peers.retain(|peer| !peer_identity_eq(peer, &topology.node_id));
 
     let normalized = normalize_cluster_peers_for_membership_update(
         topology.node_id.as_str(),

@@ -292,7 +292,7 @@
     </div>
   {/if}
 
-  <div class="flex items-center gap-2">
+  <div class="flex flex-wrap items-center gap-2">
     <input
       bind:this={fileInput}
       type="file"
@@ -304,13 +304,14 @@
       <Upload class="size-4 mr-1" /> {uploading ? 'Uploading...' : 'Upload'}
     </Button>
     {#if showCreateFolder}
-      <form onsubmit={(e) => { e.preventDefault(); createFolder() }} class="flex items-center gap-2">
+      <form onsubmit={(e) => { e.preventDefault(); createFolder() }} class="flex w-full flex-wrap items-center gap-2 sm:w-auto">
         <input
           use:autofocus
           type="text"
           bind:value={newFolderName}
           placeholder="folder-name"
-          class="input-cool h-8 w-40"
+          aria-label="Folder name"
+          class="input-cool h-8 w-full sm:w-40"
           disabled={creatingFolder}
         />
         <Button type="submit" variant="brand" class="h-8" disabled={creatingFolder || !newFolderName.trim()}>
@@ -335,13 +336,13 @@
       <p class="text-sm">Empty</p>
     </div>
   {:else}
-    <Table.Root>
+    <Table.Root class="table-fixed">
       <Table.Header>
         <Table.Row>
           <Table.Head>Name</Table.Head>
-          <Table.Head class="w-28 text-right">Size</Table.Head>
-          <Table.Head class="w-48">Modified</Table.Head>
-          <Table.Head class="w-24"></Table.Head>
+          <Table.Head class="hidden w-28 text-right sm:table-cell">Size</Table.Head>
+          <Table.Head class="hidden w-48 md:table-cell">Modified</Table.Head>
+          <Table.Head class="w-40"><span class="sr-only">Actions</span></Table.Head>
         </Table.Row>
       </Table.Header>
       <Table.Body>
@@ -350,11 +351,11 @@
             <Table.Cell>
                 <span class="flex items-center gap-2">
                   <Folder class="size-4 shrink-0 text-muted-foreground" />
-                  <span class="font-medium">{objectDisplayName(p)}/</span>
+                  <span class="truncate font-medium" title={p}>{objectDisplayName(p)}/</span>
                 </span>
               </Table.Cell>
-            <Table.Cell class="text-right text-muted-foreground">&mdash;</Table.Cell>
-            <Table.Cell class="text-muted-foreground">&mdash;</Table.Cell>
+            <Table.Cell class="hidden text-right text-muted-foreground sm:table-cell">&mdash;</Table.Cell>
+            <Table.Cell class="hidden text-muted-foreground md:table-cell">&mdash;</Table.Cell>
             <Table.Cell>
               {#if emptyPrefixes.has(p)}
                 <button
@@ -373,22 +374,25 @@
             <Table.Cell>
                 <span class="flex items-center gap-2">
                   <FileIcon class="size-4 shrink-0 text-muted-foreground" />
-                  <span class="font-medium">{objectDisplayName(file.key)}</span>
+                  <span class="min-w-0">
+                    <span class="block truncate font-medium" title={file.key}>{objectDisplayName(file.key)}</span>
+                    <span class="block text-xs text-muted-foreground sm:hidden">{formatObjectSize(file.size)}</span>
+                  </span>
                 </span>
               </Table.Cell>
-              <Table.Cell class="text-right text-muted-foreground">{formatObjectSize(file.size)}</Table.Cell>
-            <Table.Cell class="text-muted-foreground">{formatDate(file.lastModified)}</Table.Cell>
-            <Table.Cell class="w-24">
-              <span class="flex items-center gap-4">
+              <Table.Cell class="hidden text-right text-muted-foreground sm:table-cell">{formatObjectSize(file.size)}</Table.Cell>
+            <Table.Cell class="hidden text-muted-foreground md:table-cell">{formatDate(file.lastModified)}</Table.Cell>
+            <Table.Cell class="w-40">
+              <span class="flex items-center gap-1">
                 <button
-                  class="text-muted-foreground hover:text-foreground transition-colors"
+                  class="flex size-8 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
                   onclick={(e) => { e.stopPropagation(); versionKey = versionKey === file.key ? null : file.key }}
                   title="Version history"
                 >
                   <History class="size-4" />
                 </button>
                 <button
-                  class="text-muted-foreground hover:text-foreground transition-colors"
+                  class="flex size-8 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
                   onclick={(e) => toggleShareMenu(file.key, e)}
                   title="Copy presigned URL"
                 >
@@ -398,11 +402,11 @@
                     <Share2 class="size-4" />
                   {/if}
                 </button>
-                <a href={buildObjectDownloadUrl(bucket, file.key)} class="text-muted-foreground hover:text-foreground" onclick={(e) => e.stopPropagation()} title="Download">
+                <a href={buildObjectDownloadUrl(bucket, file.key)} class="flex size-8 shrink-0 items-center justify-center text-muted-foreground hover:text-foreground" onclick={(e) => e.stopPropagation()} title="Download">
                   <Download class="size-4" />
                 </a>
                 <button
-                  class="text-muted-foreground hover:text-destructive transition-colors"
+                  class="flex size-8 shrink-0 items-center justify-center text-muted-foreground hover:text-destructive transition-colors"
                   onclick={(e) => deleteObject(file.key, e)}
                   title="Delete"
                 >

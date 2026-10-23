@@ -8,4 +8,5 @@ pub mod membership;
 pub mod metadata;
 pub mod server;
 pub mod storage;
+pub mod sync;
 pub mod xml;
