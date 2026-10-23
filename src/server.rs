@@ -17,6 +17,7 @@ use tokio::time::Duration;
 mod cluster_handlers;
 mod metadata_probe;
 mod middleware;
+mod native_tls;
 mod observability;
 mod persistence;
 mod probes;
@@ -30,6 +31,7 @@ use persistence::*;
 use probes::*;
 use replay_workers::*;
 
+pub use native_tls::{ServerTls, serve_listener};
 pub(crate) use observability::runtime_health_payload;
 pub use probes::membership_protocol_readiness;
 pub(crate) use replay_workers::HealthPayload;
@@ -38,7 +40,7 @@ pub use replay_workers::{
     spawn_pending_rebalance_replay_worker, spawn_pending_replication_replay_worker,
 };
 
-use crate::api::console::{LoginRateLimiter, console_router};
+use crate::api::console::{ConsoleSessionStore, LoginRateLimiter, console_router};
 use crate::api::object::{forward_replica_put_to_target, replay_pending_replication_backlog_once};
 use crate::api::router::s3_router;
 use crate::auth::middleware::auth_middleware;
@@ -61,8 +63,8 @@ use crate::cluster::transport_identity::{
     PeerCertificatePolicy, PeerTransportEnforcementMode, PeerTransportIdentityMode,
     PeerTransportIdentityReadinessReason, PeerTransportIdentityStatus,
     PeerTransportPolicyAssessment, assess_cluster_peer_auth_production_readiness,
-    assess_peer_transport_policy_with_context,
-    attest_peer_transport_identity_with_mtls_with_policy, peer_transport_policy_effective_reason,
+    assess_peer_transport_policy_with_context, build_peer_mtls_http_client,
+    peer_transport_policy_effective_reason,
     probe_peer_transport_identity_with_certificate_policy_and_node_id_binding,
 };
 use crate::config::{
@@ -164,6 +166,10 @@ const CORS_ALLOW_HEADERS_BASELINE_FIELDS: &[&str] = &[
     "range",
 ];
 
+/// Set only from the native listener after a successful TLS handshake.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct TlsConnection;
+
 #[derive(Clone)]
 pub struct AppState {
     pub storage: Arc<FilesystemStorage>,
@@ -192,6 +198,7 @@ pub struct AppState {
     pub placement_epoch: Arc<AtomicU64>,
     pub runtime_internal_header_reject_dimensions: Arc<RuntimeInternalHeaderRejectDimensions>,
     pub login_rate_limiter: Arc<LoginRateLimiter>,
+    pub console_sessions: Arc<ConsoleSessionStore>,
     pub request_count: Arc<AtomicU64>,
     pub started_at: Instant,
 }
@@ -1502,6 +1509,7 @@ impl AppState {
                 RuntimeInternalHeaderRejectDimensions::default(),
             ),
             login_rate_limiter: Arc::new(LoginRateLimiter::new()),
+            console_sessions: Arc::new(ConsoleSessionStore::new()),
             request_count: Arc::new(AtomicU64::new(0)),
             started_at: Instant::now(),
         })
@@ -1591,6 +1599,10 @@ fn apply_runtime_middleware(state: AppState, routes: Router<AppState>) -> Router
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             request_id_middleware,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            peer_connection_identity_middleware,
         ))
         .with_state(state)
 }
@@ -1989,190 +2001,32 @@ struct PeerHttpTransport {
     scheme: &'static str,
 }
 
-fn runtime_peer_transport_has_cluster_peers(config: &Config) -> bool {
-    match config.parsed_cluster_peers() {
-        Ok(peers) => !peers.is_empty(),
-        Err(_) => true,
-    }
-}
-
-fn runtime_peer_transport_policy_assessment(
-    config: &Config,
-    status: &PeerTransportIdentityStatus,
-) -> PeerTransportPolicyAssessment {
-    let enforcement_mode = if config.cluster_peer_transport_required() {
-        PeerTransportEnforcementMode::StrictMtlsIdentityBound
-    } else {
-        PeerTransportEnforcementMode::Compatibility
-    };
-    let has_cluster_peers = runtime_peer_transport_has_cluster_peers(config);
-    let auth_configured = config.cluster_auth_token().is_some();
-    assess_peer_transport_policy_with_context(
-        status,
-        enforcement_mode,
-        has_cluster_peers,
-        auth_configured,
-        has_cluster_peers,
-    )
-}
-
 fn build_peer_http_transport(
     config: Option<&Config>,
+    expected_peer_node_id: &str,
     timeout: Duration,
 ) -> Result<PeerHttpTransport, String> {
-    let mut builder = reqwest::Client::builder().timeout(timeout);
-    let mut scheme = "http";
-
-    if let Some(config) = config {
-        let expected_node_id = config.cluster_auth_token().map(|_| config.node_id.as_str());
-        let identity_status =
-            probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
-                config.cluster_peer_tls_cert_path(),
-                config.cluster_peer_tls_key_path(),
-                config.cluster_peer_tls_ca_path(),
-                PeerCertificatePolicy {
-                    sha256_pin: config.cluster_peer_tls_cert_sha256(),
-                    sha256_revocations: config.cluster_peer_tls_cert_sha256_revocations(),
-                },
-                expected_node_id,
-            );
-        let policy = runtime_peer_transport_policy_assessment(config, &identity_status);
-        let readiness_reason = peer_transport_policy_effective_reason(&policy).as_str();
-        if policy.required && !policy.is_ready() {
-            return Err(format!(
-                "mTLS peer transport policy requires ready peer transport identity in current mode ({readiness_reason})"
-            ));
-        }
-
-        if identity_status.mode.as_str() == "mtls-path" {
-            if !identity_status.transport_ready {
-                let warning = identity_status.warning.as_deref().unwrap_or(
-                    "mTLS peer transport identity is not ready with current configuration",
-                );
-                return Err(format!(
-                    "mTLS peer transport is not ready ({}): {}",
-                    readiness_reason, warning
-                ));
-            }
-
-            let ca_path = config.cluster_peer_tls_ca_path().ok_or_else(|| {
-                "mTLS peer transport requires cluster peer CA trust-store path".to_string()
-            })?;
-
-            let ca_bytes = std::fs::read(ca_path).map_err(|err| {
-                format!(
-                    "failed to read mTLS peer trust store '{}': {}",
-                    ca_path, err
-                )
-            })?;
-            let ca_certificate = reqwest::Certificate::from_pem(&ca_bytes)
-                .map_err(|err| format!("failed to parse mTLS trust-store PEM: {err}"))?;
-            let cert_path = config.cluster_peer_tls_cert_path().ok_or_else(|| {
-                "mTLS peer transport requires cluster peer certificate path".to_string()
-            })?;
-            let key_path = config.cluster_peer_tls_key_path().ok_or_else(|| {
-                "mTLS peer transport requires cluster peer private key path".to_string()
-            })?;
-            let cert_pem = std::fs::read(cert_path).map_err(|err| {
-                format!(
-                    "failed to read mTLS peer certificate '{}': {}",
-                    cert_path, err
-                )
-            })?;
-            let key_pem = std::fs::read(key_path).map_err(|err| {
-                format!(
-                    "failed to read mTLS peer private key '{}': {}",
-                    key_path, err
-                )
-            })?;
-            let identity =
-                reqwest::Identity::from_pkcs8_pem(cert_pem.as_slice(), key_pem.as_slice())
-                    .map_err(|err| {
-                        format!("failed to parse mTLS certificate/key identity PEM: {err}")
-                    })?;
-
-            builder = builder.add_root_certificate(ca_certificate);
-            builder = builder.identity(identity);
-            scheme = "https";
-        }
+    if let Some(config) = config
+        && let Some(tls) = native_tls::peer_tls_config(config)?
+    {
+        let client =
+            build_peer_mtls_http_client(tls, expected_peer_node_id, Some(timeout), timeout)
+                .map_err(|error| format!("mTLS peer transport is not ready: {error}"))?;
+        return Ok(PeerHttpTransport {
+            client,
+            scheme: "https",
+        });
     }
-
-    let client = builder
+    let client = reqwest::Client::builder()
+        .connect_timeout(timeout)
+        .timeout(timeout)
+        .redirect(reqwest::redirect::Policy::none())
+        .no_proxy()
         .build()
-        .map_err(|err| format!("peer HTTP client initialization failed: {err}"))?;
-
-    Ok(PeerHttpTransport { client, scheme })
-}
-
-fn attest_peer_http_target(
-    config: Option<&Config>,
-    peer: &str,
-    timeout: Duration,
-) -> Result<(), String> {
-    let Some(config) = config else {
-        return Ok(());
-    };
-
-    let expected_node_id = config.cluster_auth_token().map(|_| config.node_id.as_str());
-    let identity_status = probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
-        config.cluster_peer_tls_cert_path(),
-        config.cluster_peer_tls_key_path(),
-        config.cluster_peer_tls_ca_path(),
-        PeerCertificatePolicy {
-            sha256_pin: config.cluster_peer_tls_cert_sha256(),
-            sha256_revocations: config.cluster_peer_tls_cert_sha256_revocations(),
-        },
-        expected_node_id,
-    );
-    let policy = runtime_peer_transport_policy_assessment(config, &identity_status);
-    let readiness_reason = peer_transport_policy_effective_reason(&policy).as_str();
-    if policy.required && !policy.is_ready() {
-        return Err(format!(
-            "mTLS peer transport policy requires ready peer transport identity in current mode ({readiness_reason})"
-        ));
-    }
-    if identity_status.mode.as_str() != "mtls-path" {
-        return Ok(());
-    }
-    if !identity_status.transport_ready {
-        let warning = identity_status
-            .warning
-            .as_deref()
-            .unwrap_or("mTLS peer transport identity is not ready with current configuration");
-        return Err(format!(
-            "mTLS peer transport is not ready ({}): {}",
-            readiness_reason, warning
-        ));
-    }
-
-    let cert_path = config
-        .cluster_peer_tls_cert_path()
-        .ok_or_else(|| "mTLS peer transport requires cluster peer certificate path".to_string())?;
-    let key_path = config
-        .cluster_peer_tls_key_path()
-        .ok_or_else(|| "mTLS peer transport requires cluster peer private key path".to_string())?;
-    let trust_store_path = config.cluster_peer_tls_ca_path().ok_or_else(|| {
-        "mTLS peer transport requires cluster peer CA trust-store path".to_string()
-    })?;
-
-    attest_peer_transport_identity_with_mtls_with_policy(
-        peer,
-        peer,
-        cert_path,
-        key_path,
-        trust_store_path,
-        PeerCertificatePolicy {
-            sha256_pin: None,
-            sha256_revocations: config.cluster_peer_tls_cert_sha256_revocations(),
-        },
-        timeout,
-    )
-    .map_err(|error| {
-        format!(
-            "mTLS peer attestation to '{}' failed ({})",
-            peer,
-            error.as_str()
-        )
+        .map_err(|error| format!("peer HTTP client initialization failed: {error}"))?;
+    Ok(PeerHttpTransport {
+        client,
+        scheme: "http",
     })
 }
 
@@ -2254,23 +2108,8 @@ fn spawn_gossip_stale_peer_reconciliation(
     let stale_targets = stale_targets.to_vec();
 
     tokio::spawn(async move {
-        let transport = match build_peer_http_transport(
-            Some(config.as_ref()),
-            Duration::from_secs(MEMBERSHIP_UPDATE_PROPAGATION_TIMEOUT_SECS),
-        ) {
-            Ok(transport) => transport,
-            Err(error) => {
-                tracing::warn!(
-                    "Gossip stale-peer reconciliation client initialization failed: {}",
-                    error
-                );
-                return;
-            }
-        };
         let context = MembershipPropagationContext {
             config: Some(config.as_ref()),
-            client: &transport.client,
-            scheme: transport.scheme,
             local_node_id: local_node_id.as_str(),
             cluster_id: cluster_id.as_str(),
             cluster_auth_token: cluster_auth_token.as_str(),
@@ -2382,30 +2221,9 @@ async fn propagate_membership_update_to_peers(
         return Vec::new();
     }
 
-    let transport = match build_peer_http_transport(
-        Some(config),
-        Duration::from_secs(MEMBERSHIP_UPDATE_PROPAGATION_TIMEOUT_SECS),
-    ) {
-        Ok(transport) => transport,
-        Err(err) => {
-            tracing::warn!(
-                "Membership propagation client initialization failed: {}",
-                err
-            );
-            return target_peers
-                .into_iter()
-                .map(|peer| MembershipPropagationPeerResult {
-                    peer,
-                    failure: Some(MembershipPropagationFailure::terminal(err.clone())),
-                })
-                .collect();
-        }
-    };
     let mut results = Vec::with_capacity(target_peers.len());
     let propagation_context = MembershipPropagationContext {
         config: Some(config),
-        client: &transport.client,
-        scheme: transport.scheme,
         local_node_id,
         cluster_id,
         cluster_auth_token,
@@ -2429,8 +2247,6 @@ async fn propagate_membership_update_to_peers(
 
 struct MembershipPropagationContext<'a> {
     config: Option<&'a Config>,
-    client: &'a reqwest::Client,
-    scheme: &'a str,
     local_node_id: &'a str,
     cluster_id: &'a str,
     cluster_auth_token: &'a str,
@@ -2441,26 +2257,24 @@ async fn propagate_membership_update_to_peer(
     peer: &str,
     request: &ClusterMembershipUpdateRequest,
 ) -> Result<(), MembershipPropagationFailure> {
-    attest_peer_http_target(
+    let transport = build_peer_http_transport(
         context.config,
         peer,
         Duration::from_secs(MEMBERSHIP_UPDATE_PROPAGATION_TIMEOUT_SECS),
     )
     .map_err(|error| {
         MembershipPropagationFailure::terminal(format!(
-            "membership propagation preflight failed for '{}': {}",
-            peer, error
+            "membership propagation client for '{peer}' is unavailable: {error}"
         ))
     })?;
-
     let url = format!(
         "{}://{peer}/internal/cluster/membership/update",
-        context.scheme
+        transport.scheme
     );
     for attempt in 1..=MEMBERSHIP_UPDATE_PROPAGATION_MAX_ATTEMPTS {
         let timestamp = unix_ms_now().to_string();
         let nonce = uuid::Uuid::new_v4().to_string();
-        let response = context
+        let response = transport
             .client
             .post(url.as_str())
             .header(FORWARDED_BY_HEADER, context.local_node_id)
@@ -2564,11 +2378,6 @@ async fn replay_pending_membership_propagation_backlog_once(
         return Ok(PendingMembershipPropagationReplaySummary::default());
     }
 
-    let transport = build_peer_http_transport(
-        Some(state.config.as_ref()),
-        Duration::from_secs(MEMBERSHIP_UPDATE_PROPAGATION_TIMEOUT_SECS),
-    )
-    .map_err(std::io::Error::other)?;
     let now_unix_ms = unix_ms_now();
     let workset = build_pending_membership_propagation_replay_workset(
         queue.operations,
@@ -2584,8 +2393,6 @@ async fn replay_pending_membership_propagation_backlog_once(
     let mut replay_outcomes = Vec::with_capacity(workset.replay_due_operations.len());
     let propagation_context = MembershipPropagationContext {
         config: Some(state.config.as_ref()),
-        client: &transport.client,
-        scheme: transport.scheme,
         local_node_id: state.node_id.as_str(),
         cluster_id: state.cluster_id.as_str(),
         cluster_auth_token,

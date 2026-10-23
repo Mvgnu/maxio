@@ -20,7 +20,7 @@ production-grade distributed durability.
 ## Build
 
 Use Rust **1.94.0**, Bun **1.3.10**, and Python 3 for verification. On Debian/Ubuntu,
-install `build-essential`, `pkg-config` and `libssl-dev`. Rustup reads the pinned
+install `build-essential`, `pkg-config`, `libssl-dev` and `openssl`. Rustup reads the pinned
 `rust-toolchain.toml`. The Linux executables use the system OpenSSL libraries.
 
 ```bash
@@ -46,7 +46,22 @@ export MAXIO_SECRET_KEY='replace-with-a-long-local-secret'
 
 Open [the console](http://127.0.0.1:9000/ui/) and sign in with those credentials.
 The console uses local assets and system fonts. No cluster settings are required.
-Use an appropriate private interface or TLS proxy when connecting other devices.
+For other devices, bind the chosen private interface and use native HTTPS as shown
+below, or an operator-controlled encrypted channel.
+
+### Optional native HTTPS
+
+Provide a PEM certificate chain and matching private key for the address your
+clients use. No peer configuration is required:
+
+```bash
+./target/debug/maxio --address 127.0.0.1 --data-dir ./data --port 9000 \
+  --tls-cert-path ./tls/server.crt --tls-key-path ./tls/server.key
+```
+
+Use `https://` endpoints. With a private CA, set `AWS_CA_BUNDLE` for AWS CLI and
+trust that CA in your browser for the console. A partial or invalid certificate/key
+pair fails startup. The ordinary no-flags standalone command still uses HTTP.
 
 ### With MinIO Client
 
@@ -88,6 +103,18 @@ chosen device's reachable private/VPN address or verified HTTPS endpoint. Omit
 `--once` to poll every 15 seconds; Ctrl+C stops it. There is no hosted account,
 mandatory discovery service, relay or cloud storage between the devices.
 
+For a native HTTPS server signed by your private CA:
+
+```bash
+./target/debug/maxio-sync --local ./shared-files \
+  --endpoint https://your-device.lan:9000 --ca-cert ./tls/ca.crt \
+  --bucket device-files --prefix shared --once
+```
+
+`MAXIO_SYNC_CA_CERT` is the environment equivalent. The supplied PEM bundle becomes
+the explicit trust roots for that client; hostname and certificate checks stay on.
+Without it, the client uses normal system roots. The option is rejected for HTTP.
+
 A persistent local baseline detects which side changed. Downloads are staged;
 concurrent differing edits preserve a `.maxio-conflict-<digest>` sibling. The client
 first verifies that the endpoint actually honors conditional writes and refuses
@@ -122,11 +149,20 @@ The default peer settings remain `local-node-only` metadata and `degraded-succes
 writes. Use the explicit recipe when testing cluster-wide visibility/durability.
 Two-node strict quorum does not promise availability when one node is offline.
 
-Native listeners currently use HTTP. Outbound certificate configuration does not
-create an inbound TLS server, and shared tokens do not encrypt traffic. Use a
-trusted encrypted private transport or correctly configured TLS termination for
-cross-device deployment. Existing clusters using noncanonical mixed-case/IPv6
-identities need a planned migration because canonicalization changes placement IDs.
+For native HTTPS with peer authentication, follow the [secure-peer recipe](specs/journeys/secure_peers.md).
+Each peer has its own certificate and key, a shared CA trust bundle, and an exact
+`maxio://host:port` certificate identity. Internal operations bind sender claims to
+the actual TLS connection; copying the shared token is insufficient to impersonate
+another certificate identity. Public HTTPS still accepts ordinary S3 clients.
+
+```bash
+python3 scripts/smoke_secure_peers.py --binary ./target/debug/maxio
+```
+
+The plain HTTP compatibility recipe remains for loopback/private encrypted
+channels. Existing clusters using noncanonical mixed-case/IPv6 identities need a
+planned migration because canonicalization changes placement IDs. Certificate
+issuance and rotation remain explicit operator responsibilities.
 
 ## Configuration
 
@@ -145,7 +181,11 @@ identities need a planned migration because canonicalization changes placement I
 | Write durability | `MAXIO_WRITE_DURABILITY_MODE` | `degraded-success`; peer recipe uses `strict-quorum` |
 | Membership | `MAXIO_MEMBERSHIP_PROTOCOL` | `static-bootstrap`; gossip is experimental, Raft unimplemented |
 | Erasure coding | `MAXIO_ERASURE_CODING`, `MAXIO_CHUNK_SIZE`, `MAXIO_PARITY_SHARDS` | Off; 10 MiB chunks; zero parity by default |
-| Internal listener | `MAXIO_INTERNAL_BIND_ADDR` | Optional separate control-plane HTTP listener |
+| Standalone HTTPS | `MAXIO_TLS_CERT_PATH`, `MAXIO_TLS_KEY_PATH` | Optional PEM chain/key pair; mutually exclusive with peer TLS |
+| Sync private CA | `MAXIO_SYNC_CA_CERT` | Optional explicit trust bundle for an HTTPS sync endpoint |
+| Secure peers | `MAXIO_CLUSTER_PEER_TLS_CERT_PATH`, `MAXIO_CLUSTER_PEER_TLS_KEY_PATH`, `MAXIO_CLUSTER_PEER_TLS_CA_PATH` | Complete identity/trust triplet enables native peer HTTPS |
+| Peer transport policy | `MAXIO_CLUSTER_PEER_TRANSPORT_MODE` | `compatibility`; secure recipe uses `required` and a shared token |
+| Internal listener | `MAXIO_INTERNAL_BIND_ADDR` | Optional separate control listener; TLS follows public configuration |
 
 `/healthz` returns diagnostic JSON and `/metrics` Prometheus metrics.
 `/healthz?scope=local` is a nonrecursive local observation used between peers; it
@@ -172,8 +212,13 @@ data, but payload and sidecar publication is not a full power-loss transaction.
 Concurrent reads do not provide a guaranteed snapshot during replacement. Mutations
 currently serialize per storage instance. Enabling versioning preserves existing
 bytes as the null version; suspended-versioning semantics are not full AWS parity.
-Console logout clears the browser cookie but cannot revoke a copied stateless
-session before expiry or credential change.
+
+Console logout revokes the current session, including a copied cookie. Independent
+logins remain active. Sessions are node-local and expire after seven days; server
+restart invalidates them all. Upgrading from the former stateless cookies requires
+a new login. At 4,096 active sessions, new login fails until a session expires or
+is revoked. Native HTTPS cookies are Secure; login throttling uses the socket IP.
+Operators behind one reverse proxy therefore share that proxy IP's login limit.
 
 Back up the **whole** data directory while the server is stopped or through a
 consistent filesystem snapshot, preserving sidecars, versions and runtime state.
@@ -204,8 +249,8 @@ interfaces, verification commands and external quality bars.
 ```
 
 The full gate runs formatting, strict Clippy, the Rust suite once, frontend checks,
-architecture/ownership checks, and the three real-process journeys. Python 3 and
-loopback networking are required. The existing `tests/mc_test.sh` and
+architecture/ownership checks, the three real-process journeys, and the secure-peer
+transport drill. Python 3, OpenSSL and loopback networking are required. The existing `tests/mc_test.sh` and
 `tests/aws_cli_test.sh` provide optional extra client compatibility drills.
 
 For a domain branch, gate the complete diff against the PM-approved base:

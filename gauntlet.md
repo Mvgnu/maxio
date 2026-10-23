@@ -55,7 +55,7 @@ contract. Do not claim a competitor was executed if only its documentation was r
 
 ## Review record
 
-Write `specs/reviews/<date>.md` with artifact commit, platform, commands, reference
+Write `specs/reviews/<date>[-<wave>].md` with artifact commit, platform, commands, reference
 URL/property, observed evidence, single largest gap, and verdict for each reviewed
 domain. Verdicts: `pass`, `gap`, `blocked`, or `not-reviewed`. A pass must explain
 why the observed behavior meets the stated property. A PM stop records the remaining
@@ -66,9 +66,12 @@ Do not append a changelog to the product spec. Never mark unobserved domains pas
 
 ## Known boundaries to test before reporting
 
-The server currently exposes plain HTTP listeners; peer certificate configuration
-alone does not create an inbound TLS listener. A two-process loopback exercise does
-not prove internet transport, NAT traversal, WAN partition recovery, or encryption.
+Native HTTPS and peer TLS must be judged on live connections: a correct shared
+token without a client certificate must fail internal authorization, and a
+same-host certificate for another port must not satisfy identity checks. Preserve
+ordinary S3/console access to the public HTTPS listener. A two-process loopback
+exercise does not prove internet reachability, NAT traversal or WAN partition
+recovery. Record encryption only after exercising actual verified TLS connections.
 The sync MVP has explicit peers and no deletion propagation. It is not a full
 Syncthing replacement. Verify current capabilities rather than repeating this list
 after implementation changes.

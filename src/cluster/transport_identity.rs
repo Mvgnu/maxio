@@ -4,7 +4,7 @@ use openssl::asn1::{Asn1Time, Asn1TimeRef};
 use openssl::nid::Nid;
 use openssl::pkey::PKey;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
-use openssl::x509::X509;
+use openssl::x509::{X509, X509Ref};
 use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
 use std::fs;
@@ -13,6 +13,15 @@ use std::net::IpAddr;
 use std::net::TcpStream;
 use std::net::ToSocketAddrs;
 use std::time::Duration;
+
+mod secure_transport;
+pub use secure_transport::{
+    PeerTlsConfig, VerifiedPeerIdentity, build_peer_mtls_http_client, build_peer_tls_acceptor,
+    verified_peer_identity_from_tls,
+};
+
+#[cfg(test)]
+mod test_support;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerTransportIdentityMode {
@@ -413,7 +422,7 @@ pub fn probe_peer_transport_identity_with_cert_sha256_pin_and_revocations(
             };
         }
     };
-    if contains_valid_pem_block(&key_bytes, "ENCRYPTED PRIVATE KEY") {
+    if contains_encrypted_private_key_pem(&key_bytes) {
         return PeerTransportIdentityStatus {
             mode: PeerTransportIdentityMode::MtlsPath,
             transport_ready: false,
@@ -757,31 +766,18 @@ pub fn probe_peer_transport_identity_with_certificate_policy_and_node_id_binding
     if !status.transport_ready {
         return status;
     }
-    let Some(expected_node_host) = normalize_peer_node_host(expected_node_id) else {
+    let Ok(expected_node_uri) = peer_node_identity_uri(expected_node_id) else {
         return PeerTransportIdentityStatus {
             mode: status.mode,
             transport_ready: false,
             identity_bound: false,
             reason: PeerTransportIdentityReadinessReason::NodeIdentityInvalid,
             warning: Some(format!(
-                "mTLS node-identity binding cannot parse host from node id '{}'.",
+                "mTLS node-identity binding requires a valid node id with an explicit port: '{}'.",
                 expected_node_id
             )),
         };
     };
-
-    if !status.identity_bound {
-        return PeerTransportIdentityStatus {
-            mode: status.mode,
-            transport_ready: false,
-            identity_bound: false,
-            reason: PeerTransportIdentityReadinessReason::NodeIdentityBindingPinRequired,
-            warning: Some(format!(
-                "mTLS node-identity binding for '{}' requires a certificate fingerprint pin.",
-                expected_node_id
-            )),
-        };
-    }
 
     let Some(cert_path) = normalize_path(cert_path) else {
         return PeerTransportIdentityStatus {
@@ -809,11 +805,25 @@ pub fn probe_peer_transport_identity_with_certificate_policy_and_node_id_binding
             };
         }
     };
-    let matches = match certificate_matches_expected_node_host(
-        cert_bytes.as_slice(),
-        expected_node_host.as_str(),
-    ) {
-        Ok(matches) => matches,
+    let key_bytes = normalize_path(key_path)
+        .ok_or_else(|| "missing private key path".to_owned())
+        .and_then(|path| fs::read(path).map_err(|error| error.to_string()));
+    if let Err(error) =
+        key_bytes.and_then(|bytes| validate_certificate_private_key_pair(&cert_bytes, &bytes))
+    {
+        return PeerTransportIdentityStatus {
+            mode: status.mode,
+            transport_ready: false,
+            identity_bound: false,
+            reason: PeerTransportIdentityReadinessReason::CertificateKeyPairInvalid,
+            warning: Some(format!("mTLS certificate/private-key mismatch: {error}.")),
+        };
+    }
+    let matches = match X509::from_pem(&cert_bytes)
+        .map_err(|error| error.to_string())
+        .and_then(|cert| certificate_node_identity(&cert))
+    {
+        Ok(identity) => format!("maxio://{identity}") == expected_node_uri,
         Err(error) => {
             return PeerTransportIdentityStatus {
                 mode: status.mode,
@@ -835,12 +845,13 @@ pub fn probe_peer_transport_identity_with_certificate_policy_and_node_id_binding
             identity_bound: false,
             reason: PeerTransportIdentityReadinessReason::NodeIdentityCertificateMismatch,
             warning: Some(format!(
-                "mTLS node-identity binding mismatch: certificate identity at '{}' does not match expected node host '{}'.",
-                cert_path, expected_node_host
+                "mTLS node-identity binding mismatch: certificate identity at '{}' does not match expected node URI '{}'.",
+                cert_path, expected_node_uri
             )),
         };
     }
 
+    status.identity_bound = true;
     status.warning = None;
     status
 }
@@ -914,10 +925,10 @@ pub fn attest_peer_transport_identity_with_mtls_with_policy(
 
     let key_bytes =
         fs::read(key_path).map_err(|_| PeerTransportPeerAttestationError::KeyPathUnreadable)?;
-    if contains_valid_pem_block(key_bytes.as_slice(), "ENCRYPTED PRIVATE KEY") {
+    if contains_encrypted_private_key_pem(&key_bytes) {
         return Err(PeerTransportPeerAttestationError::KeyPemEncryptedUnsupported);
     }
-    let key = PKey::private_key_from_pem(key_bytes.as_slice())
+    let key = PKey::private_key_from_pem_passphrase(&key_bytes, b"")
         .map_err(|_| PeerTransportPeerAttestationError::KeyPemInvalid)?;
 
     let trust_store_bytes = fs::read(trust_store_path)
@@ -1053,7 +1064,7 @@ fn normalize_path(value: Option<&str>) -> Option<&str> {
     value.map(str::trim).filter(|value| !value.is_empty())
 }
 
-fn peer_certificate_sha256_hex(peer_certificate: &X509) -> Result<String, String> {
+fn peer_certificate_sha256_hex(peer_certificate: &X509Ref) -> Result<String, String> {
     let peer_der = peer_certificate
         .to_der()
         .map_err(|error| error.to_string())?;
@@ -1061,19 +1072,48 @@ fn peer_certificate_sha256_hex(peer_certificate: &X509) -> Result<String, String
     Ok(hex::encode(digest))
 }
 
+/// The certificate identity includes the endpoint port; sharing a hostname does
+/// not authorize one node to speak as another node on that host.
+pub fn peer_node_identity_uri(node_id: &str) -> Result<String, String> {
+    let (_, port) = crate::cluster::peer_identity::parse_peer_identity(node_id)
+        .ok_or_else(|| "invalid peer node identity".to_owned())?;
+    if port.is_none() {
+        return Err("secure peer node identity requires an explicit port".to_owned());
+    }
+    let canonical = crate::cluster::peer_identity::canonical_peer_identity(node_id)
+        .ok_or_else(|| "invalid peer node identity".to_owned())?;
+    Ok(format!("maxio://{canonical}"))
+}
+
+fn certificate_node_identity(cert: &X509Ref) -> Result<String, String> {
+    let mut identity = None;
+    if let Some(names) = cert.subject_alt_names() {
+        for name in names {
+            let Some(uri) = name.uri() else { continue };
+            if !uri
+                .get(..6)
+                .is_some_and(|scheme| scheme.eq_ignore_ascii_case("maxio:"))
+            {
+                continue;
+            }
+            if identity.is_some() {
+                return Err("peer certificate contains multiple MaxIO URI identities".to_owned());
+            }
+            let node_id = uri
+                .strip_prefix("maxio://")
+                .ok_or_else(|| "peer certificate MaxIO URI is not canonical".to_owned())?;
+            if peer_node_identity_uri(node_id)? != uri {
+                return Err("peer certificate MaxIO URI is not canonical".to_owned());
+            }
+            identity = Some(node_id.to_owned());
+        }
+    }
+    identity.ok_or_else(|| "peer certificate has no canonical MaxIO URI SAN".to_owned())
+}
+
 fn normalize_peer_node_host(node_id: &str) -> Option<String> {
     let (host, _) = crate::cluster::peer_identity::parse_peer_identity(node_id)?;
     Some(host.trim_end_matches('.').to_ascii_lowercase())
-}
-
-fn certificate_matches_expected_node_host(
-    cert_pem_bytes: &[u8],
-    expected_node_host: &str,
-) -> Result<bool, String> {
-    let cert_der = first_valid_pem_block_der_bytes(cert_pem_bytes, "CERTIFICATE")
-        .ok_or_else(|| "no decodable certificate PEM block found".to_string())?;
-    let cert = X509::from_der(cert_der.as_slice()).map_err(|error| error.to_string())?;
-    certificate_matches_expected_node_host_in_x509(&cert, expected_node_host)
 }
 
 fn certificate_matches_expected_node_host_in_x509(
@@ -1149,6 +1189,18 @@ fn dns_name_matches(candidate: &str, expected: &str) -> bool {
 
 fn contains_valid_pem_block(data: &[u8], label: &str) -> bool {
     count_valid_pem_blocks(data, label) > 0
+}
+
+fn contains_encrypted_private_key_pem(data: &[u8]) -> bool {
+    String::from_utf8_lossy(data).lines().any(|line| {
+        let line = line.trim();
+        line == "-----BEGIN ENCRYPTED PRIVATE KEY-----"
+            || line.strip_prefix("Proc-Type:").is_some_and(|value| {
+                value
+                    .split(',')
+                    .any(|part| part.trim().eq_ignore_ascii_case("ENCRYPTED"))
+            })
+    })
 }
 
 fn contains_valid_private_key_pem_block(data: &[u8]) -> bool {
@@ -1274,8 +1326,12 @@ fn validate_certificate_private_key_pair(
     cert_bytes: &[u8],
     key_bytes: &[u8],
 ) -> Result<(), String> {
+    if contains_encrypted_private_key_pem(key_bytes) {
+        return Err("encrypted peer private keys are not supported".to_owned());
+    }
     let certificate = X509::from_pem(cert_bytes).map_err(|error| error.to_string())?;
-    let private_key = PKey::private_key_from_pem(key_bytes).map_err(|error| error.to_string())?;
+    let private_key =
+        PKey::private_key_from_pem_passphrase(key_bytes, b"").map_err(|error| error.to_string())?;
     let certificate_public_key = certificate
         .public_key()
         .map_err(|error| error.to_string())?;
@@ -1339,6 +1395,80 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use tempfile::tempdir;
+
+    #[test]
+    fn node_binding_rejects_another_port_on_the_same_host() {
+        let ca = super::test_support::TestCa::new();
+        let identity = ca.issue("127.0.0.1:9001");
+        let pin = identity.fingerprint();
+        let status = probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
+            Some(&identity.cert_path),
+            Some(&identity.key_path),
+            Some(&identity.ca_path),
+            Some(&pin),
+            Some("127.0.0.1:9000"),
+        );
+        assert!(
+            !status.transport_ready,
+            "a host match must not authorize a different node port"
+        );
+        assert!(!status.identity_bound);
+        assert_eq!(
+            status.reason,
+            PeerTransportIdentityReadinessReason::NodeIdentityCertificateMismatch
+        );
+    }
+
+    #[test]
+    fn node_binding_rejects_encrypted_pkcs8_and_traditional_keys_without_prompting() {
+        let ca = super::test_support::TestCa::new();
+        let identity = ca.issue("127.0.0.1:9000");
+        let key = openssl::pkey::PKey::private_key_from_pem_passphrase(
+            &fs::read(&identity.key_path).unwrap(),
+            b"",
+        )
+        .unwrap();
+        for passphrase in [b"test-only-passphrase".as_slice(), b"".as_slice()] {
+            let cipher = openssl::symm::Cipher::aes_256_cbc();
+            let encrypted_keys = [
+                key.private_key_to_pem_pkcs8_passphrase(cipher, passphrase)
+                    .unwrap(),
+                key.ec_key()
+                    .unwrap()
+                    .private_key_to_pem_passphrase(cipher, passphrase)
+                    .unwrap(),
+            ];
+            for encrypted_key in encrypted_keys {
+                fs::write(&identity.key_path, encrypted_key).unwrap();
+                let status =
+                    probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
+                        Some(&identity.cert_path),
+                        Some(&identity.key_path),
+                        Some(&identity.ca_path),
+                        identity.policy(),
+                        Some(&identity.node_id),
+                    );
+                assert!(!status.transport_ready);
+                assert!(!status.identity_bound);
+                assert_eq!(
+                    status.reason,
+                    PeerTransportIdentityReadinessReason::KeyPemEncryptedUnsupported
+                );
+                assert_eq!(
+                    attest_peer_transport_identity_with_mtls(
+                        "127.0.0.1:9001",
+                        "127.0.0.1:9001",
+                        &identity.cert_path,
+                        &identity.key_path,
+                        &identity.ca_path,
+                        Duration::from_secs(1),
+                    ),
+                    Err(PeerTransportPeerAttestationError::KeyPemEncryptedUnsupported)
+                );
+                assert!(super::build_peer_tls_acceptor(identity.config()).is_err());
+            }
+        }
+    }
 
     fn write_valid_fixture(dir: &tempfile::TempDir) -> (String, String, String) {
         let (cert_path, key_path, trust_store_path, _) = write_valid_identity_fixture(dir);
@@ -2280,7 +2410,7 @@ mod tests {
     }
 
     #[test]
-    fn node_binding_requires_fingerprint_pin_when_node_identity_is_set() {
+    fn node_binding_rejects_a_missing_uri_even_without_a_fingerprint_pin() {
         let dir = tempdir().expect("tempdir");
         let (cert_path, key_path, trust_store_path) = write_valid_fixture(&dir);
 
@@ -2294,23 +2424,22 @@ mod tests {
 
         assert_eq!(
             status.reason,
-            PeerTransportIdentityReadinessReason::NodeIdentityBindingPinRequired
+            PeerTransportIdentityReadinessReason::NodeIdentityCertificateMismatch
         );
         assert!(!status.transport_ready);
         assert!(!status.identity_bound);
     }
 
     #[test]
-    fn node_binding_reports_identity_bound_when_pin_and_node_identity_are_valid() {
-        let dir = tempdir().expect("tempdir");
-        let (cert_path, key_path, trust_store_path, cert_sha256_pin) =
-            write_valid_identity_fixture(&dir);
+    fn node_binding_accepts_exact_uri_without_a_local_fingerprint_pin() {
+        let ca = super::test_support::TestCa::new();
+        let identity = ca.issue("maxio-peer:9000");
 
         let status = probe_peer_transport_identity_with_cert_sha256_pin_and_node_id_binding(
-            Some(cert_path.as_str()),
-            Some(key_path.as_str()),
-            Some(trust_store_path.as_str()),
-            Some(cert_sha256_pin.as_str()),
+            Some(&identity.cert_path),
+            Some(&identity.key_path),
+            Some(&identity.ca_path),
+            None,
             Some("maxio-peer:9000"),
         );
 

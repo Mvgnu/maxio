@@ -237,6 +237,14 @@ pub struct Config {
     #[arg(long, env = "MAXIO_CLUSTER_AUTH_TOKEN")]
     pub cluster_auth_token: Option<String>,
 
+    /// Native HTTPS server certificate chain (standalone TLS; exclusive with peer TLS).
+    #[arg(long, env = "MAXIO_TLS_CERT_PATH")]
+    pub tls_cert_path: Option<String>,
+
+    /// Private key matching the native HTTPS server certificate.
+    #[arg(long, env = "MAXIO_TLS_KEY_PATH")]
+    pub tls_key_path: Option<String>,
+
     /// Optional mTLS certificate path for internal node-to-node transport identity.
     #[arg(long, env = "MAXIO_CLUSTER_PEER_TLS_CERT_PATH")]
     pub cluster_peer_tls_cert_path: Option<String>,
@@ -261,7 +269,7 @@ pub struct Config {
 
     /// Peer transport enforcement policy for internal node-to-node requests.
     /// - compatibility: require mTLS transport only when mTLS paths are configured.
-    /// - required: fail closed in distributed shared-token mode when peer mTLS transport is not ready.
+    /// - required: startup requires a shared token and a complete, valid peer TLS identity.
     #[arg(
         long,
         env = "MAXIO_CLUSTER_PEER_TRANSPORT_MODE",
@@ -497,6 +505,8 @@ mod tests {
             write_durability_mode: WriteDurabilityMode::DegradedSuccess,
             metadata_listing_strategy: ClusterMetadataListingStrategy::LocalNodeOnly,
             cluster_auth_token: None,
+            tls_cert_path: None,
+            tls_key_path: None,
             cluster_peer_tls_cert_path: None,
             cluster_peer_tls_key_path: None,
             cluster_peer_tls_ca_path: None,

@@ -33,6 +33,18 @@ python3 scripts/smoke_standalone.py --binary ./target/debug/maxio
 The console is `http://127.0.0.1:9000/ui/`. No external fonts or runtime CDN assets
 are needed. Defaults remain a server, not a setup wizard for distributed storage.
 
+## Optional native HTTPS
+
+Add `--tls-cert-path ./tls/server.crt --tls-key-path ./tls/server.key` using a PEM
+certificate chain and matching private key. Clients use `https://` and verify the
+server address against its DNS/IP SAN. Private-CA deployments must provide that CA
+to the client/browser trust configuration. These flags need no cluster or node
+identity configuration. Partial/invalid settings fail before storage initialization.
+
+Console sessions are independent, node-local and revocable: logout invalidates a
+copied cookie, and restarting the process invalidates all prior sessions. Existing
+S3 credentials and data survive restart. Native HTTPS always issues Secure cookies.
+
 ## Acceptance
 
 1. Start without peers; health identifies standalone mode.

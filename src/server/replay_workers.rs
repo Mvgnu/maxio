@@ -270,14 +270,12 @@ async fn remote_rebalance_target_bucket_exists(
         candidate.bucket.as_str(),
     )
     .ok_or_else(|| "failed to build presigned rebalance target bucket HEAD path".to_string())?;
-    let transport = build_peer_http_transport(Some(state.config.as_ref()), Duration::from_secs(10))
-        .map_err(|error| format!("failed to initialize rebalance target client: {error}"))?;
-    attest_peer_http_target(
+    let transport = build_peer_http_transport(
         Some(state.config.as_ref()),
         candidate.to.as_str(),
         Duration::from_secs(10),
     )
-    .map_err(|error| format!("rebalance target peer attestation failed: {error}"))?;
+    .map_err(|error| format!("failed to initialize rebalance target client: {error}"))?;
     let target_url = format!(
         "{}://{}{}",
         transport.scheme,
@@ -433,14 +431,12 @@ async fn replay_pending_rebalance_receive(
         &[],
     )
     .ok_or_else(|| "failed to build presigned rebalance source GET path".to_string())?;
-    let transport = build_peer_http_transport(Some(state.config.as_ref()), Duration::from_secs(10))
-        .map_err(|error| format!("failed to initialize rebalance source client: {error}"))?;
-    attest_peer_http_target(
+    let transport = build_peer_http_transport(
         Some(state.config.as_ref()),
         source_node,
         Duration::from_secs(10),
     )
-    .map_err(|error| format!("rebalance source peer attestation failed: {error}"))?;
+    .map_err(|error| format!("failed to initialize rebalance source client: {error}"))?;
     let source_url = format!("{}://{source_node}{path_and_query}", transport.scheme);
     let source_response = transport
         .client
@@ -791,29 +787,6 @@ async fn preflight_discovered_membership_peers(
         return next_cluster_peers;
     }
 
-    let transport = match build_peer_http_transport(
-        Some(state.config.as_ref()),
-        Duration::from_secs(MEMBERSHIP_UPDATE_PROPAGATION_TIMEOUT_SECS),
-    ) {
-        Ok(transport) => transport,
-        Err(error) => {
-            tracing::warn!(
-                error = error.as_str(),
-                discovered_peers = discovered_peers.len(),
-                "Dropping discovered peers because join-authorization preflight transport is unavailable"
-            );
-            return next_cluster_peers
-                .into_iter()
-                .filter(|peer| {
-                    topology
-                        .cluster_peers
-                        .iter()
-                        .any(|existing| peer_identity_eq(existing.as_str(), peer.as_str()))
-                })
-                .collect();
-        }
-    };
-
     let mut filtered = Vec::with_capacity(next_cluster_peers.len());
     for peer in next_cluster_peers {
         let already_known = topology
@@ -827,7 +800,6 @@ async fn preflight_discovered_membership_peers(
 
         match preflight_discovered_peer_join_authorization(
             state.config.as_ref(),
-            &transport,
             state.node_id.as_ref(),
             topology.cluster_id.as_str(),
             cluster_auth_token,
@@ -860,23 +832,17 @@ async fn preflight_discovered_membership_peers(
 
 async fn preflight_discovered_peer_join_authorization(
     config: &Config,
-    transport: &PeerHttpTransport,
     local_node_id: &str,
     cluster_id: &str,
     cluster_auth_token: &str,
     peer: &str,
 ) -> Result<(), String> {
-    attest_peer_http_target(
+    let transport = build_peer_http_transport(
         Some(config),
         peer,
         Duration::from_secs(MEMBERSHIP_UPDATE_PROPAGATION_TIMEOUT_SECS),
     )
-    .map_err(|error| {
-        format!(
-            "join-authorization preflight attestation failed for '{}': {}",
-            peer, error
-        )
-    })?;
+    .map_err(|error| format!("join-authorization client for '{peer}' is unavailable: {error}"))?;
 
     let url = format!(
         "{}://{peer}/internal/cluster/join/authorize",

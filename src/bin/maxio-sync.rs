@@ -15,6 +15,9 @@ struct Args {
     local: PathBuf,
     #[arg(long)]
     endpoint: String,
+    /// PEM CA bundle to trust for this HTTPS peer instead of system roots.
+    #[arg(long, env = "MAXIO_SYNC_CA_CERT")]
+    ca_cert: Option<PathBuf>,
     #[arg(long)]
     bucket: String,
     #[arg(long, default_value = "")]
@@ -56,6 +59,7 @@ async fn main() -> Result<()> {
     let mut sync = Synchronizer::open(SyncOptions {
         local: args.local,
         endpoint: args.endpoint,
+        ca_cert: args.ca_cert,
         bucket: args.bucket,
         prefix: args.prefix,
         access_key: args.access_key,

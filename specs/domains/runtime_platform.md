@@ -14,7 +14,8 @@
     "tests": [
       "tests/peer_config.rs",
       "scripts/smoke_peer_s3.py",
-      "tests/integration/runtime_tests.rs"
+      "tests/integration/runtime_tests.rs",
+      "scripts/smoke_secure_peers.py"
     ],
     "exclude": []
   },
@@ -24,7 +25,11 @@
     "RuntimeTopologySnapshot",
     "build_public_router",
     "build_internal_router",
-    "membership engine status"
+    "ServerTls",
+    "serve_listener",
+    "membership engine status",
+    "native HTTPS listeners",
+    "TLS-derived connection metadata"
   ],
   "consumes": [
     "storage_engine.FilesystemStorage",
@@ -35,7 +40,7 @@
   ],
   "verification": {
     "check": "cargo check --locked --all-targets",
-    "test": "cargo test --locked --lib server:: && cargo test --locked --lib config:: && cargo test --locked --lib membership:: && cargo test --locked --test peer_config",
+    "test": "cargo test --locked --lib server:: && cargo test --locked --lib config:: && cargo test --locked --lib membership:: && cargo test --locked --test peer_config && cargo test --locked --test integration runtime_tests::",
     "build": "cargo build --locked --bins",
     "architecture": "python3 scripts/check_architecture.py"
   },
@@ -44,7 +49,7 @@
     "url": "https://garagehq.deuxfleurs.fr/documentation/quick-start/",
     "property": "A new operator starts one S3 process without cluster settings, or two explicitly configured peers, and can tell whether data operations are ready."
   },
-  "artifact": "Run the binary, /healthz, and scripts/smoke_peer_s3.py against disposable data; restart processes."
+  "artifact": "Run the binary, /healthz, scripts/smoke_peer_s3.py and scripts/smoke_secure_peers.py against disposable data; restart processes."
 }
 ---
 
@@ -63,7 +68,21 @@
 
 ## Known limits / next decision
 
-- HTTP listeners need a documented TLS/VPN deployment for encrypted cross-device traffic.
+- Native HTTPS is optional. Peer TLS secures both the public node endpoint and
+  any dedicated internal listener; ordinary S3/console clients need no peer certificate
+  on the public listener. The internal listener requires a peer certificate.
+- Invalid TLS pairs, partial peer triplets, conflicting TLS families, or required
+  peer mode without a shared token fail before storage initialization or workers.
+- Connection identity is derived from the verified TLS stream. Internal requests
+  require an allowed nonlocal certificate identity bound to their sender claims.
+- Runtime owns bounded handshakes, request metadata, safe shutdown, and target-aware
+  clients for all background and control-plane traffic.
+- Generic HTTPS is for standalone storage. Cluster peers require the peer TLS
+  triplet so public node endpoints and outbound peer URLs use the same transport.
+- A separate internal listener isolates control routes and requires peer TLS
+  certificates when peer TLS is enabled. There is no separate peer control-address
+  map: automated membership propagation still targets public node IDs. Use the
+  combined listener for automatic peer control traffic; startup warns otherwise.
 - Gossip is experimental probe-driven discovery. Raft is an unimplemented mode, never consensus.
 - Existing public AppState/Config fields remain shared contracts; changes need a PM ruling.
 

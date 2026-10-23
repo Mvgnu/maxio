@@ -545,38 +545,24 @@ pub(super) async fn probe_peer_connectivity(
         };
     }
 
-    let transport = match build_peer_http_transport(
-        config,
-        Duration::from_secs(PEER_CONNECTIVITY_PROBE_TIMEOUT_SECS),
-    ) {
-        Ok(transport) => transport,
-        Err(err) => {
-            return PeerConnectivityProbeResult {
-                ready: false,
-                warning: Some(format!(
-                    "Peer connectivity probe client initialization failed: {err}"
-                )),
-                peer_views: Vec::new(),
-                failed_peers: peers.to_vec(),
-            };
-        }
-    };
-    let client = transport.client;
-    let scheme = transport.scheme;
-
     let mut failures = Vec::new();
     let mut peer_views = Vec::new();
     let mut failed_peers = Vec::new();
     for peer in peers {
-        if let Err(error) = attest_peer_http_target(
+        let transport = match build_peer_http_transport(
             config,
-            peer.as_str(),
+            peer,
             Duration::from_secs(PEER_CONNECTIVITY_PROBE_TIMEOUT_SECS),
         ) {
-            failures.push(format!("{peer} ({error})"));
-            failed_peers.push(peer.clone());
-            continue;
-        }
+            Ok(transport) => transport,
+            Err(error) => {
+                failures.push(format!("{peer} ({error})"));
+                failed_peers.push(peer.clone());
+                continue;
+            }
+        };
+        let client = transport.client;
+        let scheme = transport.scheme;
 
         // A full health response probes its peers. Asking that endpoint without
         // an explicit local scope makes two real nodes recursively probe each
@@ -978,10 +964,8 @@ pub(super) fn probe_cluster_peer_auth_status(
     config: &Config,
     topology: &RuntimeTopologySnapshot,
 ) -> ClusterPeerAuthStatus {
-    let expected_node_id = config
-        .cluster_auth_token()
-        .map(|_| topology.node_id.as_str());
-    let transport_identity_status =
+    let expected_node_id = Some(topology.node_id.as_str());
+    let mut transport_identity_status =
         probe_peer_transport_identity_with_certificate_policy_and_node_id_binding(
             config.cluster_peer_tls_cert_path(),
             config.cluster_peer_tls_key_path(),
@@ -992,6 +976,20 @@ pub(super) fn probe_cluster_peer_auth_status(
             },
             expected_node_id,
         );
+    // A readable identity is insufficient: live native TLS also requires a
+    // valid CA chain, certificate purpose and matching DNS/IP name. Keep
+    // programmatic diagnostic fixtures honest even though main rejects these.
+    if transport_identity_status.transport_ready
+        && let Err(error) = ServerTls::from_config(config)
+    {
+        transport_identity_status.transport_ready = false;
+        transport_identity_status.identity_bound = false;
+        transport_identity_status.reason =
+            PeerTransportIdentityReadinessReason::IncompleteConfiguration;
+        transport_identity_status.warning = Some(format!(
+            "Native peer TLS startup validation failed: {error}"
+        ));
+    }
     let transport_warning = transport_identity_status.warning.clone();
     let transport_identity = transport_identity_status.mode;
     let transport_reason = transport_identity_status.reason;
@@ -1005,13 +1003,13 @@ pub(super) fn probe_cluster_peer_auth_status(
             &topology.cluster_peers,
         );
         let sender_allowlist_bound = binding_status.is_bound();
+        let identity_bound =
+            sender_allowlist_bound && transport_ready && transport_identity_status.identity_bound;
         let warning = if topology.is_distributed() {
             match binding_status {
                 SharedTokenBindingStatus::Bound { trusted_peer_count } => {
-                    if transport_ready {
-                        Some(format!(
-                            "Cluster peer auth uses shared-token header trust with sender allowlist binding ({trusted_peer_count} trusted peer(s)); mTLS transport identity files are configured/readable but cryptographic peer identity enforcement is not active yet."
-                        ))
+                    if identity_bound {
+                        None
                     } else {
                         Some(format!(
                             "Cluster peer auth uses shared-token header trust with sender allowlist binding ({trusted_peer_count} trusted peer(s)); per-node cryptographic transport identity is not configured/ready (reason: {}).",
@@ -1045,11 +1043,15 @@ pub(super) fn probe_cluster_peer_auth_status(
         return ClusterPeerAuthStatus {
             configured: true,
             mode: "shared-token",
-            trust_model: "forwarded-by-marker+shared-token",
+            trust_model: if identity_bound {
+                "mutual-tls-node-id+forwarded-by-marker+shared-token"
+            } else {
+                "forwarded-by-marker+shared-token"
+            },
             transport_identity,
             transport_reason,
             transport_ready,
-            identity_bound: false,
+            identity_bound,
             sender_allowlist_bound,
             warning,
         };

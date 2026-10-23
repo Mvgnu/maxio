@@ -1,13 +1,11 @@
 use clap::Parser;
 use maxio::{config::Config, server, storage};
-use std::future::IntoFuture;
-use std::net::SocketAddr;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Notify;
+use tokio::sync::watch;
 use tracing_subscriber::EnvFilter;
 
 const LIFECYCLE_SWEEP_INTERVAL_SECS: u64 = 300;
+const SHUTDOWN_DRAIN_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -19,6 +17,10 @@ async fn main() -> anyhow::Result<()> {
 
     let config = Config::parse();
 
+    // Reject bad TLS before AppState creates storage directories or starts any
+    // worker. Diagnostic callers may still inspect an invalid Config in memory.
+    let tls = server::ServerTls::from_config(&config).map_err(anyhow::Error::msg)?;
+
     let state = server::AppState::from_config(config.clone()).await?;
     let topology = server::runtime_topology_snapshot(&state);
     let node_id = topology.node_id.clone();
@@ -26,13 +28,6 @@ async fn main() -> anyhow::Result<()> {
     let membership_node_count = topology.membership_node_count();
     let distributed_mode = topology.is_distributed();
     let placement_epoch = topology.placement_epoch;
-
-    spawn_lifecycle_worker(state.clone());
-    server::spawn_pending_replication_replay_worker(state.clone());
-    server::spawn_pending_rebalance_replay_worker(state.clone());
-    server::spawn_pending_membership_propagation_replay_worker(state.clone());
-    server::spawn_pending_metadata_repair_replay_worker(state.clone());
-    server::spawn_membership_convergence_probe_worker(state.clone());
 
     let addr = format!("{}:{}", config.address, config.port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -59,6 +54,13 @@ async fn main() -> anyhow::Result<()> {
     let internal_app = internal_listener
         .as_ref()
         .map(|_| server::build_internal_router(state.clone()));
+
+    spawn_lifecycle_worker(state.clone());
+    server::spawn_pending_replication_replay_worker(state.clone());
+    server::spawn_pending_rebalance_replay_worker(state.clone());
+    server::spawn_pending_membership_propagation_replay_worker(state.clone());
+    server::spawn_pending_metadata_repair_replay_worker(state.clone());
+    server::spawn_membership_convergence_probe_worker(state.clone());
 
     if config.access_key == "minioadmin" && config.secret_key == "minioadmin" {
         tracing::warn!(
@@ -114,69 +116,63 @@ async fn main() -> anyhow::Result<()> {
     } else {
         &config.address
     };
-    tracing::info!("Web UI:     http://{}:{}/ui/", display_host, config.port);
+    tracing::info!(
+        "Web UI:     {}://{}:{}/ui/",
+        tls.scheme(),
+        display_host,
+        config.port
+    );
     if let Some(bind_addr) = internal_bind_addr.as_ref() {
         tracing::info!(
-            "Internal:   http://{} (cluster control-plane only)",
+            "Internal:   {}://{} (cluster control-plane only)",
+            tls.scheme(),
             bind_addr
         );
+        if distributed_mode {
+            tracing::warn!(
+                "Separate internal listener selected: automatic membership propagation addresses configured peer public node IDs, with no separate internal endpoint mapping. Use the combined listener (omit --internal-bind-addr) for automatic peer control-plane traffic."
+            );
+        }
     }
 
+    let (shutdown, shutdown_receiver) = watch::channel(false);
+    let mut servers = tokio::task::JoinSet::new();
+    servers.spawn(server::serve_listener(
+        listener,
+        public_app,
+        tls.clone(),
+        false,
+        shutdown_receiver.clone(),
+    ));
     if let (Some(internal_listener), Some(internal_app)) = (internal_listener, internal_app) {
-        let shutdown = Arc::new(Notify::new());
-
-        let public_server = axum::serve(
-            listener,
-            public_app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(wait_for_shutdown(shutdown.clone()))
-        .into_future();
-
-        let internal_server = axum::serve(
+        servers.spawn(server::serve_listener(
             internal_listener,
-            internal_app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(wait_for_shutdown(shutdown.clone()))
-        .into_future();
-
-        tokio::pin!(public_server);
-        tokio::pin!(internal_server);
-
-        tokio::select! {
-            _ = shutdown_signal() => {
-                shutdown.notify_waiters();
-                let (public_result, internal_result) =
-                    tokio::join!(&mut public_server, &mut internal_server);
-                public_result?;
-                internal_result?;
-            }
-            public_result = &mut public_server => {
-                shutdown.notify_waiters();
-                let internal_result = (&mut internal_server).await;
-                public_result?;
-                internal_result?;
-            }
-            internal_result = &mut internal_server => {
-                shutdown.notify_waiters();
-                let public_result = (&mut public_server).await;
-                internal_result?;
-                public_result?;
-            }
+            internal_app,
+            tls,
+            true,
+            shutdown_receiver,
+        ));
+    }
+    let first_result = tokio::select! {
+        _ = shutdown_signal() => None,
+        result = servers.join_next() => result,
+    };
+    // watch retains the signal even when shutdown races listener startup or a
+    // TLS handshake; unlike Notify, neither listener can miss this transition.
+    shutdown.send_replace(true);
+    tokio::time::timeout(SHUTDOWN_DRAIN_TIMEOUT, async {
+        while let Some(result) = servers.join_next().await {
+            result??;
         }
-    } else {
-        axum::serve(
-            listener,
-            public_app.into_make_service_with_connect_info::<SocketAddr>(),
-        )
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        Ok::<_, anyhow::Error>(())
+    })
+    .await
+    .map_err(|_| anyhow::anyhow!("connection drain exceeded 30 seconds"))??;
+    if let Some(result) = first_result {
+        result??;
     }
 
     Ok(())
-}
-
-async fn wait_for_shutdown(shutdown: Arc<Notify>) {
-    shutdown.notified().await;
 }
 
 async fn shutdown_signal() {

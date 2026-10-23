@@ -4,6 +4,7 @@ mod lifecycle;
 mod objects;
 mod presign;
 mod response;
+mod sessions;
 mod storage;
 mod system;
 mod versions;
@@ -16,6 +17,7 @@ use axum::{
 use crate::server::AppState;
 
 pub use auth::LoginRateLimiter;
+pub use sessions::ConsoleSessionStore;
 
 pub fn console_router(state: AppState) -> Router<AppState> {
     let public = Router::new()

@@ -69,7 +69,9 @@ Do not expose these plain HTTP listeners to the public internet.
   not a promise that no side effect happened.
 - Restart the peer: listing recovers. Stop both, boot each stored copy independently
   and read every acknowledged object. This proves replication rather than forwarding.
-- Invalid/forged peer identities fail; equivalent valid DNS/IPv6 forms normalize.
+- Malformed/unknown peer identities fail; equivalent valid DNS/IPv6 forms normalize.
+  Plain shared-token mode cannot distinguish two token holders claiming the same
+  configured identity. The secure-peer journey tests certificate-bound identity.
 
 ## Limits and migration
 
@@ -78,9 +80,10 @@ partition recovery or availability during a two-node outage. Default peer settin
 remain `local-node-only` listing and `degraded-success` writes unless explicitly
 changed; use the settings above for this journey.
 
-Native inbound TLS is absent. Outbound certificate flags alone cannot secure a
-MaxIO-to-MaxIO connection. A properly configured TLS terminator or encrypted private
-transport and an identity deployment review are separate requirements.
+Use the [native secure-peer recipe](secure_peers.md) for HTTPS with certificate-bound
+node identities. Its certificate/key/CA triplet secures the actual public node
+endpoint and outbound requests. This plain HTTP drill remains an explicit loopback
+compatibility test; a shared token alone provides no transport encryption.
 
 Canonicalizing legacy mixed-case/IPv6 node identifiers changes placement fingerprints.
 Plan a coordinated migration/rebalance for an existing noncanonical cluster. Do
