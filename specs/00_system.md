@@ -5,14 +5,17 @@ description: PM-owned product, ownership, and shared-contract decisions for MaxI
 
 # MaxIO system contract
 
-MaxIO stores and moves data on machines the operator chooses. Its product has
-three distinct journeys. The simplest one must remain simple.
+MaxIO stores and moves data on machines the operator chooses. Standalone storage,
+optional workspaces and optional execution have independent entry points. The
+simplest one must remain simple.
 
 | Journey | User outcome | Current scope |
 |---|---|---|
 | [Standalone S3](journeys/standalone_s3.md) | One process, one data directory, an ordinary S3 client | Default server mode; embedded console; no cluster configuration |
 | [Peer S3](journeys/peer_s3.md) | An S3 endpoint over explicitly configured storage peers | Experimental static peers, replication, forwarding and honest unavailable states |
 | [Device sync](journeys/device_sync.md) | Ordinary folders exchange files through a chosen device | Optional client using a standalone peer bucket; conflict preservation; no delete propagation |
+| [Selective workspace](journeys/selective_workspace.md) | Discover published files and retrieve only selected contents | Experimental immutable revisions, conditional publication, local baselines and pins; eviction refused |
+| [Local agents](journeys/local_agents.md) | Run an executable on selected copies and inspect proposed results | Local command/Codex/Claude adapters; separate publication; remote scheduling planned |
 
 There is no required hosted service, cloud account, telemetry endpoint, relay, or
 discovery provider. A peer may be a laptop, server, or NAS under the operator's

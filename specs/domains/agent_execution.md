@@ -72,12 +72,16 @@ backend implementation. This wave is a trusted local runner, not remote scheduli
 - Success belongs to the final active turn. A later turn start, assistant/user
   message, tool activity or partial stream requires another successful terminal
   result. Unknown trailing events also require a subsequent terminal result.
-  Claude's reporting-only rate-limit events, tool/post-turn summaries, idle status
-  and turn-duration reports with no pending background work preserve completion;
-  none can create completion. Explicit errors, permission denials and unsuccessful
+  Reporting-only Claude messages preserve completion; none can create it or clear
+  queued/unfinished work. The supported classification is specified below.
+  A successful result with a positive
+  `queued_turn_count` still requires a later successful result with no queued turn.
+  An absent count remains compatible with older producers; present counts must be
+  nonnegative integers. Malformed counts remain protocol errors even after a later
+  successful result. Explicit errors, permission denials and unsuccessful
   process exits take precedence even if a later turn reports success. See the
   [Codex JSONL event contract](https://developers.openai.com/codex/non-interactive-mode)
-  and [Claude stream lifecycle](https://code.claude.com/docs/en/headless#stream-responses).
+  and the Claude policy below.
 - `doctor` checks real executable version/help and refuses unavailable required
   safety flags. No authentication, model calls or automatic installation in doctor.
   Actual provider protocol adapters and fixture evidence are distinct from a real
@@ -89,6 +93,39 @@ backend implementation. This wave is a trusted local runner, not remote scheduli
 - A stale running record after runner death is inspectable abandoned work, not a
   completed task; no PID-only recovery kill. No resume/latest-session shortcut in
   this first slice. Publication is always separate and `published` is always false.
+
+## Claude stream completion policy
+
+The classification follows the meaning and fields in
+[Anthropic SDK 0.3.301 declarations](https://app.unpkg.com/@anthropic-ai/claude-agent-sdk@0.3.301/files/sdk.d.ts),
+including `SDKMessage`, `StdoutMessage`, `SDKResultMessage` and their concrete message types.
+Reporting messages may arrive after a result. Preserve the current completion
+state for supported reporting variants; they never supply a missing result.
+
+| Category | Supported behavior |
+|---|---|
+| Display and liveness | `keep_alive`, rate-limit reports, tool/post-turn summaries, valid prompt suggestions, informational banners, local-command output, notifications and command-list replacements preserve state. |
+| Settled operations | Non-authenticating `auth_status` with no error, successful `hook_response` with absent/zero exit code, `files_persisted` with no failed files, completed plugin installation, and `elicitation_complete` preserve state. |
+| Background/state reports | Idle session/status, an explicitly cleared `active_goal` (`value: null`), terminal task notifications, terminal/statusless task patches, empty or ambient-only live-task snapshots, graceful worker shutdown, and turn-duration reports with no pending work preserve state. |
+| Actual activity | New conversation/stream frames, generation/tool/hook/control progress, init, retries, compaction, non-null/invalid active goals, running/requires-action states, pending/running/paused task patches, live nonambient tasks and started/component-progress plugin installation invalidate earlier completion. They require a later successful result. |
+| Failure evidence | Provider errors, permission denials, auth errors, unsuccessful hook outcomes/nonzero hook exits, failed file persistence/plugin installation and unsuccessful process exit take precedence over reported completion. |
+
+Informational banners accept the documented info/notice/suggestion/warning levels
+and optional boolean `prevent_continuation`. A true flag describes a controlled
+stop, not by itself an error: it neither invalidates an already completed unqueued
+turn nor authorizes success when work remains queued or unfinished. Do not infer
+failure from banner text, notification priority or an unknown opaque feature tag.
+Terminal task notifications and task patches report separate task outcomes in the log;
+they are not main-turn completion or failure events.
+
+**Deliberate conservative policy:** the SDK recommends ignoring unknown message
+types/subtypes for generic forward compatibility. This unattended runner instead
+requires another successful terminal result after unknown trailing activity.
+Future CLI events can therefore produce an explicit protocol failure until their
+meaning is classified. This is not universal future-version compatibility.
+Likewise, retaining explicit auth/hook/persistence/plugin failures as whole-execution
+failure is MaxIO policy; the SDK does not say every auxiliary failure invalidates
+a main-turn result. Both choices preserve observable failure evidence.
 
 ## Limits and next decisions
 

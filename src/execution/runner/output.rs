@@ -69,11 +69,23 @@ impl Capture {
             AdapterKind::Claude => {
                 if kind == "result" {
                     self.final_turn_completed = false;
+                    // SDKResultSuccess can finish this turn while announcing
+                    // queued user work. Only a later result with no queued work
+                    // can complete the run. Older producers omit this field.
+                    let queued = match event.get("queued_turn_count") {
+                        None => Some(0),
+                        Some(value) => value.as_u64(),
+                    };
+                    if queued.is_none() {
+                        self.malformed = true;
+                    }
                     match (
                         event.get("subtype").and_then(Value::as_str),
                         event.get("is_error").and_then(Value::as_bool),
                     ) {
-                        (Some("success"), Some(false)) => self.final_turn_completed = true,
+                        (Some("success"), Some(false)) => {
+                            self.final_turn_completed = queued == Some(0)
+                        }
                         (Some(_), Some(_)) => self.failed = true,
                         _ => self.malformed = true,
                     }
@@ -90,10 +102,7 @@ impl Capture {
                     // Unknown events are retained but cannot preserve success.
                     self.final_turn_completed = false;
                 }
-                if kind == "error"
-                    || (kind == "system"
-                        && event.get("subtype").and_then(Value::as_str) == Some("api_error"))
-                {
+                if claude_failure(kind, &event) {
                     self.failed = true;
                 }
                 if kind == "system"
@@ -108,14 +117,121 @@ impl Capture {
 }
 
 /// Reporting events documented by the Claude SDK or present in the installed
-/// CLI schema do not start work. Keep this allowlist narrow: summaries and idle
-/// status are metadata, but tool progress, compaction and pending tasks are not.
+/// CLI schema do not start work. Reporting can preserve completion, never create
+/// it. Progress, compaction and live nonambient tasks still require a result.
+/// SDKResultMessage and SDKSessionStateChangedMessage in Anthropic's SDK 0.3.301
+/// explicitly allow informational messages after the turn's terminal result.
+/// Unlike the SDK's generic ignore-unknown advice, this unattended runner treats
+/// unknown trailing types/subtypes as activity until their meaning is supported.
 fn claude_metadata(kind: &str, event: &Value) -> bool {
     match kind {
-        "rate_limit_event" | "tool_use_summary" => true,
+        "keep_alive" | "rate_limit_event" | "tool_use_summary" => true,
+        "active_goal" => event.get("value") == Some(&Value::Null),
+        "prompt_suggestion" => event.get("suggestion").is_some_and(Value::is_string),
+        "auth_status" => {
+            event.get("isAuthenticating") == Some(&Value::Bool(false))
+                && event
+                    .get("output")
+                    .and_then(Value::as_array)
+                    .is_some_and(|lines| lines.iter().all(Value::is_string))
+                && event.get("error").is_none()
+        }
         "system" => match event.get("subtype").and_then(Value::as_str) {
             Some("post_turn_summary") => true,
+            Some("informational") => {
+                // prevent_continuation is a controlled stop, not an error. It
+                // cannot clear queued/unfinished work or synthesize completion.
+                matches!(
+                    event.get("level").and_then(Value::as_str),
+                    Some("info" | "notice" | "suggestion" | "warning")
+                ) && string_fields(event, &["content"])
+                    && event
+                        .get("prevent_continuation")
+                        .is_none_or(Value::is_boolean)
+                    && ["tag", "tool_use_id"]
+                        .iter()
+                        .all(|field| event.get(*field).is_none_or(Value::is_string))
+            }
+            Some("local_command_output") => string_fields(event, &["content"]),
+            Some("notification") => {
+                string_fields(event, &["key", "text"])
+                    && matches!(
+                        event.get("priority").and_then(Value::as_str),
+                        Some("low" | "medium" | "high" | "immediate")
+                    )
+            }
+            Some("commands_changed") => event.get("commands").is_some_and(Value::is_array),
+            Some("worker_shutting_down") => string_fields(event, &["reason"]),
+            Some("plugin_install") => {
+                event.get("status").and_then(Value::as_str) == Some("completed")
+                    && event.get("error").is_none()
+            }
+            Some("elicitation_complete") => {
+                string_fields(event, &["mcp_server_name", "elicitation_id"])
+            }
+            Some("hook_response") => {
+                string_fields(
+                    event,
+                    &[
+                        "hook_id",
+                        "hook_name",
+                        "hook_event",
+                        "output",
+                        "stdout",
+                        "stderr",
+                    ],
+                ) && event.get("outcome").and_then(Value::as_str) == Some("success")
+                    && event
+                        .get("exit_code")
+                        .is_none_or(|value| value.as_i64() == Some(0))
+            }
+            Some("files_persisted") => {
+                string_fields(event, &["processed_at"])
+                    && event
+                        .get("files")
+                        .and_then(Value::as_array)
+                        .is_some_and(|files| {
+                            files
+                                .iter()
+                                .all(|file| string_fields(file, &["filename", "file_id"]))
+                        })
+                    && event
+                        .get("failed")
+                        .and_then(Value::as_array)
+                        .is_some_and(Vec::is_empty)
+            }
+            Some("background_tasks_changed") => event
+                .get("tasks")
+                .and_then(Value::as_array)
+                .is_some_and(|tasks| {
+                    tasks.iter().all(|task| {
+                        string_fields(task, &["task_id", "task_type", "description"])
+                            && task.get("ambient") == Some(&Value::Bool(true))
+                    })
+                }),
+            Some("task_updated") => {
+                string_fields(event, &["task_id"])
+                    && event.get("patch").is_some_and(|patch| {
+                        patch.is_object()
+                            && patch.get("status").is_none_or(|status| {
+                                matches!(status.as_str(), Some("completed" | "failed" | "killed"))
+                            })
+                    })
+            }
             Some("status") => event.get("status") == Some(&Value::Null),
+            Some("session_state_changed") => {
+                event.get("state").and_then(Value::as_str) == Some("idle")
+            }
+            Some("task_notification") => {
+                // A notification reports a separate task's terminal outcome; it
+                // neither starts nor completes the main conversation's turn.
+                matches!(
+                    event.get("status").and_then(Value::as_str),
+                    Some("completed" | "failed" | "stopped")
+                ) && ["task_id", "output_file", "summary"]
+                    .iter()
+                    .all(|field| event.get(*field).is_some_and(Value::is_string))
+            }
             Some("turn_duration") => ["pending_background_agent_count", "pending_workflow_count"]
                 .iter()
                 .all(|field| {
@@ -123,6 +239,45 @@ fn claude_metadata(kind: &str, event: &Value) -> bool {
                         .get(*field)
                         .is_none_or(|value| value.as_u64() == Some(0))
                 }),
+            _ => false,
+        },
+        _ => false,
+    }
+}
+
+fn string_fields(event: &Value, fields: &[&str]) -> bool {
+    fields
+        .iter()
+        .all(|field| event.get(*field).is_some_and(Value::is_string))
+}
+
+/// MaxIO conservatively retains explicit local-operation failure evidence even
+/// if a later main-turn result succeeds. The SDK describes those outcomes, but
+/// does not itself require this whole-execution failure policy. Separate-task
+/// notifications/patches retain their own outcome without failing the main turn.
+fn claude_failure(kind: &str, event: &Value) -> bool {
+    match kind {
+        "error" => true,
+        "auth_status" => event.get("error").is_some_and(Value::is_string),
+        "system" => match event.get("subtype").and_then(Value::as_str) {
+            Some("api_error") => true,
+            Some("hook_response") => {
+                matches!(
+                    event.get("outcome").and_then(Value::as_str),
+                    Some("error" | "cancelled")
+                ) || event
+                    .get("exit_code")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|code| code != 0)
+            }
+            Some("files_persisted") => event
+                .get("failed")
+                .and_then(Value::as_array)
+                .is_some_and(|files| !files.is_empty()),
+            Some("plugin_install") => {
+                event.get("status").and_then(Value::as_str) == Some("failed")
+                    || event.get("error").is_some_and(Value::is_string)
+            }
             _ => false,
         },
         _ => false,
@@ -205,6 +360,126 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claude_documented_reporting_tails_preserve_completed_turn() {
+        for metadata in [
+            serde_json::json!({"type":"system","subtype":"informational","level":"info","content":"Completed work"}),
+            serde_json::json!({"type":"keep_alive"}),
+        ] {
+            let mut state = Capture::default();
+            state.event(
+                AdapterKind::Claude,
+                br#"{"type":"result","subtype":"success","is_error":false,"queued_turn_count":0}"#,
+            );
+            state.event(AdapterKind::Claude, metadata.to_string().as_bytes());
+            assert!(
+                state.final_turn_completed,
+                "a documented reporting tail must preserve completion: {metadata}"
+            );
+        }
+    }
+
+    #[test]
+    fn claude_explicit_reporting_failures_remain_sticky() {
+        for failure in [
+            serde_json::json!({"type":"auth_status","isAuthenticating":false,"output":[],"error":"Authentication failed"}),
+            serde_json::json!({"type":"system","subtype":"hook_response","outcome":"error"}),
+            serde_json::json!({"type":"system","subtype":"hook_response","outcome":"cancelled"}),
+            serde_json::json!({"type":"system","subtype":"hook_response","outcome":"success","exit_code":1}),
+            serde_json::json!({"type":"system","subtype":"files_persisted","failed":[{"filename":"result.txt","error":"Upload failed"}]}),
+            serde_json::json!({"type":"system","subtype":"plugin_install","status":"failed","error":"Install failed"}),
+        ] {
+            let mut state = Capture::default();
+            state.event(AdapterKind::Claude, failure.to_string().as_bytes());
+            state.event(
+                AdapterKind::Claude,
+                br#"{"type":"result","subtype":"success","is_error":false,"queued_turn_count":0}"#,
+            );
+            state.event(AdapterKind::Claude, br#"{"type":"keep_alive"}"#);
+            assert!(state.failed, "later completion cannot erase {failure}");
+        }
+    }
+
+    #[test]
+    fn claude_idle_after_a_result_preserves_turn_completion() {
+        let mut state = Capture::default();
+        state.event(
+            AdapterKind::Claude,
+            br#"{"type":"result","subtype":"success","is_error":false}"#,
+        );
+        state.event(
+            AdapterKind::Claude,
+            br#"{"type":"system","subtype":"session_state_changed","state":"idle"}"#,
+        );
+        assert!(
+            state.final_turn_completed,
+            "the SDK emits idle after flushing the completed turn's result"
+        );
+    }
+
+    #[test]
+    fn claude_queued_turns_require_a_later_terminal_result() {
+        let success = br#"{"type":"result","subtype":"success","is_error":false}"#;
+        let idle = br#"{"type":"system","subtype":"session_state_changed","state":"idle"}"#;
+        for count in [1, 2] {
+            let mut state = Capture::default();
+            state.event(AdapterKind::Claude, success);
+            state.event(
+                AdapterKind::Claude,
+                serde_json::json!({"type":"result","subtype":"success","is_error":false,"queued_turn_count":count})
+                    .to_string()
+                    .as_bytes(),
+            );
+            assert!(
+                !state.final_turn_completed,
+                "a result with {count} queued turns cannot complete the run"
+            );
+            state.event(AdapterKind::Claude, idle);
+            assert!(
+                !state.final_turn_completed,
+                "idle cannot finish queued work"
+            );
+            state.event(
+                AdapterKind::Claude,
+                br#"{"type":"result","subtype":"success","is_error":false,"queued_turn_count":0}"#,
+            );
+            assert!(state.final_turn_completed && !state.malformed);
+        }
+    }
+
+    #[test]
+    fn claude_invalid_present_queued_count_is_malformed() {
+        for count in [
+            serde_json::json!(-1),
+            serde_json::json!(0.5),
+            serde_json::json!("0"),
+            serde_json::json!(null),
+            serde_json::json!(false),
+            serde_json::json!([]),
+            serde_json::json!({}),
+        ] {
+            let mut state = Capture::default();
+            state.event(
+                AdapterKind::Claude,
+                serde_json::json!({"type":"result","subtype":"success","is_error":false,"queued_turn_count":count})
+                    .to_string()
+                    .as_bytes(),
+            );
+            assert!(
+                state.malformed && !state.final_turn_completed,
+                "invalid queued_turn_count must be rejected: {count}"
+            );
+            state.event(
+                AdapterKind::Claude,
+                br#"{"type":"result","subtype":"success","is_error":false}"#,
+            );
+            assert!(
+                state.malformed,
+                "a later result cannot erase malformed input"
+            );
+        }
+    }
+
+    #[test]
     fn a_new_codex_turn_requires_its_own_terminal_result() {
         for activity in [
             "turn.started",
@@ -238,6 +513,32 @@ mod tests {
             serde_json::json!({"type":"stream_event","event":{"type":"message_stop"}}),
             serde_json::json!({"type":"system","subtype":"api_retry"}),
             serde_json::json!({"type":"system","subtype":"status","status":"compacting"}),
+            serde_json::json!({"type":"system","subtype":"status","status":"requesting"}),
+            serde_json::json!({"type":"system","subtype":"session_state_changed","state":"running"}),
+            serde_json::json!({"type":"system","subtype":"session_state_changed","state":"requires_action"}),
+            serde_json::json!({"type":"system","subtype":"session_state_changed","state":"future_state"}),
+            serde_json::json!({"type":"system","subtype":"task_started","task_id":"task-1"}),
+            serde_json::json!({"type":"system","subtype":"task_progress","task_id":"task-1"}),
+            serde_json::json!({"type":"system","subtype":"thinking_tokens","count":5}),
+            serde_json::json!({"type":"active_goal","value":{"condition":"Continue working"}}),
+            serde_json::json!({"type":"active_goal"}),
+            serde_json::json!({"type":"active_goal","value":false}),
+            serde_json::json!({"type":"system","subtype":"control_request_progress"}),
+            serde_json::json!({"type":"system","subtype":"hook_started","hook_id":"hook-1"}),
+            serde_json::json!({"type":"system","subtype":"hook_progress","hook_id":"hook-1"}),
+            serde_json::json!({"type":"system","subtype":"plugin_install","status":"started"}),
+            serde_json::json!({"type":"system","subtype":"plugin_install","status":"installed","name":"example"}),
+            serde_json::json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"pending"}}),
+            serde_json::json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"running"}}),
+            serde_json::json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"paused"}}),
+            serde_json::json!({"type":"auth_status","isAuthenticating":true,"output":[]}),
+            serde_json::json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-1","task_type":"local_agent","description":"Still working"}]}),
+            serde_json::json!({"type":"system","subtype":"informational","level":"info","content":"Invalid flag","prevent_continuation":"false"}),
+            serde_json::json!({"type":"system","subtype":"informational","level":"future_level","content":"Unknown level"}),
+            serde_json::json!({"type":"system","subtype":"informational","level":"info","content":null}),
+            serde_json::json!({"type":"system","subtype":"notification","key":"notice","text":"Unknown priority","priority":"future_priority"}),
+            serde_json::json!({"type":"system","subtype":"task_notification","status":"future_status","task_id":"task-1","output_file":"task.log","summary":"Unknown"}),
+            serde_json::json!({"type":"prompt_suggestion","suggestion":null}),
             serde_json::json!({"type":"system","subtype":"turn_duration","pending_background_agent_count":1}),
             serde_json::json!({"type":"system","subtype":"turn_duration","pending_workflow_count":1}),
             serde_json::json!({"type":"future.event"}),
@@ -258,10 +559,36 @@ mod tests {
     #[test]
     fn reporting_metadata_neither_starts_nor_completes_a_claude_turn() {
         for metadata in [
+            serde_json::json!({"type":"keep_alive"}),
+            serde_json::json!({"type":"active_goal","value":null}),
+            serde_json::json!({"type":"system","subtype":"informational","level":"info","content":"Information"}),
+            serde_json::json!({"type":"system","subtype":"informational","level":"notice","content":"Notice","prevent_continuation":false}),
+            serde_json::json!({"type":"system","subtype":"informational","level":"suggestion","content":"Suggestion","tag":"unknown-feature","tool_use_id":"tool-1"}),
+            serde_json::json!({"type":"system","subtype":"informational","level":"warning","content":"Controlled stop","prevent_continuation":true}),
+            serde_json::json!({"type":"system","subtype":"local_command_output","content":"Usage summary"}),
+            serde_json::json!({"type":"system","subtype":"notification","key":"notice","text":"Completed","priority":"high"}),
+            serde_json::json!({"type":"system","subtype":"commands_changed","commands":[]}),
+            serde_json::json!({"type":"system","subtype":"worker_shutting_down","reason":"Worker replacement"}),
+            serde_json::json!({"type":"system","subtype":"plugin_install","status":"completed"}),
+            serde_json::json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"description":"Renamed task"}}),
+            serde_json::json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"completed"}}),
+            serde_json::json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"failed","error":"Separate task failed"}}),
+            serde_json::json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"killed"}}),
+            serde_json::json!({"type":"auth_status","isAuthenticating":false,"output":[]}),
+            serde_json::json!({"type":"system","subtype":"hook_response","hook_id":"hook-1","hook_name":"Stop","hook_event":"Stop","output":"","stdout":"","stderr":"","outcome":"success","exit_code":0}),
+            serde_json::json!({"type":"system","subtype":"files_persisted","files":[{"filename":"result.txt","file_id":"file-1"}],"failed":[],"processed_at":"2026-10-23T00:00:00Z"}),
+            serde_json::json!({"type":"system","subtype":"elicitation_complete","mcp_server_name":"example","elicitation_id":"elicitation-1"}),
+            serde_json::json!({"type":"system","subtype":"background_tasks_changed","tasks":[]}),
+            serde_json::json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-1","task_type":"local_agent","description":"Ambient watcher","ambient":true}]}),
             serde_json::json!({"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}),
             serde_json::json!({"type":"tool_use_summary","summary":"Finished reading","preceding_tool_use_ids":["tool-1"]}),
             serde_json::json!({"type":"system","subtype":"post_turn_summary","summarizes_uuid":"message-1"}),
             serde_json::json!({"type":"system","subtype":"status","status":null}),
+            serde_json::json!({"type":"system","subtype":"session_state_changed","state":"idle"}),
+            serde_json::json!({"type":"prompt_suggestion","suggestion":"Inspect the result"}),
+            serde_json::json!({"type":"system","subtype":"task_notification","task_id":"task-1","status":"completed","output_file":"task.log","summary":"Task ended"}),
+            serde_json::json!({"type":"system","subtype":"task_notification","task_id":"task-1","status":"failed","output_file":"task.log","summary":"Background task failed"}),
+            serde_json::json!({"type":"system","subtype":"task_notification","task_id":"task-1","status":"stopped","output_file":"task.log","summary":"Background task stopped"}),
             serde_json::json!({"type":"system","subtype":"turn_duration","duration_ms":1,"pending_background_agent_count":0,"pending_workflow_count":0}),
         ] {
             let mut state = Capture::default();
@@ -279,6 +606,28 @@ mod tests {
             assert!(
                 state.final_turn_completed,
                 "reporting metadata must not create a new turn: {metadata}"
+            );
+            state.event(
+                AdapterKind::Claude,
+                br#"{"type":"result","subtype":"success","is_error":false,"queued_turn_count":1}"#,
+            );
+            state.event(AdapterKind::Claude, bytes.as_bytes());
+            assert!(
+                !state.final_turn_completed,
+                "reporting metadata must not complete queued work: {metadata}"
+            );
+            state.event(
+                AdapterKind::Claude,
+                br#"{"type":"result","subtype":"success","is_error":false}"#,
+            );
+            state.event(
+                AdapterKind::Claude,
+                br#"{"type":"assistant","message":{"role":"assistant","content":[]}}"#,
+            );
+            state.event(AdapterKind::Claude, bytes.as_bytes());
+            assert!(
+                !state.final_turn_completed,
+                "metadata must not complete unfinished later work: {metadata}"
             );
         }
     }

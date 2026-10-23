@@ -426,14 +426,18 @@ docker run --rm -p 127.0.0.1:9000:9000 -v maxio-data:/data \
   -e MAXIO_ACCESS_KEY -e MAXIO_SECRET_KEY maxio-local
 ```
 
-The Docker image includes both executables and required native TLS libraries.
+The Docker image and release archives include `maxio`, `maxio-sync`,
+`maxio-workspace` and `maxio-agent`. The container includes required native TLS
+libraries and starts only the standalone `maxio` server by default. Select an
+optional command with `--entrypoint`; agent provider CLIs and their runtimes are
+separately provisioned by the owner.
 The release workflow targets this fork's `ghcr.io/<owner>/<repo>` namespace.
 No upstream container image is presented as containing this fork's changes.
 
 ## Development and verification
 
 Read [AGENTS.md](AGENTS.md), [Lop](lop.md), [Gauntlet](gauntlet.md) and the
-[domain map](specs/00_system.md). Ten tracked specs define write ownership,
+[domain map](specs/00_system.md). Thirteen tracked specs define write ownership,
 interfaces, verification commands and external quality bars.
 
 ```bash

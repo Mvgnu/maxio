@@ -417,6 +417,203 @@ async fn provider_protocol_fixtures_require_the_final_turn_to_complete() {
 }
 
 #[tokio::test]
+async fn claude_informational_tails_preserve_only_completed_turns() {
+    use serde_json::json;
+    let success = json!({"type":"result","subtype":"success","is_error":false,"session_id":"fixture-session"});
+    let idle = json!({"type":"system","subtype":"session_state_changed","state":"idle","session_id":"fixture-session"});
+    let notification = |status| json!({"type":"system","subtype":"task_notification","task_id":"task-1","status":status,"output_file":"task.log","summary":"Background task outcome"});
+    let mut cases = vec![
+        (vec![idle.clone()], 0, "protocol_failed"),
+        (vec![success.clone(), idle.clone()], 9, "failed"),
+    ];
+    for metadata in [
+        idle.clone(),
+        json!({"type":"prompt_suggestion","suggestion":"Inspect the result"}),
+        notification("completed"),
+        notification("failed"),
+        notification("stopped"),
+    ] {
+        cases.push((vec![success.clone(), metadata], 0, "succeeded"));
+    }
+    for activity in [
+        json!({"type":"assistant","message":{"role":"assistant","content":[]}}),
+        json!({"type":"system","subtype":"session_state_changed","state":"running"}),
+        json!({"type":"system","subtype":"session_state_changed","state":"requires_action"}),
+        json!({"type":"system","subtype":"session_state_changed","state":"future_state"}),
+        json!({"type":"system","subtype":"task_started","task_id":"task-1"}),
+        notification("future_status"),
+        json!({"type":"system","subtype":"future_event"}),
+    ] {
+        cases.push((
+            vec![success.clone(), activity, idle.clone()],
+            0,
+            "protocol_failed",
+        ));
+    }
+    for failure in [
+        json!({"type":"error","message":"provider failed"}),
+        json!({"type":"system","subtype":"permission_denied"}),
+        json!({"type":"result","subtype":"error_during_execution","is_error":true}),
+    ] {
+        cases.push((vec![failure, success.clone(), idle.clone()], 0, "failed"));
+    }
+    for (events, exit_code, expected) in cases {
+        let root = tempfile::tempdir().unwrap();
+        let mut req = request(root.path(), "# selected context only\n");
+        req.adapter = AdapterKind::Claude;
+        req.executable = provider_fixture(root.path());
+        req.args.clear();
+        req.prompt = Some(json!({"events":events,"exit_code":exit_code}).to_string());
+        req.environment.insert(
+            "ANTHROPIC_API_KEY".into(),
+            "fixture-only-not-a-credential".into(),
+        );
+        let record = run(req).await.unwrap();
+        assert_eq!(record.status, expected, "{events:?}: {:?}", record.detail);
+        assert!(!record.published);
+        assert!(record.workspace.join("result.txt").exists());
+    }
+}
+
+#[tokio::test]
+async fn claude_queued_turn_count_requires_a_final_unqueued_result() {
+    use serde_json::json;
+    let success = json!({"type":"result","subtype":"success","is_error":false,"session_id":"fixture-session"});
+    let queued = |count| {
+        let mut result = success.clone();
+        result["queued_turn_count"] = count;
+        result
+    };
+    let idle = json!({"type":"system","subtype":"session_state_changed","state":"idle","session_id":"fixture-session"});
+    let mut cases = vec![
+        (vec![success.clone(), idle.clone()], 0, "succeeded"),
+        (vec![queued(json!(0)), idle.clone()], 0, "succeeded"),
+        (vec![queued(json!(1)), idle.clone()], 0, "protocol_failed"),
+        (
+            vec![queued(json!(2)), queued(json!(1)), idle.clone()],
+            0,
+            "protocol_failed",
+        ),
+        (
+            vec![queued(json!(1)), queued(json!(0)), idle.clone()],
+            0,
+            "succeeded",
+        ),
+        (
+            vec![queued(json!(1)), success.clone(), idle.clone()],
+            0,
+            "succeeded",
+        ),
+        (vec![queued(json!(1)), idle.clone()], 9, "failed"),
+    ];
+    for count in [json!(-1), json!(0.5), json!("0"), json!(null), json!(false)] {
+        cases.push((
+            vec![queued(count), success.clone(), idle.clone()],
+            0,
+            "protocol_failed",
+        ));
+    }
+    for failure in [
+        json!({"type":"error","message":"provider failed"}),
+        json!({"type":"system","subtype":"permission_denied"}),
+    ] {
+        cases.push((
+            vec![failure, queued(json!(1)), queued(json!(0)), idle.clone()],
+            0,
+            "failed",
+        ));
+    }
+    for (events, exit_code, expected) in cases {
+        let root = tempfile::tempdir().unwrap();
+        let mut req = request(root.path(), "# selected context only\n");
+        req.adapter = AdapterKind::Claude;
+        req.executable = provider_fixture(root.path());
+        req.args.clear();
+        req.prompt = Some(json!({"events":events,"exit_code":exit_code}).to_string());
+        req.environment.insert(
+            "ANTHROPIC_API_KEY".into(),
+            "fixture-only-not-a-credential".into(),
+        );
+        let record = run(req).await.unwrap();
+        assert_eq!(record.status, expected, "{events:?}: {:?}", record.detail);
+        assert!(!record.published);
+        assert!(record.workspace.join("result.txt").exists());
+    }
+}
+
+#[tokio::test]
+async fn claude_reporting_messages_preserve_execution_state() {
+    use serde_json::json;
+    let success = json!({"type":"result","subtype":"success","is_error":false,"queued_turn_count":0,"session_id":"fixture-session"});
+    let reports = vec![
+        json!({"type":"keep_alive"}),
+        json!({"type":"active_goal","value":null}),
+        json!({"type":"system","subtype":"informational","level":"info","content":"Information"}),
+        json!({"type":"system","subtype":"informational","level":"warning","content":"Controlled stop","prevent_continuation":true}),
+        json!({"type":"system","subtype":"local_command_output","content":"Usage summary"}),
+        json!({"type":"system","subtype":"notification","key":"notice","text":"Completed","priority":"high"}),
+        json!({"type":"system","subtype":"commands_changed","commands":[]}),
+        json!({"type":"system","subtype":"worker_shutting_down","reason":"Worker replacement"}),
+        json!({"type":"system","subtype":"plugin_install","status":"completed"}),
+        json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"description":"Renamed task"}}),
+        json!({"type":"system","subtype":"task_updated","task_id":"task-1","patch":{"status":"failed","error":"Separate task failed"}}),
+        json!({"type":"auth_status","isAuthenticating":false,"output":[]}),
+        json!({"type":"system","subtype":"hook_response","hook_id":"hook-1","hook_name":"Stop","hook_event":"Stop","output":"","stdout":"","stderr":"","outcome":"success"}),
+        json!({"type":"system","subtype":"files_persisted","files":[],"failed":[],"processed_at":"2026-10-23T00:00:00Z"}),
+        json!({"type":"system","subtype":"elicitation_complete","mcp_server_name":"example","elicitation_id":"elicitation-1"}),
+        json!({"type":"system","subtype":"background_tasks_changed","tasks":[]}),
+        json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-1","task_type":"local_agent","description":"Ambient watcher","ambient":true}]}),
+    ];
+    let mut cases = Vec::new();
+    for report in &reports {
+        cases.push((vec![success.clone(), report.clone()], 0, "succeeded"));
+    }
+    cases.push((reports.clone(), 0, "protocol_failed"));
+    for activity in [
+        json!({"type":"result","subtype":"success","is_error":false,"queued_turn_count":1}),
+        json!({"type":"assistant","message":{"role":"assistant","content":[]}}),
+        json!({"type":"system","subtype":"background_tasks_changed","tasks":[{"task_id":"task-1","task_type":"local_agent","description":"Still working","ambient":false}]}),
+        json!({"type":"system","subtype":"future_event"}),
+        json!({"type":"active_goal","value":{"condition":"Continue working"}}),
+        json!({"type":"system","subtype":"informational","level":"info","content":"Invalid flag","prevent_continuation":"false"}),
+    ] {
+        let mut events = vec![success.clone(), activity];
+        events.extend(reports.clone());
+        cases.push((events, 0, "protocol_failed"));
+    }
+    for failure in [
+        json!({"type":"auth_status","isAuthenticating":false,"output":[],"error":"Authentication failed"}),
+        json!({"type":"system","subtype":"hook_response","outcome":"error"}),
+        json!({"type":"system","subtype":"files_persisted","failed":[{"filename":"result.txt","error":"Upload failed"}]}),
+        json!({"type":"system","subtype":"plugin_install","status":"failed","error":"Install failed"}),
+        json!({"type":"system","subtype":"permission_denied"}),
+    ] {
+        let mut events = vec![failure, success.clone()];
+        events.extend(reports.clone());
+        cases.push((events, 0, "failed"));
+    }
+    let mut events = vec![success];
+    events.extend(reports);
+    cases.push((events, 9, "failed"));
+    for (events, exit_code, expected) in cases {
+        let root = tempfile::tempdir().unwrap();
+        let mut req = request(root.path(), "# selected context only\n");
+        req.adapter = AdapterKind::Claude;
+        req.executable = provider_fixture(root.path());
+        req.args.clear();
+        req.prompt = Some(json!({"events":events,"exit_code":exit_code}).to_string());
+        req.environment.insert(
+            "ANTHROPIC_API_KEY".into(),
+            "fixture-only-not-a-credential".into(),
+        );
+        let record = run(req).await.unwrap();
+        assert_eq!(record.status, expected, "{events:?}: {:?}", record.detail);
+        assert!(!record.published);
+        assert!(record.workspace.join("result.txt").exists());
+    }
+}
+
+#[tokio::test]
 async fn doctor_rejects_missing_safety_flags_without_running_a_task() {
     use std::os::unix::fs::PermissionsExt;
     let root = tempfile::tempdir().unwrap();

@@ -24,7 +24,8 @@ placement and execution coordination. They must not become competing merge syste
 - **Explicitly deferred:** a conscious dependency or product decision delays it.
 
 A row can be implemented and experimental while only a narrower property is verified.
-The current wave's final verification and independent findings belong in its review.
+The [workspace foundation review](specs/reviews/2026-10-23-workspace-foundation.md)
+records this wave's actual transfer measurements, failures and independent findings.
 
 ## Reconciled baseline — M0
 
@@ -43,9 +44,9 @@ The current wave's final verification and independent findings belong in its rev
 | Milestone | Current scope | State / remaining gate |
 |---|---|---|
 | M0 — Reconcile | Preserve recovery work; correct stale roadmap claims; define three optional layers and authoritative interfaces | Completed read-only audit and PM contract ruling |
-| M1a — Selective workspace foundation | Stable logical references, immutable manifests/blobs, streaming selective publish/pull, current/history discovery, CAS conflict rejection, local baseline/pin state | Implementation wave; experimental single-target client protocol. Actual process/critic evidence recorded separately |
+| M1a — Selective workspace foundation | Stable logical references, immutable manifests/blobs, streaming selective publish/pull, current/history discovery, CAS conflict rejection, local baseline/pin state | Implemented; independently verified within M1a on one MaxIO endpoint and isolated local roots. Experimental single-target protocol; full Journey B remains open |
 | M1b — Safe storage reclamation | Backend capabilities and retention/durability policy, verified durable copies, protected active work, explicit recoverable eviction | **Planned. Eviction is refused.** Readback alone cannot authorize destruction of the last locally recoverable version |
-| Local execution foundation | Independent local command/Codex/Claude runner, selected input copies, logs, cancellation/deadline, retained records and proposed outputs | Implementation wave. Real CLI capability checks and protocol fixtures do not constitute authenticated model execution |
+| Local execution foundation | Independent local command/Codex/Claude runner, selected input copies, logs, cancellation/deadline, retained records and proposed outputs | Implemented; scoped independent ordinary-command, protocol-fixture and retention review passed. Installed CLI capability checks verified; authenticated model execution remains unverified |
 | M2 — Secure devices | Individual enrollment, encrypted authenticated sessions, revocation, scoped grants, device-advertised locations, offline reconciliation, tombstones/recovery | Planned; existing peer TLS is not this authorization system |
 | M3 — Ownership | Renewable scoped leases, coordinator authority, monotonic fencing, abandoned work recovery and stale publication rejection | Planned; manifest CAS is not a lease or a revocation fence |
 | M4 — Move compute to data | Worker registration/resource discovery, explainable locality selection, isolated remote execution, hydration, fenced publication, resource/attempt records | Planned; must execute on an actual separate worker, not only rank candidates |

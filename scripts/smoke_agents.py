@@ -116,15 +116,29 @@ if mode == 'missing': print(json.dumps({'type':'fixture_info'})); sys.exit(0)
 if '--restricted' in sys.argv:
     terminal = {'type':'result','subtype':'success','is_error':False,'session_id':'fixture-session','permission_denials':([{'tool_name':'Edit'}] if mode == 'denied' else [])}
     activity = {'type':'assistant','session_id':'fixture-session','message':{'role':'assistant','content':[{'type':'text','text':'next turn'}]}}
+    if mode in ['queued', 'queued_followup', 'queued_reporting']: terminal['queued_turn_count'] = 1
+    if mode == 'invalid_queue': terminal['queued_turn_count'] = '0'
 else:
     print(json.dumps({'type':'thread.started','thread_id':'fixture-session'}))
     terminal = {'type':'turn.completed'}
     activity = {'type':'turn.started'}
 print(json.dumps(terminal))
-if mode in ['unfinished', 'followup']:
+if mode in ['unfinished', 'followup', 'unfinished_idle', 'unfinished_reporting']:
     print(json.dumps(activity))
     if mode == 'followup': print(json.dumps(terminal))
 if mode == 'metadata': print(json.dumps({'type':'system','subtype':'turn_duration','duration_ms':1}))
+if mode == 'queued_followup':
+    terminal['queued_turn_count'] = 0
+    print(json.dumps(terminal))
+if mode in ['idle', 'unfinished_idle', 'queued', 'queued_followup', 'invalid_queue']: print(json.dumps({'type':'system','subtype':'session_state_changed','state':'idle','session_id':'fixture-session'}))
+if mode == 'suggestion': print(json.dumps({'type':'prompt_suggestion','suggestion':'Inspect the result'}))
+if mode == 'task_notice': print(json.dumps({'type':'system','subtype':'task_notification','task_id':'task-1','status':'completed','output_file':'task.log','summary':'Background task ended'}))
+if mode in ['informational', 'reporting', 'unfinished_reporting', 'queued_reporting']:
+    print(json.dumps({'type':'system','subtype':'informational','level':'info','content':'Fixture reporting tail','prevent_continuation':True}))
+if mode in ['heartbeat', 'reporting', 'unfinished_reporting', 'queued_reporting']:
+    print(json.dumps({'type':'keep_alive'}))
+    print(json.dumps({'type':'system','subtype':'commands_changed','commands':[]}))
+    print(json.dumps({'type':'active_goal','value':None}))
 """)
     fixture.chmod(0o700)
     provider_home = root / "fixture-provider-home"
@@ -142,6 +156,18 @@ if mode == 'metadata': print(json.dumps({'type':'system','subtype':'turn_duratio
         ("claude", "unfinished", 1, "protocol_failed"),
         ("claude", "followup", 0, "succeeded"),
         ("claude", "metadata", 0, "succeeded"),
+        ("claude", "idle", 0, "succeeded"),
+        ("claude", "unfinished_idle", 1, "protocol_failed"),
+        ("claude", "suggestion", 0, "succeeded"),
+        ("claude", "task_notice", 0, "succeeded"),
+        ("claude", "queued", 1, "protocol_failed"),
+        ("claude", "queued_followup", 0, "succeeded"),
+        ("claude", "invalid_queue", 1, "protocol_failed"),
+        ("claude", "informational", 0, "succeeded"),
+        ("claude", "heartbeat", 0, "succeeded"),
+        ("claude", "reporting", 0, "succeeded"),
+        ("claude", "unfinished_reporting", 1, "protocol_failed"),
+        ("claude", "queued_reporting", 1, "protocol_failed"),
     ]:
         prompt.write_text(mode)
         record = invoke([str(binary), "run", "--adapter", provider, "--executable", str(fixture),
