@@ -63,11 +63,15 @@ def full_gate():
     import shlex
     binary = shlex.quote(str(target / "debug/maxio"))
     sync = shlex.quote(str(target / "debug/maxio-sync"))
+    workspace = shlex.quote(str(target / "debug/maxio-workspace"))
+    agent = shlex.quote(str(target / "debug/maxio-agent"))
     run(f"python3 scripts/smoke_standalone.py --binary {binary}")
     run(f"python3 scripts/smoke_peer_s3.py --binary {binary}")
     run(f"python3 scripts/smoke_secure_peers.py --binary {binary}")
     run(f"python3 scripts/smoke_device_sync.py --binary {binary} --sync-binary {sync}")
     run(f"python3 scripts/smoke_device_sync.py --binary {binary} --sync-binary {sync} --tls")
+    run(f"python3 scripts/smoke_workspace.py --binary {binary} --workspace-binary {workspace}")
+    run(f"python3 scripts/smoke_agents.py --binary {agent}")
 
 
 def main():

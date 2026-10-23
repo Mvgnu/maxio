@@ -1,11 +1,16 @@
 //! Filesystem boundary for the additive synchronizer. Never follow symlinks.
+pub use crate::files::{
+    checked_path, directory, new_file, sync_directory, validate_path_set, validate_relative,
+};
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+use std::collections::BTreeMap;
+#[cfg(test)]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::{Read, Write};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 pub const STATE_DIRECTORY: &str = ".maxio-sync";
 
@@ -24,131 +29,6 @@ pub struct Journal {
 
 pub fn digest(bytes: &[u8]) -> String {
     hex::encode(Sha256::digest(bytes))
-}
-
-pub fn validate_relative(key: &str) -> Result<()> {
-    ensure!(
-        !key.is_empty() && key.len() <= 1024,
-        "empty or oversized sync path"
-    );
-    for component in key.split('/') {
-        ensure!(
-            !component.is_empty()
-                && component != "."
-                && component != ".."
-                && !component.eq_ignore_ascii_case(STATE_DIRECTORY)
-                && component.len() <= 255
-                && !component.ends_with(['.', ' '])
-                && !component
-                    .chars()
-                    .any(|c| c.is_control() || "\\:<>|?*".contains(c)),
-            "unsafe sync path: {key:?}"
-        );
-        let stem = component
-            .split('.')
-            .next()
-            .unwrap_or_default()
-            .to_ascii_uppercase();
-        ensure!(
-            !matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-                && !(stem.len() == 4
-                    && (stem.starts_with("COM") || stem.starts_with("LPT"))
-                    && matches!(stem.as_bytes()[3], b'1'..=b'9')),
-            "non-portable sync path: {key:?}"
-        );
-    }
-    Ok(())
-}
-
-/// Reject file/directory and case collisions before changing either side.
-pub fn validate_path_set<'a>(keys: impl Iterator<Item = &'a String>) -> Result<()> {
-    let keys: BTreeSet<_> = keys.cloned().collect();
-    let mut folded = BTreeMap::new();
-    for key in &keys {
-        validate_relative(key)?;
-        let lower = key.to_lowercase();
-        if let Some(other) = folded.insert(lower, key) {
-            ensure!(
-                other == key,
-                "case-colliding sync paths: {other:?} and {key:?}"
-            );
-        }
-        let mut ancestor = key.as_str();
-        while let Some((parent, _)) = ancestor.rsplit_once('/') {
-            ensure!(
-                !keys.contains(parent),
-                "file/directory collision at {parent:?}"
-            );
-            ancestor = parent;
-        }
-    }
-    // Case-fold every prefix too: A/file and a/other must not merge on another OS.
-    let mut directories = BTreeMap::new();
-    for key in &keys {
-        let mut ancestor = key.as_str();
-        while let Some((parent, _)) = ancestor.rsplit_once('/') {
-            let folded_parent = parent.to_lowercase();
-            ensure!(
-                !folded.contains_key(&folded_parent),
-                "file/directory collision at {parent:?}"
-            );
-            if let Some(other) = directories.insert(folded_parent, parent.to_string()) {
-                ensure!(
-                    other == parent,
-                    "case-colliding sync directories: {other:?} and {parent:?}"
-                );
-            }
-            ancestor = parent;
-        }
-    }
-    Ok(())
-}
-
-pub fn directory(path: &Path) -> Result<()> {
-    match fs::create_dir(path) {
-        Ok(()) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-        Err(error) => {
-            return Err(error).with_context(|| format!("create directory {}", path.display()));
-        }
-    }
-    let meta = fs::symlink_metadata(path)?;
-    ensure!(
-        !meta.file_type().is_symlink() && meta.is_dir(),
-        "directory is a symlink or not a directory: {}",
-        path.display()
-    );
-    Ok(())
-}
-
-pub fn checked_path(root: &Path, key: &str, create_parents: bool) -> Result<PathBuf> {
-    validate_relative(key)?;
-    let parts: Vec<_> = key.split('/').collect();
-    let mut path = root.to_path_buf();
-    for (index, component) in parts.iter().enumerate() {
-        path.push(component);
-        let last = index + 1 == parts.len();
-        if !last && create_parents {
-            directory(&path)?;
-        }
-        match fs::symlink_metadata(&path) {
-            Ok(meta) => {
-                ensure!(
-                    !meta.file_type().is_symlink(),
-                    "symlink is not supported: {}",
-                    path.display()
-                );
-                ensure!(
-                    if last { meta.is_file() } else { meta.is_dir() },
-                    "non-regular sync path: {}",
-                    path.display()
-                );
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(error.into()),
-        }
-    }
-    Ok(path)
 }
 
 pub fn read(root: &Path, key: &str, limit: u64) -> Result<Vec<u8>> {
@@ -199,25 +79,6 @@ pub fn scan(root: &Path, limit: u64) -> Result<BTreeMap<String, String>> {
     }
     validate_path_set(files.keys())?;
     Ok(files)
-}
-
-pub fn new_file(path: &Path) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        options.mode(0o600);
-    }
-    Ok(options.open(path)?)
-}
-
-pub fn sync_directory(path: &Path) -> Result<()> {
-    #[cfg(unix)]
-    File::open(path)?.sync_all()?;
-    #[cfg(not(unix))]
-    let _ = path;
-    Ok(())
 }
 
 /// Keep the old inode in local history before replacement. An application still

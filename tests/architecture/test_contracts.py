@@ -29,6 +29,22 @@ class ContractTests(unittest.TestCase):
         self.assertFalse(gate.matches("src/storage_invented/foo.rs", "src/storage/"))
         self.assertFalse(gate.allowed("ui/package.json", self.specs["web_console_ui"]))
 
+    def test_optional_layers_have_disjoint_bubbles_and_frozen_contracts(self):
+        paths = {
+            "workspace_catalog": "src/workspace/remote.rs",
+            "workspace_cache": "src/workspace/local.rs",
+            "agent_execution": "src/execution/runner.rs",
+        }
+        for owner, path in paths.items():
+            self.assertEqual([name for name, spec in self.specs.items() if gate.allowed(path, spec)], [owner])
+            for contract in ("src/files.rs", "src/workspace/contract.rs", "src/workspace/mod.rs", "src/execution/contract.rs"):
+                self.assertFalse(gate.allowed(contract, self.specs[owner]))
+
+    def test_server_cannot_acquire_optional_startup_dependencies(self):
+        for path in ("src/main.rs", "src/server.rs", "src/config.rs", "src/storage/", "src/api/"):
+            self.assertIn("workspace", gate.FORBIDDEN_DEPS[path])
+            self.assertIn("execution", gate.FORBIDDEN_DEPS[path])
+
     def test_bar_needs_reference_and_property(self):
         import json
         for key in ("reference", "property"):
