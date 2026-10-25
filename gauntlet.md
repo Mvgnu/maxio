@@ -15,8 +15,9 @@ Product journey specs define the user-visible cross-domain bar. Compare the exac
 property, not every feature of the reference and not a vague overall impression.
 
 MaxIO's artifact is the built binary operating on disposable real data, plus its
-embedded console and the optional `maxio-sync` executable. A static export cannot
-prove server persistence, authorization, replication, or synchronization. Do not
+embedded console and the optional `maxio-sync`, `maxio-workspace` and `maxio-agent`
+executables. A static export cannot prove server persistence, authorization,
+replication, or synchronization. Do not
 copy a web-only review recipe into this repository.
 
 | Surface | What the critic must inspect |
@@ -29,6 +30,9 @@ copy a web-only review recipe into this repository.
 | Console API | Live login/session and bucket/object operations with unauthorized controls |
 | Console UI | Served embedded page at mobile and desktop sizes, actual bucket/file task, network requests |
 | Device sync | Two ordinary folders, changed bytes, simultaneous edits, stopped peer/restart, conflict copies |
+| Workspace catalog | Metadata-only discovery, measured selected transfers, exact revisions, competing publications, interrupted transfers |
+| Workspace cache | Actual baselines and retained bytes, dirty/stale state, offline pins, failed replacement, explicit eviction outcome |
+| Local execution | Actual child process, selected input copies, terminal records, logs, cancellation and retained unpublished outputs; fixtures distinguished from authenticated providers |
 | Harness | Deliberately invalid ownership/spec/test selection must fail, clean checkout must run |
 
 ## Review loop
@@ -43,8 +47,10 @@ copy a web-only review recipe into this repository.
    behavior and a repeatable scenario. The critic never edits implementation.
 5. Builder addresses that gap. Repeat without a fixed round count. Stop on an
    argued pass, diminishing useful improvement, or an explicit PM stop decision.
-6. A fresh smoothing review runs the three user journeys together and checks
-   terminology, commands, defaults, failures, and the boundary between them.
+6. A fresh smoothing review combines the affected user journeys, including the
+   ordinary standalone server, and checks terminology, commands, defaults, failures
+   and the handoffs between them. A local workspace/agent handoff does not establish
+   remote worker dispatch or data-locality scheduling.
 7. At a milestone, a fresh operator follows only the README and journey specs in
    disposable directories. Every undocumented code/configuration edit needed is
    an onboarding failure. They must not repair the product while reviewing it.

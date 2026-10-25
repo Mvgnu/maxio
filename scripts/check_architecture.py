@@ -21,18 +21,26 @@ PM_PATHS = (
     "src/lib.rs", "src/storage/mod.rs", "src/metadata/mod.rs", "src/cluster/mod.rs",
     "src/api/mod.rs", "ui/package.json", "ui/bun.lock", "ui/vite.config.ts",
     "ui/tsconfig*.json", "ui/svelte.config.js", "scripts/check_architecture.py",
-    "tests/architecture/",
+    "tests/architecture/", "src/files.rs", "src/workspace/mod.rs",
+    "src/workspace/contract.rs", "src/execution/mod.rs", "src/execution/contract.rs",
 )
 EXPECTED = {
     "runtime_platform", "storage_engine", "cluster_transport_security",
     "cluster_metadata_plane", "s3_auth_sigv4", "s3_api_surface", "console_api",
     "web_console_ui", "device_sync", "quality_harness",
+    "workspace_catalog", "workspace_cache", "agent_execution",
 }
 FORBIDDEN_DEPS = {
-    "src/storage/": ("api", "server", "auth", "sync"),
-    "src/metadata/": ("api", "server", "auth", "sync"),
-    "src/cluster/": ("api", "server", "storage", "metadata", "sync"),
-    "src/sync/": ("api", "server", "storage", "metadata", "cluster"),
+    "src/main.rs": ("workspace", "execution"),
+    "src/server.rs": ("workspace", "execution"),
+    "src/config.rs": ("workspace", "execution"),
+    "src/api/": ("workspace", "execution"),
+    "src/storage/": ("api", "server", "auth", "sync", "workspace", "execution"),
+    "src/metadata/": ("api", "server", "auth", "sync", "workspace", "execution"),
+    "src/cluster/": ("api", "server", "storage", "metadata", "sync", "workspace", "execution"),
+    "src/sync/": ("api", "server", "storage", "metadata", "cluster", "workspace", "execution"),
+    "src/workspace/": ("api", "server", "storage", "metadata", "cluster", "sync", "execution"),
+    "src/execution/": ("api", "server", "storage", "metadata", "cluster", "sync", "workspace"),
 }
 BUILD_PATHS = ("target/", "ui/dist/", "ui/node_modules/", "data/")
 

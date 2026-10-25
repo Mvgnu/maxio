@@ -51,8 +51,8 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y libssl-dev pkg-config openssl
       - run: cd ui && bun install --frozen-lockfile && bun run build
       - run: cargo build --locked --release --bins
-      - name: Package both executables
-        run: tar -czf '${{ matrix.artifact }}.tar.gz' -C target/release maxio maxio-sync
+      - name: Package standalone and optional companion executables
+        run: tar -czf '${{ matrix.artifact }}.tar.gz' -C target/release maxio maxio-sync maxio-workspace maxio-agent
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
