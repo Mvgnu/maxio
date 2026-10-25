@@ -274,9 +274,19 @@ fn detail(record: &mut RunRecord, text: &str) {
 /// Retain every prepared run, including failed/cancelled work. Publication is a
 /// separate authority and is never performed by this function.
 pub async fn run(request: RunRequest) -> Result<RunRecord> {
+    run_inner(request, None).await
+}
+
+/// Execute only if the actual isolated input copies match an admitted immutable
+/// input set. A mismatch retains the failed run and never starts the task.
+pub async fn run_verified(request: RunRequest, expected_inputs: &[RunFile]) -> Result<RunRecord> {
+    run_inner(request, Some(expected_inputs)).await
+}
+
+async fn run_inner(request: RunRequest, expected_inputs: Option<&[RunFile]>) -> Result<RunRecord> {
     #[cfg(not(unix))]
     {
-        let _ = request;
+        let _ = (request, expected_inputs);
         anyhow::bail!("local process supervision currently requires Unix");
     }
     #[cfg(unix)]
@@ -322,7 +332,16 @@ pub async fn run(request: RunRequest) -> Result<RunRecord> {
             published: false,
         };
         files::persist(&record, &paths.root)?;
-        let result = execute(&request, &source, &selected, &paths, &secrets, &mut record).await;
+        let result = execute(
+            &request,
+            &source,
+            &selected,
+            &paths,
+            &secrets,
+            &mut record,
+            expected_inputs,
+        )
+        .await;
         if let Err(error) = result {
             record.status = "failed".into();
             let mut message = format!("{error:#}");
@@ -362,6 +381,7 @@ async fn execute(
     paths: &files::RunPaths,
     secrets: &[String],
     record: &mut RunRecord,
+    expected_inputs: Option<&[RunFile]>,
 ) -> Result<()> {
     let stdout_file = crate::files::new_file(&record.stdout_log)?;
     let stderr_file = crate::files::new_file(&record.stderr_log)?;
@@ -379,6 +399,14 @@ async fn execute(
     }
     record.input_files = files::copy_inputs(source, &paths.workspace, &request.inputs)?;
     files::persist(record, &paths.root)?;
+    if let Some(expected) = expected_inputs {
+        let mut expected = expected.to_vec();
+        expected.sort_by(|a, b| a.path.cmp(&b.path));
+        ensure!(
+            expected == record.input_files,
+            "input identity mismatch before execution; isolated copies retained for inspection"
+        );
+    }
     if cancellation_requested(&paths.root)? {
         record.status = "cancelled".into();
         return Ok(());

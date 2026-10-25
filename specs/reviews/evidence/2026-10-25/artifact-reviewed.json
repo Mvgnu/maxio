@@ -1,0 +1,12 @@
+{
+  "source_commit": "22c1d523e25a390650dff1b8ddec41c1c277e3e9",
+  "platform": "Linux x86_64, debug build, Rust 1.94.0",
+  "binaries": {
+    "maxio-fabric": "1d6d171f43a5388a94e3534ef53c1a2086bb8ab6129ce7ed5cc13122890db00b",
+    "maxio-worker": "5c172e129d435a2cfdbf535f803535ce59fc7d2c207c6bb6d651a8b869a09a19",
+    "maxio-agent": "347be02599e83d170d38c9f9197f40dc7c5005d9200272042badff49915675c9",
+    "maxio": "ac13c5881c403f8e68a6360f64f74fd2c95520d372f6b60fdc2a0bfad00a900f",
+    "maxio-workspace": "924a748beaa5ecaa943967cfc003b3b30b720b706dcbe5c330176f1153839749",
+    "maxio-sync": "ac25b610d4dba332bac217fa41d8c3431536ac19bb3310047191fd15a834f8f7"
+  }
+}

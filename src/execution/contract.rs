@@ -34,7 +34,7 @@ pub struct RunRequest {
     pub permission: PermissionMode,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RunFile {
     pub path: String,
     pub sha256: String,

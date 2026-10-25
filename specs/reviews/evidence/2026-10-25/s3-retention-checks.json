@@ -1,0 +1,1870 @@
+{
+  "binary": "/workspace/scratch/05c136f30bb4/s3-retention-f70e5f8/maxio",
+  "binary_sha256": "df9106d087399ceb19f8d2415ee3378e7d215783263f321a0e4eb7613663f982",
+  "run": "/workspace/scratch/05c136f30bb4/critic-s3-retention/run-20261025T163740Z",
+  "endpoint": "http://127.0.0.1:45899",
+  "checks": 186,
+  "failures": [],
+  "results": [
+    {
+      "label": "retention query / object GET",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / object HEAD",
+      "status": 501,
+      "error_code": null,
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / object POST",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / existing version",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / new object",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / bucket PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / missing bucket PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention raw query retention",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention raw query retention=nonempty",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention raw query %72etention=",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention raw query foo=bar&retention=",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention raw query retention=&retention=nonempty",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / multipart initiation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "retention query / versioning",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / object GET",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / object HEAD",
+      "status": 501,
+      "error_code": null,
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / object POST",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / existing version",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / new object",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / bucket PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / missing bucket PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold raw query legal-hold",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold raw query legal-hold=nonempty",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold raw query %6Cegal-hold=",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold raw query foo=bar&legal-hold=",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold raw query legal-hold=&legal-hold=nonempty",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / multipart initiation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "legal-hold query / versioning",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / object GET",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / object HEAD",
+      "status": 501,
+      "error_code": null,
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / object POST",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / existing version",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / new object",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / bucket PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / missing bucket PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock raw query object-lock",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock raw query object-lock=nonempty",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock raw query %6Fbject-lock=",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock raw query foo=bar&object-lock=",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock raw query object-lock=&object-lock=nonempty",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / multipart initiation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "object-lock query / versioning",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:true / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bucket-object-lock-enabled:false / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode:COMPLIANCE / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-retain-until-date:2035-01-01T00:00:00Z / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:ON / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-legal-hold:OFF / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:true / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-bypass-governance-retention:false / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "x-amz-object-lock-mode: / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / object PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / versioned PUT",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / object DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / version DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / bucket creation",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / empty bucket DELETE",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / copy",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / initiate multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / upload part",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / complete multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / abort multipart",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    },
+    {
+      "label": "X-AmZ-ObJeCt-LoCk-MoDe:GOVERNANCE / multi-delete",
+      "status": 501,
+      "error_code": "NotImplemented",
+      "explicit_unsupported": true,
+      "api_unchanged": true,
+      "disk_unchanged": true,
+      "disk_diffs": {},
+      "passed": true
+    }
+  ]
+}

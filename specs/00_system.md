@@ -15,7 +15,8 @@ simplest one must remain simple.
 | [Peer S3](journeys/peer_s3.md) | An S3 endpoint over explicitly configured storage peers | Experimental static peers, replication, forwarding and honest unavailable states |
 | [Device sync](journeys/device_sync.md) | Ordinary folders exchange files through a chosen device | Optional client using a standalone peer bucket; conflict preservation; no delete propagation |
 | [Selective workspace](journeys/selective_workspace.md) | Discover published files and retrieve only selected contents | Experimental immutable revisions, conditional publication, local baselines and pins; eviction refused |
-| [Local agents](journeys/local_agents.md) | Run an executable on selected copies and inspect proposed results | Local command/Codex/Claude adapters; separate publication; remote scheduling planned |
+| [Local agents](journeys/local_agents.md) | Run an executable on selected copies and inspect proposed results | Independent command/Codex/Claude adapters; separate publication |
+| [Managed workspaces and workers](journeys/managed_fabric_usage.md) | Enroll devices, publish under leases, reclaim a private cache and execute near selected data | Experimental single HTTPS authority with append-only local vault, explicit grants and separately running workers; bounded B–E evidence belongs in the dated review |
 
 There is no required hosted service, cloud account, telemetry endpoint, relay, or
 discovery provider. A peer may be a laptop, server, or NAS under the operator's
@@ -33,8 +34,12 @@ through the S3 HTTP contract, not private storage paths.
 
 The optional `maxio-workspace` client adds immutable logical revisions and selective
 transfers through S3. The independent `maxio-agent` executable prepares selected
-input copies and supervises a local command or coding CLI. Neither participates in
-S3 startup; remote scheduling remains a later layer.
+input copies and supervises a local command or coding CLI. The optional
+`maxio-fabric` authority reuses canonical workspace versions for its own managed
+catalog, grants and fenced publication. `maxio-worker` reuses the local execution
+adapters and verified immutable cache for remote claims. None participates in S3
+startup. The direct-S3 and managed modes have distinct publication authorities;
+they do not silently mirror heads or migrate existing workspace state.
 
 Keep these boundaries before considering crate extraction. Source moves must
 remove a concrete responsibility tangle, not merely distribute a long file into
@@ -56,6 +61,9 @@ named adjacent test module. Cross-process acceptance lives in scripts/tests.
 | Published workspace catalog | [workspace_catalog](domains/workspace_catalog.md) |
 | Local workspace state and hydration | [workspace_cache](domains/workspace_cache.md) |
 | Optional local agent execution | [agent_execution](domains/agent_execution.md) |
+| Managed catalog, leases and job authority | [fabric_authority](domains/fabric_authority.md) |
+| Managed device authentication, HTTPS and CLI | [fabric_transport](domains/fabric_transport.md) |
+| Remote workers and private immutable cache | [worker_execution](domains/worker_execution.md) |
 
 ## Shared contracts and ownership
 
@@ -104,8 +112,9 @@ runtime dependencies into signing primitives.
 
 ## Security and compatibility boundaries
 
-Credentials currently share administrative capabilities; there is no IAM policy
-engine or per-device read/write grant system. Plain HTTP belongs on a trusted
+S3 credentials currently share administrative capabilities; its endpoint has no
+IAM policy engine. The separate managed authority has explicit per-device
+catalog/read/write/job grants and individual keys. Plain S3 HTTP belongs on a trusted
 local/encrypted channel. Optional native HTTPS protects standalone traffic; the
 secure-peer triplet provides native mutual TLS with exact node identity binding.
 Shared tokens are an additional authorization factor, not transport encryption.
@@ -314,3 +323,126 @@ Implement and judge [selective workspaces](journeys/selective_workspace.md) and
 until their named missing properties are implemented and tested. The roadmap is
 `01_product_roadmap.md`; it separates implemented, verified, experimental, planned
 and explicitly deferred work instead of treating green unit tests as delivery.
+
+## PM ruling: managed workspace authority and workers (2026-10-25)
+
+The merged PR #3 tree is the reviewed foundation, not completion of Journeys B–E.
+Add an optional single coordinator and independently running workers. Standalone
+`maxio`, direct-S3 `maxio-workspace` format 1, and local `maxio-agent` stay usable
+without them. No automatic adoption or migration of existing S3 data occurs.
+
+### Authority, durability and ownership
+
+- `fabric_authority` owns a private append-only vault and one bounded, fsynced JSON
+  authority snapshot under a lifetime exclusive `fs2` process lock. Canonical
+  `Manifest`, `FileVersion`, `RevisionRef` and `RunRecord` are reused. Managed
+  publication has its own `ManagedHead`; it never overloads an S3 ETag or mirrors
+  another writable S3 head. Private immutable payloads and manifests are verified
+  and fsynced before the state transaction acknowledges a publication.
+- Serialize mutations. Persist a validated next state through a fresh file,
+  file fsync, atomic rename and parent fsync before acknowledging. An uncertain
+  persistence result stops mutations until reopen. Never reset corrupt state to
+  empty. Capacity limits reject new work; they never discard authority records.
+- Restart durably increases the epoch before serving, expires prior leases and
+  abandons active attempts. Runtime expiry uses monotonic deadlines. Fence high
+  water, acknowledged heads, receipts, enrollment and revocation survive restart.
+  No disconnected partition or old incarnation can acquire implicit authority.
+- The vault has no delete/GC API. Logical deletion is an explicit fenced tombstone
+  retaining the previous immutable version; restore is another publication. Missing
+  devices or paths are never deletion intent. Retention is one fsynced server copy,
+  not physical redundancy, compliance Object Lock or an automatic failover claim.
+
+### Device and publication contracts
+
+- `fabric_transport` owns native verified HTTPS, individual Ed25519 device keys,
+  single-use challenge proof, short-lived opaque sessions and the managed CLI.
+  Reuse the existing native listener through an additive `ServerTls::standalone`;
+  do not duplicate TLS handling or change existing peer identity rules. No insecure
+  verification mode, ambient proxy discovery, redirects or universal device secret.
+- Only an owner enrolls public keys and grants explicit catalog/read/write/job
+  rights. Catalog access reveals the full canonical manifest; path read/write
+  grants are separate. The authority rereads current device generation/revocation
+  and grants at admission and final publication. Revocation cannot recall bytes
+  already delivered or an already admitted stream. Key recovery is explicit owner
+  enrollment/rotation and revocation, never a bypass secret.
+- Leases cover component-aware file/tree/workspace scopes. Grant/renew/release,
+  monotonic expiry, persisted fencing and current-head comparison are authoritative.
+  Upload preparation does not publish. Final publication rechecks actor, grant,
+  exact changed paths, current head, lease/epoch/fence and optional attempt identity
+  and cancellation in one serialized state transition. Idempotent request receipts
+  distinguish a lost acknowledgment from a new operation. A request ID with changed
+  contents is a conflict. Reads of committed versions remain allowed during edits.
+
+### Cache and execution contracts
+
+- `worker_execution` owns a private immutable input cache and retained attempt
+  directories. Never hard-link cache objects into editable task/user files.
+  Hydration verifies exact size/hash and retains incomplete stages on failure.
+  Cache eviction requires a fresh authenticated retention verification, exact
+  authority/vault/version binding, matching clean inode/content, no pin or active
+  use, and a durable local intent/recovery record. Report logical bytes separately
+  from allocated blocks and observed filesystem-space recovery. Editable working
+  copies, old staging/history, failed outputs and ambiguous attempts stay retained.
+- `execution::run_verified` is an additive entry point that checks the actual
+  isolated input copies against admitted `RunFile` identities before task launch.
+  Existing local `run` remains compatible. The PM integrates this bridge and tests,
+  the generic HTTPS constructor, managed local-workspace support and full-gate/docs
+  wiring; these explicit integration grants do not enlarge builder bubbles.
+- Workers advertise owner-configured named profiles and verified cache inventory.
+  Wire tasks cannot select raw executables, provider homes, environment secrets or
+  arbitrary command arguments. The authority filters eligibility, then minimizes
+  missing selected input bytes with deterministic ties and recorded reasons. Manual
+  selection is a hard constraint. A worker rechecks exact inputs before launch.
+- One active attempt per worker. Heartbeat/lease loss cancels when possible and
+  retains work; cancellation intent is distinct from confirmed process termination.
+  Never kill a stored PID on restart. Retry is explicit and creates a new attempt;
+  arbitrary external command effects are not exactly-once. Existing Codex/Claude
+  adapters are reused. Provider fixtures are not authenticated model executions.
+- Local run success and authoritative publication are separate receipts;
+  `RunRecord.published` remains false. Publish outputs only when explicitly requested
+  and within the submitted scopes; preserve outputs on conflict or failure.
+
+The owner trusts worker-native commands. Cwd isolation, private permissions and
+environment filtering are not a hostile-process sandbox. Strong separation of
+coordinator keys, provider credentials and untrusted tasks requires separate OS
+principals/sandboxing. No Raft, FUSE, cloud account or mandatory full replication.
+
+`src/fabric/{mod,contract}.rs` are PM-owned. The three new domain specs establish
+disjoint bubbles; builders use isolated worktrees and fresh critics. The PM owns
+the B/C/D/E cross-domain acceptance in `specs/journeys/managed_fabric.md`. Do not
+repeat the previously platform-blocked independent incoming-peer-certificate probe.
+
+### Managed editable workspace adapter
+
+The existing `workspace_cache` bubble extends `LocalWorkspace`, preserving the
+direct-mode serialization and behavior. `WorkspaceReader` is a narrow hydration
+transport contract in the existing workspace facade; it accepts the exact
+snapshot/path. The direct S3 adapter and the managed HTTPS adapter implement it.
+`LocalWorkspace::pull` becomes generic over this reader, without importing fabric.
+The local manager remains the sole implementation of dirty checks, publication
+staging, baseline advancement, pins and retained replaced inodes.
+
+Freeze additive `open_managed(root, &ManagedTarget)`,
+`observe_managed(&ManagedCatalog)`, `managed_head() -> Result<ManagedHead>`, and
+`accept_managed_publication(&ManagedCatalog, &[Publication])`. Use explicit local
+format 2 for managed state, with a separate managed head and target. Format 1 stays
+readable and unchanged; it cannot be silently rebound. A managed snapshot's S3 ETag
+is always absent. Offline inspection works in both modes. Remote tombstones do not
+delete working bytes; publishing from an old baseline after remote deletion is a
+conflict until the user makes an explicit recovery decision. Editable data is not
+made eviction-eligible by this adapter. The PM owns managed CLI integration; the
+workspace cache builder edits only its existing local implementation/tests/spec.
+
+Within the transport integration, the PM owns client/server/CLI and HTTP tests;
+the journey builder has the disjoint `scripts/smoke_fabric.py` write assignment.
+Liveness observations and empty claims are bounded and expire after restart.
+They do not consume permanent business-request capacity. New incarnations, real
+claims, grants, finished executions and publications keep durable receipts. Old
+retired worker incarnations cannot be revived by resending an advertisement.
+
+Private roots are typed, including a durable `.maxio-fabric` authority marker and
+`.maxio-worker` cache marker. The PM integrates cache-marker creation/validation
+and regression; workspace-cache ownership rejects those roots, their descendants,
+and explicitly selected nested private contents before creating editable state or
+staging bytes. These guards prevent accidental adoption; they are not OS access
+control against a malicious same-UID program.

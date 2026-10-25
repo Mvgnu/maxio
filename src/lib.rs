@@ -5,6 +5,7 @@ pub mod config;
 pub mod embedded;
 pub mod error;
 pub mod execution;
+pub mod fabric;
 pub mod files;
 pub mod membership;
 pub mod metadata;

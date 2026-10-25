@@ -7,6 +7,25 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+/// Editable roots and selected paths must stay outside private server, authority
+/// and worker trees. Inspect marker entries without following symlinks, including
+/// dangling markers, before creating workspace state or transfer stages.
+pub(super) fn reject_private_ancestors(path: &Path) -> Result<()> {
+    for ancestor in path.ancestors() {
+        for marker in [".maxio-runtime", ".maxio-fabric", ".maxio-worker"] {
+            match fs::symlink_metadata(ancestor.join(marker)) {
+                Ok(_) => anyhow::bail!(
+                    "editable workspace path overlaps a private MaxIO data root at {} ({marker})",
+                    ancestor.display()
+                ),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+                Err(error) => return Err(error.into()),
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_aliases(root: &Path, key: &str) -> Result<()> {
     let mut parent = root.to_path_buf();
     for part in key.split('/') {
@@ -32,7 +51,12 @@ fn check_aliases(root: &Path, key: &str) -> Result<()> {
 
 pub(super) fn checked_file(root: &Path, key: &str, create_parents: bool) -> Result<PathBuf> {
     files::validate_workspace_relative(key)?;
-    files::checked_path(root, key, false)?;
+    let destination = files::checked_path(root, key, false)?;
+    reject_private_ancestors(
+        destination
+            .parent()
+            .context("workspace path has no parent")?,
+    )?;
     check_aliases(root, key)?;
     files::checked_path(root, key, create_parents)
 }

@@ -1,0 +1,188 @@
+[
+  {
+    "name": "256-individually-distinct-4096-byte-files",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "exact-references-cover-entire-distinct-batch",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "initial-batch-is-verified",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-1-starts-with-complete-clean-index",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-1-actual-unlink-before-index-commit",
+    "pass": true,
+    "evidence": {
+      "operation_id": "74b10ed8-2dfe-4059-82d0-9608988f4e7f",
+      "absent_count": 1,
+      "survivor_count": 255,
+      "saved_index_count": 256
+    }
+  },
+  {
+    "name": "cycle-1-stopped-survivors-retain-original-bytes",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-1-evict-child-killed-while-stopped",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-1-reopen-1-never-unlinks-survivors",
+    "pass": true,
+    "evidence": {
+      "object_count_before_reopen": 255,
+      "object_count_after_reopen": 255,
+      "pending_after_reopen": null
+    }
+  },
+  {
+    "name": "cycle-1-reopen-1-advertises-only-present-verified-content",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-1-reopen-2-never-unlinks-survivors",
+    "pass": true,
+    "evidence": {
+      "object_count_before_reopen": 255,
+      "object_count_after_reopen": 255,
+      "pending_after_reopen": null
+    }
+  },
+  {
+    "name": "cycle-1-reopen-2-advertises-only-present-verified-content",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-1-missing-private-copies-do-not-delete-global-files",
+    "pass": true,
+    "evidence": {
+      "catalog_revision": {
+        "revision": "da1f19c0-0887-4e31-ac8b-76c8a12669b7",
+        "sha256": "ac2634a30ced6b12bd73a3a691046affc130629e877c11d9de65be1a567dc9fd"
+      },
+      "file_count": 256
+    }
+  },
+  {
+    "name": "cycle-1-refetch-downloads-exactly-missing-content",
+    "pass": true,
+    "evidence": {
+      "missing_count": 1,
+      "actual_download_count": 1,
+      "actual_download_bytes": 4096
+    }
+  },
+  {
+    "name": "cycle-1-refetch-restores-all-exact-bytes-without-changing-survivors",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-1-fully-verified-after-recovery",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-2-starts-with-complete-clean-index",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-2-actual-unlink-before-index-commit",
+    "pass": true,
+    "evidence": {
+      "operation_id": "04d83662-ad42-4e68-82be-8c93cf7c548c",
+      "absent_count": 1,
+      "survivor_count": 255,
+      "saved_index_count": 256
+    }
+  },
+  {
+    "name": "cycle-2-stopped-survivors-retain-original-bytes",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-2-evict-child-killed-while-stopped",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-2-reopen-1-never-unlinks-survivors",
+    "pass": true,
+    "evidence": {
+      "object_count_before_reopen": 255,
+      "object_count_after_reopen": 255,
+      "pending_after_reopen": null
+    }
+  },
+  {
+    "name": "cycle-2-reopen-1-advertises-only-present-verified-content",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-2-reopen-2-never-unlinks-survivors",
+    "pass": true,
+    "evidence": {
+      "object_count_before_reopen": 255,
+      "object_count_after_reopen": 255,
+      "pending_after_reopen": null
+    }
+  },
+  {
+    "name": "cycle-2-reopen-2-advertises-only-present-verified-content",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-2-missing-private-copies-do-not-delete-global-files",
+    "pass": true,
+    "evidence": {
+      "catalog_revision": {
+        "revision": "da1f19c0-0887-4e31-ac8b-76c8a12669b7",
+        "sha256": "ac2634a30ced6b12bd73a3a691046affc130629e877c11d9de65be1a567dc9fd"
+      },
+      "file_count": 256
+    }
+  },
+  {
+    "name": "cycle-2-refetch-downloads-exactly-missing-content",
+    "pass": true,
+    "evidence": {
+      "missing_count": 1,
+      "actual_download_count": 1,
+      "actual_download_bytes": 4096
+    }
+  },
+  {
+    "name": "cycle-2-refetch-restores-all-exact-bytes-without-changing-survivors",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cycle-2-fully-verified-after-recovery",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "two-observed-mid-unlink-recovery-cycles-complete",
+    "pass": true,
+    "evidence": {}
+  }
+]

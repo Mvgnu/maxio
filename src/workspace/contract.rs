@@ -182,11 +182,23 @@ pub fn validate_snapshot(snapshot: &Snapshot) -> Result<()> {
 }
 
 pub fn reference(snapshot: &Snapshot, path: &str) -> Result<String> {
-    crate::files::validate_workspace_relative(path)?;
     ensure!(
         snapshot.manifest.files.contains_key(path),
         "path is not published in this revision"
     );
+    reference_at(
+        &snapshot.manifest.workspace_id,
+        &snapshot.manifest.revision,
+        path,
+    )
+}
+
+/// Stable logical reference for an exact published or retained baseline version.
+/// This formats identity only; it grants no access and asserts no availability.
+pub fn reference_at(workspace_id: &str, revision: &str, path: &str) -> Result<String> {
+    validate_id(workspace_id)?;
+    validate_id(revision)?;
+    crate::files::validate_workspace_relative(path)?;
     const COMPONENT: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
         .remove(b'-')
         .remove(b'_')
@@ -198,8 +210,7 @@ pub fn reference(snapshot: &Snapshot, path: &str) -> Result<String> {
         .collect::<Vec<_>>()
         .join("/");
     Ok(format!(
-        "maxio-workspace://{}/{path}?revision={}",
-        snapshot.manifest.workspace_id, snapshot.manifest.revision
+        "maxio-workspace://{workspace_id}/{path}?revision={revision}"
     ))
 }
 
@@ -256,4 +267,67 @@ mod tests {
         assert!(uri.contains("/docs/caf%C3%A9%20%2B%20%23%25.md?revision="));
         assert!(reference(&snapshot, "absent").is_err());
     }
+}
+
+// Explicit optional authority envelopes. Direct-S3 format 1 and ETags are unchanged.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedTarget {
+    pub authority_id: String,
+    pub vault_id: String,
+    pub workspace_id: String,
+    /// Canonical HTTPS origin; no userinfo, path, query or fragment.
+    pub origin: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedHead {
+    pub authority_id: String,
+    pub workspace_id: String,
+    pub generation: u64,
+    pub revision: RevisionRef,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ManagedCatalog {
+    /// Canonical existing shape. head_etag MUST be None in managed mode.
+    pub snapshot: Snapshot,
+    /// Some only for the current managed publication base; None for history.
+    pub head: Option<ManagedHead>,
+}
+
+/// Selective hydration source. Catalog/version identity stays canonical; adapters
+/// implement only transport and authorization. Editable baselines stay local.
+pub trait WorkspaceReader: Send + Sync {
+    fn target_id(&self) -> String;
+    fn download_at<'a>(
+        &'a self,
+        snapshot: &'a Snapshot,
+        path: &'a str,
+        destination: &'a std::path::Path,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<()>> + Send + 'a>>;
+}
+
+pub fn managed_target_id(target: &ManagedTarget) -> Result<String> {
+    validate_id(&target.authority_id)?;
+    validate_id(&target.vault_id)?;
+    validate_id(&target.workspace_id)?;
+    let origin = reqwest::Url::parse(&target.origin)?;
+    ensure!(
+        origin.scheme() == "https"
+            && origin.host_str().is_some()
+            && origin.username().is_empty()
+            && origin.password().is_none()
+            && origin.path() == "/"
+            && origin.query().is_none()
+            && origin.fragment().is_none()
+            && origin.origin().ascii_serialization() == target.origin,
+        "managed target must have a canonical HTTPS origin"
+    );
+    Ok(format!(
+        "managed:{}:{}:{}:{}",
+        target.authority_id, target.vault_id, target.workspace_id, target.origin
+    ))
 }

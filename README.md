@@ -1,6 +1,6 @@
 # MaxIO
 
-**S3 storage, selective workspaces and optional local agent execution on your own infrastructure.**
+**S3 storage, selective workspaces and optional storage-aware workers on your own infrastructure.**
 
 MaxIO is a Rust S3 server with an embedded Svelte console. Start with one process
 and a data directory. Add explicit storage peers or the optional folder-sync
@@ -12,8 +12,9 @@ executables; none is required to start the S3 server.
 | One straightforward S3 service | [Standalone](#one-s3-server) | Default mode; ordinary S3 clients and built-in console |
 | S3 data on multiple devices | [Peer S3](specs/journeys/peer_s3.md) | Experimental static peers; tested replication and honest outage behavior |
 | My folders on my devices, without a cloud intermediary | [Device sync](#direct-device-folder-sync) | Additive sync through a chosen peer; preserves conflicts; no deletion propagation |
-| See files without copying everything | [Selective workspace](#selective-workspace) | Experimental versioned catalog and selected transfers; no eviction yet |
-| Run a command, Codex or Claude on selected files | [Local agents](#local-agents) | Optional supervised local runner; remote locality scheduling remains planned |
+| See files without copying everything | [Direct-S3 workspace](#selective-workspace) | Versioned catalog and selected transfers; editable data stays retained |
+| Enroll devices, reclaim a private cache, run work near its data | [Managed workspace and workers](#managed-workspace-and-workers) | Experimental single authority, individual keys, fenced publication and separately running workers |
+| Run a command, Codex or Claude on selected files | [Local agents](#local-agents) | Independent local runner; the managed worker reuses these adapters |
 
 This is an actively developed fork. Its supported behavior and limits are recorded
 in [the system contract](specs/00_system.md), with independent evidence in
@@ -34,7 +35,8 @@ cd ..
 cargo build --locked --bins
 ```
 
-This creates `target/debug/maxio`, `maxio-sync`, `maxio-workspace` and `maxio-agent`. For optimized,
+This creates `target/debug/maxio`, `maxio-sync`, `maxio-workspace`, `maxio-agent`,
+`maxio-fabric` and `maxio-worker`. For optimized,
 self-contained console assets, use `cargo build --locked --release --bins` and the
 executables under `target/release/`. Release executables embed the console; no Node
 or Bun runtime is needed. Debug builds read `ui/dist/` from the checkout.
@@ -206,11 +208,12 @@ root must be operator-owned; these checks are not protection against a hostile
 process replacing directory ancestors while an operation runs. No global delete
 operation exists, and unavailability is never treated as deletion evidence.
 
-**Eviction is deliberately unavailable in this slice.** A matching remote read proves
+**Editable direct-S3 data is not eviction-eligible.** A matching remote read proves
 current recoverability, not enforced retention or crash-safe durability. `evict`
 returns an error and leaves local files intact. History/stages are not automatically
-pruned. This is M1a, with safe disk reclamation still open in
-[the roadmap](01_product_roadmap.md). It is not yet the complete distributed fabric.
+pruned. The optional managed mode below has a separate private immutable cache and an
+append-only retained vault. It does not turn ordinary S3 readback into retention
+authority or make these editable directories disposable.
 
 Reproduce the real selective-transfer and failure journey:
 
@@ -225,6 +228,48 @@ conditional publication races, truncated downloads, failed uploads, a lost publi
 response and server restart. It is a one-host test, not a physical three-device/WAN
 claim. Client counters separate payload and metadata bytes and exclude HTTP framing
 and SDK retries; the fixture additionally counts bytes forwarded through its proxy.
+
+## Managed workspace and workers
+
+`maxio-fabric` is an optional single coordinator and client. `maxio-worker` is a
+separate process that executes owner-configured named profiles. They use individual
+Ed25519 device keys and verified HTTPS; they do not use the S3 administrator key.
+The existing S3 server can be stopped, running elsewhere, or absent.
+
+Start with the [managed setup and recovery guide](specs/journeys/managed_fabric_usage.md).
+It covers private-CA setup, enrollment, path grants, metadata-only discovery,
+selected pulls/publication, cache pin/eviction, task execution and recovery. The
+[acceptance contract](specs/journeys/managed_fabric.md) defines Journeys B–E; the
+[current review](specs/reviews/2026-10-25-managed-fabric.md) distinguishes observed
+behavior from still-open work.
+
+The durable managed namespace uses the existing immutable manifests and logical
+references. Its head, leases, grants and publication receipts have one authority.
+Managed local state is explicit format 2; direct-S3 format 1 is unchanged and is
+never adopted silently. A remote deletion is an explicit, recoverable tombstone;
+it never removes an editable local file just because a directory is unavailable.
+
+A worker advertises named profiles, configured resources and verified cached inputs.
+The scheduler checks eligibility before minimizing missing input bytes. An explicit
+worker choice is a hard constraint. The selected worker hydrates missing inputs,
+copies them into a fresh attempt, verifies those copies before launch, and invokes
+the existing command/Codex/Claude runner. Successful local execution and published
+outputs have separate records. Output publication requires the submitted policy,
+current grants, current head and an unexpired fenced lease.
+
+Only the manager-owned immutable cache is eviction-eligible. It requires fresh
+verification of the exact retained vault contents and refuses pins, active use,
+modified bytes and unexpected inode/link identity. Editable working directories,
+incomplete transfers, old stages, logs and failed attempts remain retained.
+Filesystem-space observations are reported separately from logical bytes removed.
+
+This is an experimental **single authority on a private Unix filesystem**. There
+is no Raft, automatic failover, transfer resume, mount, NAT traversal or background
+GC. Its append-only vault is one retained server copy, not redundant physical
+storage or S3 Object Lock. Arbitrary commands still run with the worker owner's OS
+permissions; use separate OS identities/sandboxing for hostile tasks. Existing
+provider authentication stays local to the configured worker. Protocol fixtures
+exercise adapter behavior and are not authenticated Codex/Claude model calls.
 
 ## Local agents
 

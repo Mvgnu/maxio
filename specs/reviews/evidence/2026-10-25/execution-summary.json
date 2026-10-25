@@ -1,0 +1,837 @@
+{
+  "all_network": {
+    "book": {
+      "all_request_body_bytes": 80125,
+      "all_response_body_bytes": 726202,
+      "dataset_download_bytes": 0,
+      "dataset_upload_bytes": 0,
+      "file_responses": [],
+      "requests": 862
+    },
+    "mini": {
+      "all_request_body_bytes": 134350521,
+      "all_response_body_bytes": 134500619,
+      "dataset_download_bytes": 134217728,
+      "dataset_upload_bytes": 134217728,
+      "file_responses": [
+        {
+          "bytes": 134217728,
+          "path": "/v1/file/read",
+          "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611"
+        }
+      ],
+      "requests": 328
+    },
+    "vps": {
+      "all_request_body_bytes": 358785,
+      "all_response_body_bytes": 317327,
+      "dataset_download_bytes": 0,
+      "dataset_upload_bytes": 0,
+      "file_responses": [],
+      "requests": 931
+    }
+  },
+  "all_processes_stopped": true,
+  "binaries": {
+    "maxio-agent": "347be02599e83d170d38c9f9197f40dc7c5005d9200272042badff49915675c9",
+    "maxio-fabric": "1d6d171f43a5388a94e3534ef53c1a2086bb8ab6129ce7ed5cc13122890db00b",
+    "maxio-worker": "5c172e129d435a2cfdbf535f803535ce59fc7d2c207c6bb6d651a8b869a09a19"
+  },
+  "completed": true,
+  "dataset": {
+    "allocated_bytes": 134217728,
+    "bytes": 134217728,
+    "inode": 1180142,
+    "path": "/tmp/critic-managed-execution-dri_4pg7/mini-work/data/example.bin",
+    "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611"
+  },
+  "device_ids": {
+    "book": "5193beab-adec-434a-9bfd-6317c3879e6f",
+    "mini": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+    "vps": "9603d12a-de4c-4c77-9dec-a19bf7396a30"
+  },
+  "phases": {
+    "baseline": {
+      "decision": {
+        "candidates": [
+          {
+            "eligible": true,
+            "incarnation": "e94b2d7e-673c-4ce0-b603-ff63f5e870a8",
+            "missing_bytes": 134218469,
+            "reasons": [],
+            "worker_id": "9603d12a-de4c-4c77-9dec-a19bf7396a30"
+          },
+          {
+            "eligible": true,
+            "incarnation": "52d54661-aa88-4711-8995-541960f9c882",
+            "missing_bytes": 741,
+            "reasons": [],
+            "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+          }
+        ],
+        "decided_at_unix_ms": 1792949840790,
+        "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+        "selected_worker": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+      },
+      "job_id": "62047d45-be32-48f6-a3d5-494490c37fe6",
+      "network": {
+        "book": {
+          "all_request_body_bytes": 18269,
+          "all_response_body_bytes": 151792,
+          "dataset_download_bytes": 0,
+          "dataset_upload_bytes": 0,
+          "file_responses": [],
+          "requests": 196
+        },
+        "mini": {
+          "all_request_body_bytes": 28214,
+          "all_response_body_bytes": 51020,
+          "dataset_download_bytes": 0,
+          "dataset_upload_bytes": 0,
+          "file_responses": [],
+          "requests": 66
+        },
+        "vps": {
+          "all_request_body_bytes": 76701,
+          "all_response_body_bytes": 67551,
+          "dataset_download_bytes": 0,
+          "dataset_upload_bytes": 0,
+          "file_responses": [],
+          "requests": 199
+        }
+      },
+      "observation": {
+        "cwd": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/c3eebf1b-3266-40f3-a425-0d56116b0336/runs/b4b1d800-9ae9-417c-98a9-2eaae0e0b410/workspace",
+        "pid": 59898,
+        "ppid": 59098,
+        "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611",
+        "size": 134217728,
+        "tag": "baseline",
+        "worker": "mini"
+      },
+      "output": {
+        "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611",
+        "size": 134217728
+      },
+      "output_file": {
+        "allocated_bytes": 4096,
+        "bytes": 98,
+        "inode": 1311039,
+        "path": "/tmp/critic-managed-execution-dri_4pg7/book-work/results/hash.json",
+        "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc"
+      },
+      "state": "succeeded"
+    },
+    "cache": {
+      "eviction": {
+        "result": {
+          "allocated_bytes_unlinked": 134217728,
+          "available_bytes_after": 12205776896,
+          "available_bytes_before": 12071567360,
+          "logical_bytes_removed": 134217728,
+          "observed_available_delta": 134209536,
+          "operation_id": "8206e5ff-15e9-4940-8deb-fff0130a9eaf",
+          "removed": [
+            {
+              "path": "data/example.bin",
+              "revision": {
+                "revision": "20c8f6e1-efc4-4d03-9210-350f221f835e",
+                "sha256": "6bdf9217488868703df613790ca716098e28c2c750de66ac2618ca1b7aa130bc"
+              },
+              "version": {
+                "blob": "maxio-workspaces/projects/blobs/9b79b41e-b46d-496e-9d04-85a0636a9a66",
+                "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611",
+                "size": 134217728
+              },
+              "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+            },
+            {
+              "path": "data/example.bin",
+              "revision": {
+                "revision": "467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+                "sha256": "ef65b10c6503f5a2913ed3fcedc108844658b1b3c0d012dcc5d60742fdc544bb"
+              },
+              "version": {
+                "blob": "maxio-workspaces/projects/blobs/9b79b41e-b46d-496e-9d04-85a0636a9a66",
+                "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611",
+                "size": 134217728
+              },
+              "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+            }
+          ]
+        },
+        "transfers": {
+          "metadata_downloaded": 1961,
+          "metadata_uploaded": 805,
+          "payload_downloaded": 0,
+          "payload_uploaded": 0
+        }
+      },
+      "eviction_exit_code": 0,
+      "eviction_stderr": "",
+      "pinned_eviction_exit_code": 1,
+      "pinned_eviction_stderr": "{\"error\":\"selected cache content is pinned\"}\n",
+      "refetch": {
+        "result": {
+          "hydrated": [
+            {
+              "path": "data/example.bin",
+              "revision": {
+                "revision": "20c8f6e1-efc4-4d03-9210-350f221f835e",
+                "sha256": "6bdf9217488868703df613790ca716098e28c2c750de66ac2618ca1b7aa130bc"
+              },
+              "version": {
+                "blob": "maxio-workspaces/projects/blobs/9b79b41e-b46d-496e-9d04-85a0636a9a66",
+                "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611",
+                "size": 134217728
+              },
+              "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+            }
+          ],
+          "reused": [],
+          "transfer": {
+            "metadata_downloaded": 0,
+            "metadata_uploaded": 419,
+            "payload_downloaded": 134217728,
+            "payload_uploaded": 0
+          }
+        },
+        "transfers": {
+          "metadata_downloaded": 912,
+          "metadata_uploaded": 706,
+          "payload_downloaded": 134217728,
+          "payload_uploaded": 0
+        }
+      },
+      "source_retained": {
+        "allocated_bytes": 134217728,
+        "bytes": 134217728,
+        "inode": 1180142,
+        "path": "/tmp/critic-managed-execution-dri_4pg7/mini-work/data/example.bin",
+        "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611"
+      }
+    },
+    "cancellation": {
+      "cancel_ack": {
+        "result": {
+          "job": {
+            "attempts": [
+              {
+                "binding": {
+                  "attempt_id": "ecefe8e0-bc81-4cd2-b089-75b5352bf3bf",
+                  "job_id": "34e0ab2d-58e6-4c80-b203-67820479cc5d",
+                  "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+                  "worker_incarnation": "52d54661-aa88-4711-8995-541960f9c882"
+                },
+                "claimed_at_unix_ms": 1792949862151,
+                "detail": null,
+                "finished_at_unix_ms": null,
+                "heartbeat_at_unix_ms": 1792949862844,
+                "lease": {
+                  "epoch": 2,
+                  "fence": 3,
+                  "lease_id": "2f073dd2-1c46-4862-a0d0-652a2efebf10"
+                },
+                "prepared_outputs": [],
+                "publication": null,
+                "run": null,
+                "state": "running"
+              }
+            ],
+            "base": {
+              "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+              "generation": 21,
+              "revision": {
+                "revision": "467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+                "sha256": "ef65b10c6503f5a2913ed3fcedc108844658b1b3c0d012dcc5d60742fdc544bb"
+              },
+              "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+            },
+            "cancel_requested": true,
+            "created_at_unix_ms": 1792949859888,
+            "decision": {
+              "candidates": [
+                {
+                  "eligible": false,
+                  "incarnation": "e94b2d7e-673c-4ce0-b603-ff63f5e870a8",
+                  "missing_bytes": 589,
+                  "reasons": [
+                    "manual worker constraint"
+                  ],
+                  "worker_id": "9603d12a-de4c-4c77-9dec-a19bf7396a30"
+                },
+                {
+                  "eligible": true,
+                  "incarnation": "52d54661-aa88-4711-8995-541960f9c882",
+                  "missing_bytes": 589,
+                  "reasons": [],
+                  "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+                }
+              ],
+              "decided_at_unix_ms": 1792949862151,
+              "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+              "selected_worker": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+            },
+            "inputs": [
+              {
+                "path": "src/sleeper.py",
+                "revision": {
+                  "revision": "467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+                  "sha256": "ef65b10c6503f5a2913ed3fcedc108844658b1b3c0d012dcc5d60742fdc544bb"
+                },
+                "version": {
+                  "blob": "maxio-workspaces/projects/blobs/0cc7c0b7-bb2d-4b68-a895-ef223a5d5cf8",
+                  "sha256": "cc4f141b4416911fd3811d5d03f020d6958943b33e7bb3adbc8012e362d3612c",
+                  "size": 589
+                }
+              }
+            ],
+            "job_id": "34e0ab2d-58e6-4c80-b203-67820479cc5d",
+            "output_policy": "publish",
+            "output_selectors": [
+              {
+                "kind": "exact",
+                "path": "results/cancel.json"
+              }
+            ],
+            "profile": "cancel",
+            "required_worker": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+            "resources": {
+              "cpu_millis": 1000,
+              "memory_bytes": 268435456
+            },
+            "state": "cancel_requested",
+            "submitted_by": "5193beab-adec-434a-9bfd-6317c3879e6f",
+            "timeout_seconds": 3600,
+            "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+          },
+          "result": "job"
+        },
+        "transfers": {
+          "metadata_downloaded": 2929,
+          "metadata_uploaded": 393,
+          "payload_downloaded": 0,
+          "payload_uploaded": 0
+        }
+      },
+      "child_alive_after_terminal": false,
+      "job_id": "34e0ab2d-58e6-4c80-b203-67820479cc5d",
+      "publication": null,
+      "retained_output": {
+        "allocated_bytes": 4096,
+        "bytes": 55,
+        "inode": 1311063,
+        "path": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/ecefe8e0-bc81-4cd2-b089-75b5352bf3bf/runs/49a4a69d-1a69-49f0-8d4d-f5686a1ed168/workspace/results/cancel.json",
+        "sha256": "8d58d4b045c911f59dcfe5f959b2d49b96c35fb28860a688e030ad0b46072522"
+      },
+      "terminal_state": "cancelled"
+    },
+    "provider_protocol_fixtures": {
+      "claude": {
+        "attempts": [
+          {
+            "binding": {
+              "attempt_id": "06a7afeb-3458-4089-acb3-509d51601093",
+              "job_id": "d41403ac-fbbf-47dc-a336-f651af94454c",
+              "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+              "worker_incarnation": "e1e3c9a5-4362-4764-a501-b2c3022e13b4"
+            },
+            "claimed_at_unix_ms": 1792949952749,
+            "detail": null,
+            "finished_at_unix_ms": 1792949953117,
+            "heartbeat_at_unix_ms": 1792949952854,
+            "lease": null,
+            "prepared_outputs": [],
+            "publication": null,
+            "run": {
+              "adapter": "claude",
+              "detail": "CLI capability check failed: required safe CLI capability is absent: --restricted",
+              "environment_names": [
+                "CLAUDE_CONFIG_DIR"
+              ],
+              "executable": "/tmp/critic-managed-execution-dri_4pg7/local-claude-protocol-fixture",
+              "executable_version": "claude 1.0.0 LOCAL PROTOCOL FIXTURE",
+              "exit_code": null,
+              "finished_at": "2026-10-25T17:39:13.106649888+00:00",
+              "format": 1,
+              "id": "8976518d-679b-4e93-9039-0ea59bf69bb4",
+              "input_files": [],
+              "output_files": [],
+              "provider_session_id": null,
+              "published": false,
+              "started_at": "2026-10-25T17:39:12.850609630+00:00",
+              "status": "failed",
+              "stderr_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/06a7afeb-3458-4089-acb3-509d51601093/runs/8976518d-679b-4e93-9039-0ea59bf69bb4/stderr.log",
+              "stdout_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/06a7afeb-3458-4089-acb3-509d51601093/runs/8976518d-679b-4e93-9039-0ea59bf69bb4/stdout.log",
+              "workspace": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/06a7afeb-3458-4089-acb3-509d51601093/runs/8976518d-679b-4e93-9039-0ea59bf69bb4/workspace"
+            },
+            "state": "failed"
+          }
+        ],
+        "doctor": {
+          "adapter": "claude",
+          "detail": "CLI capability check failed: required safe CLI capability is absent: --restricted",
+          "executable": "/tmp/critic-managed-execution-dri_4pg7/local-claude-protocol-fixture",
+          "supported": false,
+          "version": "claude 1.0.0 LOCAL PROTOCOL FIXTURE"
+        },
+        "doctor_exit_code": 1,
+        "doctor_stderr": "",
+        "job_id": "d41403ac-fbbf-47dc-a336-f651af94454c",
+        "state": "failed"
+      },
+      "codex": {
+        "attempts": [
+          {
+            "binding": {
+              "attempt_id": "6ec02011-c0e9-409d-9c32-44cd2e197389",
+              "job_id": "2e112507-e635-4913-a520-3b2a72559c77",
+              "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+              "worker_incarnation": "e1e3c9a5-4362-4764-a501-b2c3022e13b4"
+            },
+            "claimed_at_unix_ms": 1792949948194,
+            "detail": null,
+            "finished_at_unix_ms": 1792949948677,
+            "heartbeat_at_unix_ms": 1792949948589,
+            "lease": null,
+            "prepared_outputs": [],
+            "publication": null,
+            "run": {
+              "adapter": "codex",
+              "detail": "CLI capability check failed: required safe CLI capability is absent: never",
+              "environment_names": [
+                "CODEX_HOME"
+              ],
+              "executable": "/tmp/critic-managed-execution-dri_4pg7/local-codex-protocol-fixture",
+              "executable_version": "codex 1.0.0 LOCAL PROTOCOL FIXTURE",
+              "exit_code": null,
+              "finished_at": "2026-10-25T17:39:08.668300612+00:00",
+              "format": 1,
+              "id": "21a2c5ea-9dcb-4a86-9ac2-326d93376b38",
+              "input_files": [],
+              "output_files": [],
+              "provider_session_id": null,
+              "published": false,
+              "started_at": "2026-10-25T17:39:08.289009376+00:00",
+              "status": "failed",
+              "stderr_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/6ec02011-c0e9-409d-9c32-44cd2e197389/runs/21a2c5ea-9dcb-4a86-9ac2-326d93376b38/stderr.log",
+              "stdout_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/6ec02011-c0e9-409d-9c32-44cd2e197389/runs/21a2c5ea-9dcb-4a86-9ac2-326d93376b38/stdout.log",
+              "workspace": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/6ec02011-c0e9-409d-9c32-44cd2e197389/runs/21a2c5ea-9dcb-4a86-9ac2-326d93376b38/workspace"
+            },
+            "state": "failed"
+          }
+        ],
+        "doctor": {
+          "adapter": "codex",
+          "detail": "CLI capability check failed: required safe CLI capability is absent: never",
+          "executable": "/tmp/critic-managed-execution-dri_4pg7/local-codex-protocol-fixture",
+          "supported": false,
+          "version": "codex 1.0.0 LOCAL PROTOCOL FIXTURE"
+        },
+        "doctor_exit_code": 1,
+        "doctor_stderr": "",
+        "job_id": "2e112507-e635-4913-a520-3b2a72559c77",
+        "state": "failed"
+      }
+    },
+    "running_worker_loss": {
+      "attempt_states": [
+        "abandoned",
+        "succeeded"
+      ],
+      "final_state": "succeeded",
+      "job_id": "7d6d009c-acb6-4bff-a68c-7363009287ec",
+      "old_child": {
+        "cwd": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/963102be-8856-42bb-acf8-015e83ae3872/runs/911f0068-bddb-4145-9327-eb312270fda1/workspace",
+        "pid": 60816,
+        "ppid": 60152,
+        "tag": "loss",
+        "worker": "mini"
+      },
+      "old_child_alive_after_restart": true,
+      "old_retained_output": {
+        "allocated_bytes": 4096,
+        "bytes": 53,
+        "inode": 1311218,
+        "path": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/963102be-8856-42bb-acf8-015e83ae3872/runs/911f0068-bddb-4145-9327-eb312270fda1/workspace/results/loss.json",
+        "sha256": "15a3eeabc4504324da48c3172aa270d2fc80dd4573a9b50788332d265324ecb9"
+      },
+      "publication": {
+        "actor": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+        "attempt": {
+          "attempt_id": "0b75cdc6-d082-4c01-818a-23718e4e6f97",
+          "job_id": "7d6d009c-acb6-4bff-a68c-7363009287ec",
+          "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+          "worker_incarnation": "28de37ec-6e97-43ff-923e-a3311a690eab"
+        },
+        "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+        "changes": [
+          {
+            "current": {
+              "blob": "maxio-workspaces/projects/blobs/bbb50902-4c4a-4d93-90fc-2d0feacfd8c4",
+              "sha256": "15a3eeabc4504324da48c3172aa270d2fc80dd4573a9b50788332d265324ecb9",
+              "size": 53
+            },
+            "kind": "put",
+            "path": "results/loss.json",
+            "previous": null
+          }
+        ],
+        "committed_at_unix_ms": 1792949935893,
+        "committed_head": {
+          "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+          "generation": 48,
+          "revision": {
+            "revision": "76c899c7-415b-4fca-b4d5-9b53c9a6e2ef",
+            "sha256": "2c0672be34af7b524966b579b802ca46814a6dae73ceba05d760f9bcfbb7b4bc"
+          },
+          "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+        },
+        "lease": {
+          "epoch": 2,
+          "fence": 7,
+          "lease_id": "51b9238f-9fa1-4add-b213-9706a839e0d5"
+        },
+        "parent": {
+          "revision": "3da19e1a-d26d-40ca-b1f9-03a3948207c8",
+          "sha256": "a2e9add1c28767ca1b5470803aae5df7da53be3c19c81990dc512598e49061a6"
+        },
+        "publication_id": "ca015a17-8d22-42c8-aae9-2205fc0d311d",
+        "request_id": "64d4ad1d-7ebd-4505-8296-4c209b385a60",
+        "retention": [
+          {
+            "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+            "committed_generation": 48,
+            "file": {
+              "path": "results/loss.json",
+              "revision": {
+                "revision": "76c899c7-415b-4fca-b4d5-9b53c9a6e2ef",
+                "sha256": "2c0672be34af7b524966b579b802ca46814a6dae73ceba05d760f9bcfbb7b4bc"
+              },
+              "version": {
+                "blob": "maxio-workspaces/projects/blobs/bbb50902-4c4a-4d93-90fc-2d0feacfd8c4",
+                "sha256": "15a3eeabc4504324da48c3172aa270d2fc80dd4573a9b50788332d265324ecb9",
+                "size": 53
+              },
+              "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+            },
+            "policy": "append_only_no_gc",
+            "policy_version": 1,
+            "recovery_reference": "maxio-workspace://6289952b-5cc9-4b1c-bc95-7edc54ea6906/results/loss.json?revision=76c899c7-415b-4fca-b4d5-9b53c9a6e2ef",
+            "vault_id": "a634f9b2-5e84-4e60-a7b5-0e5ee0528d30"
+          }
+        ],
+        "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+      },
+      "starts_before_explicit_retry": 1,
+      "state_before_retry": "abandoned"
+    },
+    "stale_publication": {
+      "held_real_publication_response": {
+        "response_bytes": 82,
+        "response_json": {
+          "error": {
+            "code": "conflict",
+            "message": "write lease expired, released or revoked"
+          }
+        },
+        "response_sha256": "c5f7bad4789a59c4a0cbf1e49fc804c37366b59284ad567f1ee28c00a86344f0",
+        "response_status": 409
+      },
+      "job_id": "d9680a2d-4f2e-4153-886b-62ecf05cb150",
+      "killed_worker_pid": 59098,
+      "new_incarnation": "b3f085f6-f038-4241-b61c-eb1f68f8d8ba",
+      "old_incarnation": "52d54661-aa88-4711-8995-541960f9c882",
+      "publication_after_restart": null,
+      "replacement_pid": 60152,
+      "retained_output": {
+        "allocated_bytes": 4096,
+        "bytes": 98,
+        "inode": 1310755,
+        "path": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/4fb40c6f-fdca-4e78-89b1-8b14984377c6/runs/c46b9eb8-7289-4b01-9b03-605049ee4331/workspace/results/stale.json",
+        "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc"
+      },
+      "retry_exit_code": 0,
+      "retry_final_state": "succeeded",
+      "retry_output": {
+        "result": {
+          "job": {
+            "attempts": [
+              {
+                "binding": {
+                  "attempt_id": "4fb40c6f-fdca-4e78-89b1-8b14984377c6",
+                  "job_id": "d9680a2d-4f2e-4153-886b-62ecf05cb150",
+                  "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+                  "worker_incarnation": "52d54661-aa88-4711-8995-541960f9c882"
+                },
+                "claimed_at_unix_ms": 1792949867649,
+                "detail": "worker process incarnation changed; manual retry required",
+                "finished_at_unix_ms": 1792949889097,
+                "heartbeat_at_unix_ms": 1792949884845,
+                "lease": null,
+                "prepared_outputs": [
+                  {
+                    "attempt": {
+                      "attempt_id": "4fb40c6f-fdca-4e78-89b1-8b14984377c6",
+                      "job_id": "d9680a2d-4f2e-4153-886b-62ecf05cb150",
+                      "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+                      "worker_incarnation": "52d54661-aa88-4711-8995-541960f9c882"
+                    },
+                    "path": "results/stale.json",
+                    "prepared_by": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+                    "upload_id": "03e444cd-951d-4366-ab47-1afd7902ee0e",
+                    "version": {
+                      "blob": "maxio-workspaces/projects/blobs/2790f6f5-993e-4d21-99b9-87f1ac19f7d6",
+                      "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc",
+                      "size": 98
+                    },
+                    "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+                  }
+                ],
+                "publication": null,
+                "run": {
+                  "adapter": "command",
+                  "detail": null,
+                  "environment_names": [
+                    "CRITIC_OBSERVATIONS",
+                    "CRITIC_WORKER"
+                  ],
+                  "executable": "/usr/bin/python3.12",
+                  "executable_version": "sha256:a92f0f95e883390c7256b2e441484aac06b1002dbe1d924141a77c8d82f96223",
+                  "exit_code": 0,
+                  "finished_at": "2026-10-25T17:38:04.243611433+00:00",
+                  "format": 1,
+                  "id": "c46b9eb8-7289-4b01-9b03-605049ee4331",
+                  "input_files": [
+                    {
+                      "path": "data/example.bin",
+                      "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611",
+                      "size": 134217728
+                    },
+                    {
+                      "path": "src/hash.py",
+                      "sha256": "8c4869c4e2a69c8ec3f4da77a9715bd7a1347ab490a67b9b37b6def4001a61d7",
+                      "size": 741
+                    }
+                  ],
+                  "output_files": [
+                    {
+                      "path": "results/stale.json",
+                      "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc",
+                      "size": 98
+                    }
+                  ],
+                  "provider_session_id": null,
+                  "published": false,
+                  "started_at": "2026-10-25T17:37:59.795891153+00:00",
+                  "status": "succeeded",
+                  "stderr_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/4fb40c6f-fdca-4e78-89b1-8b14984377c6/runs/c46b9eb8-7289-4b01-9b03-605049ee4331/stderr.log",
+                  "stdout_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/4fb40c6f-fdca-4e78-89b1-8b14984377c6/runs/c46b9eb8-7289-4b01-9b03-605049ee4331/stdout.log",
+                  "workspace": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/4fb40c6f-fdca-4e78-89b1-8b14984377c6/runs/c46b9eb8-7289-4b01-9b03-605049ee4331/workspace"
+                },
+                "state": "abandoned"
+              }
+            ],
+            "base": {
+              "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+              "generation": 21,
+              "revision": {
+                "revision": "467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+                "sha256": "ef65b10c6503f5a2913ed3fcedc108844658b1b3c0d012dcc5d60742fdc544bb"
+              },
+              "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+            },
+            "cancel_requested": false,
+            "created_at_unix_ms": 1792949864476,
+            "decision": {
+              "candidates": [
+                {
+                  "eligible": false,
+                  "incarnation": "e94b2d7e-673c-4ce0-b603-ff63f5e870a8",
+                  "missing_bytes": 134218469,
+                  "reasons": [
+                    "manual worker constraint"
+                  ],
+                  "worker_id": "9603d12a-de4c-4c77-9dec-a19bf7396a30"
+                },
+                {
+                  "eligible": true,
+                  "incarnation": "b3f085f6-f038-4241-b61c-eb1f68f8d8ba",
+                  "missing_bytes": 0,
+                  "reasons": [],
+                  "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+                }
+              ],
+              "decided_at_unix_ms": 1792949890807,
+              "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+              "selected_worker": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+            },
+            "inputs": [
+              {
+                "path": "data/example.bin",
+                "revision": {
+                  "revision": "467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+                  "sha256": "ef65b10c6503f5a2913ed3fcedc108844658b1b3c0d012dcc5d60742fdc544bb"
+                },
+                "version": {
+                  "blob": "maxio-workspaces/projects/blobs/9b79b41e-b46d-496e-9d04-85a0636a9a66",
+                  "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611",
+                  "size": 134217728
+                }
+              },
+              {
+                "path": "src/hash.py",
+                "revision": {
+                  "revision": "467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+                  "sha256": "ef65b10c6503f5a2913ed3fcedc108844658b1b3c0d012dcc5d60742fdc544bb"
+                },
+                "version": {
+                  "blob": "maxio-workspaces/projects/blobs/30cd9ba3-a411-4650-b555-d94c181d871f",
+                  "sha256": "8c4869c4e2a69c8ec3f4da77a9715bd7a1347ab490a67b9b37b6def4001a61d7",
+                  "size": 741
+                }
+              }
+            ],
+            "job_id": "d9680a2d-4f2e-4153-886b-62ecf05cb150",
+            "output_policy": "publish",
+            "output_selectors": [
+              {
+                "kind": "exact",
+                "path": "results/stale.json"
+              }
+            ],
+            "profile": "stale",
+            "required_worker": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+            "resources": {
+              "cpu_millis": 1000,
+              "memory_bytes": 268435456
+            },
+            "state": "queued",
+            "submitted_by": "5193beab-adec-434a-9bfd-6317c3879e6f",
+            "timeout_seconds": 3600,
+            "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+          },
+          "result": "job"
+        },
+        "transfers": {
+          "metadata_downloaded": 5186,
+          "metadata_uploaded": 453,
+          "payload_downloaded": 0,
+          "payload_uploaded": 0
+        }
+      },
+      "retry_publication": {
+        "actor": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+        "attempt": {
+          "attempt_id": "86e3385a-7f98-45f6-92af-51e4138b2363",
+          "job_id": "d9680a2d-4f2e-4153-886b-62ecf05cb150",
+          "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+          "worker_incarnation": "b3f085f6-f038-4241-b61c-eb1f68f8d8ba"
+        },
+        "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+        "changes": [
+          {
+            "current": {
+              "blob": "maxio-workspaces/projects/blobs/2b7434e5-be55-49b7-b415-455e08e6beed",
+              "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc",
+              "size": 98
+            },
+            "kind": "put",
+            "path": "results/stale.json",
+            "previous": null
+          }
+        ],
+        "committed_at_unix_ms": 1792949909645,
+        "committed_head": {
+          "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+          "generation": 38,
+          "revision": {
+            "revision": "3da19e1a-d26d-40ca-b1f9-03a3948207c8",
+            "sha256": "a2e9add1c28767ca1b5470803aae5df7da53be3c19c81990dc512598e49061a6"
+          },
+          "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+        },
+        "lease": {
+          "epoch": 2,
+          "fence": 5,
+          "lease_id": "8fde8982-a00e-4bd2-83da-03d39edb87f9"
+        },
+        "parent": {
+          "revision": "467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+          "sha256": "ef65b10c6503f5a2913ed3fcedc108844658b1b3c0d012dcc5d60742fdc544bb"
+        },
+        "publication_id": "de5107d9-4b50-47bc-9811-6213e27a929b",
+        "request_id": "edccc9c8-8da4-49f3-bd9c-b0a6bb2a2cad",
+        "retention": [
+          {
+            "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+            "committed_generation": 38,
+            "file": {
+              "path": "results/stale.json",
+              "revision": {
+                "revision": "3da19e1a-d26d-40ca-b1f9-03a3948207c8",
+                "sha256": "a2e9add1c28767ca1b5470803aae5df7da53be3c19c81990dc512598e49061a6"
+              },
+              "version": {
+                "blob": "maxio-workspaces/projects/blobs/2b7434e5-be55-49b7-b415-455e08e6beed",
+                "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc",
+                "size": 98
+              },
+              "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+            },
+            "policy": "append_only_no_gc",
+            "policy_version": 1,
+            "recovery_reference": "maxio-workspace://6289952b-5cc9-4b1c-bc95-7edc54ea6906/results/stale.json?revision=3da19e1a-d26d-40ca-b1f9-03a3948207c8",
+            "vault_id": "a634f9b2-5e84-4e60-a7b5-0e5ee0528d30"
+          }
+        ],
+        "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+      },
+      "retry_stderr": "",
+      "state_after_restart": "abandoned"
+    }
+  },
+  "ports": {
+    "authority": 34117,
+    "book": 45445,
+    "mini": 39687,
+    "vps": 41757
+  },
+  "processes_stopped": [
+    {
+      "name": "authority",
+      "pid": 58890,
+      "returncode": 0
+    },
+    {
+      "name": "mini-worker",
+      "pid": 59098,
+      "returncode": -9
+    },
+    {
+      "name": "vps-worker",
+      "pid": 59099,
+      "returncode": 0
+    },
+    {
+      "name": "mini-worker-restart-after-publication-gate",
+      "pid": 60152,
+      "returncode": -9
+    },
+    {
+      "name": "mini-worker-restart-after-running-loss",
+      "pid": 60827,
+      "returncode": -9
+    },
+    {
+      "name": "mini-provider-fixture-worker",
+      "pid": 61642,
+      "returncode": -9
+    }
+  ],
+  "runtime_processes_after_final_cleanup": [],
+  "runtime_processes_before_final_cleanup": [],
+  "runtime_root": "/tmp/critic-managed-execution-dri_4pg7",
+  "scope": "One host; separate authenticated clients and worker processes; owner-trusted native commands; no model calls",
+  "source_commit": "22c1d523e25a390650dff1b8ddec41c1c277e3e9"
+}

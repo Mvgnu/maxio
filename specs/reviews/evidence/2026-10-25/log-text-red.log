@@ -1,0 +1,22 @@
+   Compiling maxio v0.1.0 (/workspace/scratch/05c136f30bb4/maxio)
+    Finished `test` profile [unoptimized] target(s) in 1.40s
+     Running unittests src/bin/maxio-fabric.rs (/workspace/scratch/05c136f30bb4/maxio-target/debug/deps/maxio_fabric-ada65a2cb5d3792f)
+
+running 1 test
+test tests::task_logs_exposes_readable_output_without_external_decoding ... FAILED
+
+failures:
+
+---- tests::task_logs_exposes_readable_output_without_external_decoding stdout ----
+
+thread 'tests::task_logs_exposes_readable_output_without_external_decoding' (37) panicked at src/bin/maxio-fabric.rs:1374:9:
+documented human log inspection must be directly available
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+
+failures:
+    tests::task_logs_exposes_readable_output_without_external_decoding
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--bin maxio-fabric`
