@@ -1,0 +1,121 @@
+{
+  "full_gate_command": "./scripts/domain_check.sh all",
+  "full_gate_exit_code": 0,
+  "full_gate_log_sha256": "7481da4e89f6ee0a0a6e68745bcd647595e11b637c823101f99c16912111ce51",
+  "rust_passed": 1627,
+  "rust_failed": 0,
+  "rust_ignored": 0,
+  "console_tests": 45,
+  "architecture_tests": 9,
+  "domain_specs": 16,
+  "process_commands": [
+    "+ python3 scripts/smoke_standalone.py --binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio",
+    "+ python3 scripts/smoke_peer_s3.py --binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio",
+    "+ python3 scripts/smoke_secure_peers.py --binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio",
+    "+ python3 scripts/smoke_device_sync.py --binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio --sync-binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio-sync",
+    "+ python3 scripts/smoke_device_sync.py --binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio --sync-binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio-sync --tls",
+    "+ python3 scripts/smoke_workspace.py --binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio --workspace-binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio-workspace",
+    "+ python3 scripts/smoke_agents.py --binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio-agent",
+    "+ python3 scripts/smoke_fabric.py --fabric-binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio-fabric --worker-binary /workspace/scratch/05c136f30bb4/maxio-target/debug/maxio-worker"
+  ],
+  "managed_outcome": "observations_complete",
+  "managed_cases": [
+    {
+      "name": "Setup: proper TLS, independent enrolled identities and explicit grants",
+      "status": "observed"
+    },
+    {
+      "name": "B/D: Mini seeds a real non-sparse dataset and imports private cache",
+      "status": "observed"
+    },
+    {
+      "name": "B: metadata/docs selection, selected publication, conflicts, delete/restore",
+      "status": "observed"
+    },
+    {
+      "name": "D: two real workers, exact locality, actual Python hash and published result",
+      "status": "observed"
+    },
+    {
+      "name": "D: Codex and Claude existing adapters with labelled protocol fixtures",
+      "status": "observed"
+    },
+    {
+      "name": "E: lost finish/publication acknowledgments reconcile without rerunning",
+      "status": "observed"
+    },
+    {
+      "name": "B/E: pins, failed/interrupted proof, measured private eviction and exact refetch",
+      "status": "observed"
+    },
+    {
+      "name": "C/B: overlapping leases, committed read, expiry/new fence, durable restart",
+      "status": "observed"
+    },
+    {
+      "name": "C/E: overlapping worker jobs, unexpected kill, abandonment and manual retry",
+      "status": "observed"
+    },
+    {
+      "name": "E: cancel a real running command and retain unpublished work",
+      "status": "observed"
+    },
+    {
+      "name": "E: interrupted selected upload/download preserve bytes and recover",
+      "status": "observed"
+    },
+    {
+      "name": "E: running command stops after real renewal failure",
+      "status": "observed"
+    },
+    {
+      "name": "E: prepared worker output conflicts with a concurrent head publication",
+      "status": "observed"
+    },
+    {
+      "name": "E: coordinator dies during execution; restart fences and retains work",
+      "status": "observed"
+    },
+    {
+      "name": "Final: Book zero dataset throughout; revoked identity rejected",
+      "status": "observed"
+    }
+  ],
+  "managed_binaries": {
+    "fabric": {
+      "allocated_bytes": 34131968,
+      "device": 27,
+      "inode": 300554,
+      "links": 2,
+      "path": "/workspace/scratch/05c136f30bb4/maxio-target/debug/maxio-fabric",
+      "sha256": "c10c361ee47a33eaadbf4d51402174e5d34782d7c35282ce53de94918d01eb7b",
+      "size": 34563696
+    },
+    "worker": {
+      "allocated_bytes": 26112000,
+      "device": 27,
+      "inode": 300505,
+      "links": 2,
+      "path": "/workspace/scratch/05c136f30bb4/maxio-target/debug/maxio-worker",
+      "sha256": "8108d2d6ec9e7074d63e688a7eab41af0c6daf08e9aac128df49403d931fe6fc",
+      "size": 26446304
+    }
+  },
+  "managed_script": {
+    "allocated_bytes": 81920,
+    "device": 27,
+    "inode": 297229,
+    "links": 1,
+    "path": "/workspace/scratch/05c136f30bb4/maxio/scripts/smoke_fabric.py",
+    "sha256": "c3492278a29f26820c3576ee3d3484e60f221e61346fc534ec71afdd5842e408",
+    "size": 81837
+  },
+  "after_onboarding_fix": {
+    "command": "cargo test --locked --bin maxio-fabric",
+    "tests_passed": 2,
+    "all_target_clippy": "passed",
+    "production_panic_clippy": "passed",
+    "binaries_build": "passed"
+  },
+  "boundary": "Full gate ran before the additive task logs --text correction. Two CLI regressions/build/both lint gates ran after it; final GitHub CI is tracked separately."
+}

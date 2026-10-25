@@ -1,0 +1,805 @@
+[
+  {
+    "name": "real-nonsparse-128MiB-dataset",
+    "pass": true,
+    "evidence": {
+      "size": 134217728,
+      "allocated": 134217728,
+      "sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421"
+    }
+  },
+  {
+    "name": "selected-publication-excludes-unselected-file",
+    "pass": true,
+    "evidence": {
+      "catalog": {
+        "head": {
+          "authority_id": "e82135ee-4740-4f23-9691-d782f7c25ed6",
+          "generation": 13,
+          "revision": {
+            "revision": "e3c5454a-eaba-4803-b035-f8e86141a63a",
+            "sha256": "22f365b45e42376c36a5134f05bb7091d21d1a762205f4de0217029bd4f4823a"
+          },
+          "workspace_id": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17"
+        },
+        "snapshot": {
+          "head_etag": null,
+          "manifest": {
+            "files": {
+              "data/dataset.bin": {
+                "blob": "maxio-workspaces/selection/blobs/7a54d63f-0941-42a9-9907-8b48c4614b95",
+                "sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421",
+                "size": 134217728
+              },
+              "docs/guide.md": {
+                "blob": "maxio-workspaces/selection/blobs/0db02063-8f88-411f-b5aa-2c077c245b22",
+                "sha256": "11acbe4156cd4718393f24261df819549cc28f98bd7f6a3e052b5fccf00baa20",
+                "size": 60
+              },
+              "docs/note.md": {
+                "blob": "maxio-workspaces/selection/blobs/a5f1de35-df2d-443e-b637-1b6cc4d63267",
+                "sha256": "8cd5e37d3046bfb9b8654ccc4cfdc2e1b6a704e2cd8ccea7d6ff65e3762c6d56",
+                "size": 50
+              },
+              "src/main.py": {
+                "blob": "maxio-workspaces/selection/blobs/c678ef2d-ef15-4e40-a825-2443797fd3e7",
+                "sha256": "6690d82009e183cb8ce2c1449d35d5edd94928d39801017b37256633cf627939",
+                "size": 32
+              }
+            },
+            "format": 1,
+            "parent": {
+              "revision": "3eb4236a-3a37-4789-a25c-0d73f858698c",
+              "sha256": "cf4ac5505931e6d492c5329b595dd97ae1f5c1fbd7d0fe351c921a693ef020db"
+            },
+            "revision": "e3c5454a-eaba-4803-b035-f8e86141a63a",
+            "workspace_id": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17"
+          },
+          "manifest_sha256": "22f365b45e42376c36a5134f05bb7091d21d1a762205f4de0217029bd4f4823a"
+        }
+      }
+    }
+  },
+  {
+    "name": "book-metadata-only-no-payload",
+    "pass": true,
+    "evidence": {
+      "cli_transfers": {
+        "metadata_downloaded": 2590,
+        "metadata_uploaded": 368,
+        "payload_downloaded": 0,
+        "payload_uploaded": 0
+      },
+      "observed_responses": [
+        {
+          "actor": "book",
+          "label": "book-metadata-only",
+          "method": "POST",
+          "path": "/v1/auth/challenge",
+          "request_bytes": 52,
+          "response_bytes": 419,
+          "time": 1792948997.3573883,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "419",
+          "response_sha256": "486339054979f26b3f5311f38143ea67c2a714bad457812819b15f89f59a3290"
+        },
+        {
+          "actor": "book",
+          "label": "book-metadata-only",
+          "method": "POST",
+          "path": "/v1/auth/session",
+          "request_bytes": 209,
+          "response_bytes": 101,
+          "time": 1792948997.363616,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "101",
+          "response_sha256": "eacb74d355eb18169d17b601105497d5c6d8963d87a253de5c2124ddba618b6e"
+        },
+        {
+          "actor": "book",
+          "label": "book-metadata-only",
+          "method": "POST",
+          "path": "/v1/control",
+          "request_bytes": 13,
+          "response_bytes": 196,
+          "time": 1792948997.3691883,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "196",
+          "response_sha256": "da6de9a1e291d416aabbfcc4897fa4679cc88e1ebb9d28eebd1d2306f0a495f0"
+        },
+        {
+          "actor": "book",
+          "label": "book-metadata-only",
+          "method": "POST",
+          "path": "/v1/control",
+          "request_bytes": 24,
+          "response_bytes": 441,
+          "time": 1792948997.3752367,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "441",
+          "response_sha256": "46445236ae137442264a91cf4a279815a0c42c25b406fb359cc845523357f7de"
+        },
+        {
+          "actor": "book",
+          "label": "book-metadata-only",
+          "method": "POST",
+          "path": "/v1/control",
+          "request_bytes": 70,
+          "response_bytes": 1433,
+          "time": 1792948997.384258,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "1433",
+          "response_sha256": "4808c16eb095f4be52eb6d138126fc2f395e449e06f2629f76e2fe973cac4bc7"
+        }
+      ]
+    }
+  },
+  {
+    "name": "book-discovery-leaves-files-absent",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "mini-metadata-only-no-payload",
+    "pass": true,
+    "evidence": {
+      "cli_transfers": {
+        "metadata_downloaded": 2590,
+        "metadata_uploaded": 368,
+        "payload_downloaded": 0,
+        "payload_uploaded": 0
+      },
+      "observed_responses": [
+        {
+          "actor": "mini",
+          "label": "mini-metadata-only",
+          "method": "POST",
+          "path": "/v1/auth/challenge",
+          "request_bytes": 52,
+          "response_bytes": 419,
+          "time": 1792948997.4113736,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "419",
+          "response_sha256": "490f43a7e3b060f95936aa575f651e074c1f6b79e0af630918cab533c0a92a8e"
+        },
+        {
+          "actor": "mini",
+          "label": "mini-metadata-only",
+          "method": "POST",
+          "path": "/v1/auth/session",
+          "request_bytes": 209,
+          "response_bytes": 101,
+          "time": 1792948997.4187295,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "101",
+          "response_sha256": "abfdef30c57d78f8d19d3f9cb4280f5ecc03cbcc978c4929addaaaaab914e901"
+        },
+        {
+          "actor": "mini",
+          "label": "mini-metadata-only",
+          "method": "POST",
+          "path": "/v1/control",
+          "request_bytes": 13,
+          "response_bytes": 196,
+          "time": 1792948997.434643,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "196",
+          "response_sha256": "da6de9a1e291d416aabbfcc4897fa4679cc88e1ebb9d28eebd1d2306f0a495f0"
+        },
+        {
+          "actor": "mini",
+          "label": "mini-metadata-only",
+          "method": "POST",
+          "path": "/v1/control",
+          "request_bytes": 24,
+          "response_bytes": 441,
+          "time": 1792948997.441234,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "441",
+          "response_sha256": "46445236ae137442264a91cf4a279815a0c42c25b406fb359cc845523357f7de"
+        },
+        {
+          "actor": "mini",
+          "label": "mini-metadata-only",
+          "method": "POST",
+          "path": "/v1/control",
+          "request_bytes": 70,
+          "response_bytes": 1433,
+          "time": 1792948997.4484577,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "1433",
+          "response_sha256": "4808c16eb095f4be52eb6d138126fc2f395e449e06f2629f76e2fe973cac4bc7"
+        }
+      ]
+    }
+  },
+  {
+    "name": "vps-metadata-only-no-payload",
+    "pass": true,
+    "evidence": {
+      "cli_transfers": {
+        "metadata_downloaded": 2590,
+        "metadata_uploaded": 368,
+        "payload_downloaded": 0,
+        "payload_uploaded": 0
+      },
+      "observed_responses": [
+        {
+          "actor": "vps",
+          "label": "vps-metadata-only",
+          "method": "POST",
+          "path": "/v1/auth/challenge",
+          "request_bytes": 52,
+          "response_bytes": 419,
+          "time": 1792948997.4727201,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "419",
+          "response_sha256": "71814059c5399fe07009c5a1cf7ff8ade4e57836156598a0ab9ba583f45cf0c7"
+        },
+        {
+          "actor": "vps",
+          "label": "vps-metadata-only",
+          "method": "POST",
+          "path": "/v1/auth/session",
+          "request_bytes": 209,
+          "response_bytes": 101,
+          "time": 1792948997.4791434,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "101",
+          "response_sha256": "3e7f7f0d7cf97215ca90bda0f0469cdc224fc13ab58cff36e01b28ed37403c45"
+        },
+        {
+          "actor": "vps",
+          "label": "vps-metadata-only",
+          "method": "POST",
+          "path": "/v1/control",
+          "request_bytes": 13,
+          "response_bytes": 196,
+          "time": 1792948997.4853692,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "196",
+          "response_sha256": "da6de9a1e291d416aabbfcc4897fa4679cc88e1ebb9d28eebd1d2306f0a495f0"
+        },
+        {
+          "actor": "vps",
+          "label": "vps-metadata-only",
+          "method": "POST",
+          "path": "/v1/control",
+          "request_bytes": 24,
+          "response_bytes": 441,
+          "time": 1792948997.4907792,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "441",
+          "response_sha256": "46445236ae137442264a91cf4a279815a0c42c25b406fb359cc845523357f7de"
+        },
+        {
+          "actor": "vps",
+          "label": "vps-metadata-only",
+          "method": "POST",
+          "path": "/v1/control",
+          "request_bytes": 70,
+          "response_bytes": 1433,
+          "time": 1792948997.4982643,
+          "status": 200,
+          "content_type": "application/json",
+          "declared_response_bytes": "1433",
+          "response_sha256": "4808c16eb095f4be52eb6d138126fc2f395e449e06f2629f76e2fe973cac4bc7"
+        }
+      ]
+    }
+  },
+  {
+    "name": "vps-discovery-leaves-files-absent",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "book-selected-docs-exact-bytes",
+    "pass": true,
+    "evidence": {
+      "cli_transfers": {
+        "metadata_downloaded": 2590,
+        "metadata_uploaded": 1187,
+        "payload_downloaded": 110,
+        "payload_uploaded": 0
+      },
+      "observed_payload_events": [
+        {
+          "actor": "book",
+          "label": "book-selected-docs",
+          "method": "POST",
+          "path": "/v1/file/read",
+          "request_bytes": 410,
+          "response_bytes": 60,
+          "time": 1792948997.561462,
+          "status": 200,
+          "content_type": "application/octet-stream",
+          "declared_response_bytes": "60",
+          "response_sha256": "11acbe4156cd4718393f24261df819549cc28f98bd7f6a3e052b5fccf00baa20"
+        },
+        {
+          "actor": "book",
+          "label": "book-selected-docs",
+          "method": "POST",
+          "path": "/v1/file/read",
+          "request_bytes": 409,
+          "response_bytes": 50,
+          "time": 1792948997.5732048,
+          "status": 200,
+          "content_type": "application/octet-stream",
+          "declared_response_bytes": "50",
+          "response_sha256": "8cd5e37d3046bfb9b8654ccc4cfdc2e1b6a704e2cd8ccea7d6ff65e3762c6d56"
+        }
+      ]
+    }
+  },
+  {
+    "name": "vps-selected-docs-exact-bytes",
+    "pass": true,
+    "evidence": {
+      "cli_transfers": {
+        "metadata_downloaded": 2590,
+        "metadata_uploaded": 1187,
+        "payload_downloaded": 110,
+        "payload_uploaded": 0
+      },
+      "observed_payload_events": [
+        {
+          "actor": "vps",
+          "label": "vps-selected-docs",
+          "method": "POST",
+          "path": "/v1/file/read",
+          "request_bytes": 410,
+          "response_bytes": 60,
+          "time": 1792948997.6326685,
+          "status": 200,
+          "content_type": "application/octet-stream",
+          "declared_response_bytes": "60",
+          "response_sha256": "11acbe4156cd4718393f24261df819549cc28f98bd7f6a3e052b5fccf00baa20"
+        },
+        {
+          "actor": "vps",
+          "label": "vps-selected-docs",
+          "method": "POST",
+          "path": "/v1/file/read",
+          "request_bytes": 409,
+          "response_bytes": 50,
+          "time": 1792948997.6459587,
+          "status": 200,
+          "content_type": "application/octet-stream",
+          "declared_response_bytes": "50",
+          "response_sha256": "8cd5e37d3046bfb9b8654ccc4cfdc2e1b6a704e2cd8ccea7d6ff65e3762c6d56"
+        }
+      ]
+    }
+  },
+  {
+    "name": "dirty-baseline-is-not-advanced-by-refresh",
+    "pass": true,
+    "evidence": {
+      "status_row": {
+        "local_state": "dirty",
+        "path": "docs/note.md",
+        "pinned": false,
+        "reference": "maxio-workspace://3f37c8e4-ee85-40ee-9aef-b00ceaffba17/docs/note.md?revision=63da756d-10e7-4df5-a35d-7696537dd9fe",
+        "sha256": "f5b31cf9fa5136174040ddea1efbfcda1c5433dfcfd5e71cb1f9a0261072f479",
+        "size": 58
+      }
+    }
+  },
+  {
+    "name": "conflicting-commands-preserve-dirty-bytes",
+    "pass": true,
+    "evidence": {
+      "sha256": "5a9d6a7530b8a0670933003194680a923e2ccb9eaf2f511f8cf0cb2d0656826b"
+    }
+  },
+  {
+    "name": "offline-reopen-preserves-dirty-bytes",
+    "pass": true,
+    "evidence": {
+      "status_row": {
+        "local_state": "dirty",
+        "path": "docs/note.md",
+        "pinned": false,
+        "reference": "maxio-workspace://3f37c8e4-ee85-40ee-9aef-b00ceaffba17/docs/note.md?revision=63da756d-10e7-4df5-a35d-7696537dd9fe",
+        "sha256": "f5b31cf9fa5136174040ddea1efbfcda1c5433dfcfd5e71cb1f9a0261072f479",
+        "size": 58
+      }
+    }
+  },
+  {
+    "name": "authority-restart-preserves-dirty-edit",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "old-clean-baseline-is-stale",
+    "pass": true,
+    "evidence": {
+      "status_row": {
+        "local_state": "stale",
+        "path": "docs/note.md",
+        "pinned": false,
+        "reference": "maxio-workspace://3f37c8e4-ee85-40ee-9aef-b00ceaffba17/docs/note.md?revision=63da756d-10e7-4df5-a35d-7696537dd9fe",
+        "sha256": "f5b31cf9fa5136174040ddea1efbfcda1c5433dfcfd5e71cb1f9a0261072f479",
+        "size": 58
+      }
+    }
+  },
+  {
+    "name": "clean-replacement-retains-late-open-descriptor-edit",
+    "pass": true,
+    "evidence": {
+      "recovery_paths": [
+        "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/vps-work/.maxio-workspace/history/a9237b77-e939-4624-8619-521f27870112.data"
+      ],
+      "new_sha256": "f5b31cf9fa5136174040ddea1efbfcda1c5433dfcfd5e71cb1f9a0261072f479"
+    }
+  },
+  {
+    "name": "book-logical-delete-retains-local-version",
+    "pass": true,
+    "evidence": {
+      "status_row": {
+        "local_state": "dirty",
+        "path": "docs/note.md",
+        "pinned": false,
+        "reference": "maxio-workspace://3f37c8e4-ee85-40ee-9aef-b00ceaffba17/docs/note.md?revision=e3c5454a-eaba-4803-b035-f8e86141a63a",
+        "sha256": "8cd5e37d3046bfb9b8654ccc4cfdc2e1b6a704e2cd8ccea7d6ff65e3762c6d56",
+        "size": 50
+      }
+    }
+  },
+  {
+    "name": "vps-logical-delete-retains-local-version",
+    "pass": true,
+    "evidence": {
+      "status_row": {
+        "local_state": "stale",
+        "path": "docs/note.md",
+        "pinned": true,
+        "reference": "maxio-workspace://3f37c8e4-ee85-40ee-9aef-b00ceaffba17/docs/note.md?revision=63da756d-10e7-4df5-a35d-7696537dd9fe",
+        "sha256": "f5b31cf9fa5136174040ddea1efbfcda1c5433dfcfd5e71cb1f9a0261072f479",
+        "size": 58
+      }
+    }
+  },
+  {
+    "name": "explicit-restore-recovers-matching-baseline",
+    "pass": true,
+    "evidence": {
+      "status_row": {
+        "local_state": "clean",
+        "path": "docs/note.md",
+        "pinned": false,
+        "reference": "maxio-workspace://3f37c8e4-ee85-40ee-9aef-b00ceaffba17/docs/note.md?revision=32ce1ae4-3fa1-4eef-9cf6-adedc6df0f38",
+        "sha256": "f5b31cf9fa5136174040ddea1efbfcda1c5433dfcfd5e71cb1f9a0261072f479",
+        "size": 58
+      }
+    }
+  },
+  {
+    "name": "missing-local-directory-does-not-delete-remote",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "cache-import-independent-verified-copy",
+    "pass": true,
+    "evidence": {
+      "source_inode": 526828,
+      "cache_inode": 538943,
+      "cache_path": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/cache/objects/3f37c8e4-ee85-40ee-9aef-b00ceaffba17-31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421-134217728",
+      "inventory": {
+        "allocated_bytes": 134217728,
+        "cached_files": [
+          {
+            "version": {
+              "blob": "maxio-workspaces/selection/blobs/7a54d63f-0941-42a9-9907-8b48c4614b95",
+              "sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421",
+              "size": 134217728
+            },
+            "workspace_id": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17"
+          }
+        ],
+        "entries": [
+          {
+            "active_attempts": [],
+            "allocated_bytes": 134217728,
+            "key": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17-31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421-134217728",
+            "logical_bytes": 134217728,
+            "pinned": false,
+            "references": [
+              {
+                "path": "data/dataset.bin",
+                "revision": {
+                  "revision": "c052c2d7-7565-4e6d-86a2-55ad356054d6",
+                  "sha256": "2b25fc8600699aaa415054185bbb65861be33749397a0e6f16c926e2a7778c62"
+                },
+                "version": {
+                  "blob": "maxio-workspaces/selection/blobs/7a54d63f-0941-42a9-9907-8b48c4614b95",
+                  "sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421",
+                  "size": 134217728
+                },
+                "workspace_id": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17"
+              }
+            ],
+            "state": "verified"
+          }
+        ],
+        "logical_bytes": 134217728
+      }
+    }
+  },
+  {
+    "name": "pinned-refusal-preserves-exact-bytes",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "unverifiable-retention-preserves-cache",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "fresh-retention-check-rejects-unavailable-exact-vault-body",
+    "pass": true,
+    "evidence": {}
+  },
+  {
+    "name": "fresh-verified-eviction-reclaims-only-cache-object",
+    "pass": true,
+    "evidence": {
+      "receipt": {
+        "allocated_bytes_unlinked": 134217728,
+        "available_bytes_after": 21649190912,
+        "available_bytes_before": 21542977536,
+        "logical_bytes_removed": 134217728,
+        "observed_available_delta": 106213376,
+        "operation_id": "cfb486ff-7b22-4e40-a499-1d0ad9479552",
+        "removed": [
+          {
+            "path": "data/dataset.bin",
+            "revision": {
+              "revision": "c052c2d7-7565-4e6d-86a2-55ad356054d6",
+              "sha256": "2b25fc8600699aaa415054185bbb65861be33749397a0e6f16c926e2a7778c62"
+            },
+            "version": {
+              "blob": "maxio-workspaces/selection/blobs/7a54d63f-0941-42a9-9907-8b48c4614b95",
+              "sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421",
+              "size": 134217728
+            },
+            "workspace_id": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17"
+          }
+        ]
+      },
+      "measured_allocated_before": 134217728,
+      "retained_output": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/attempts/a61382d6-5036-44f9-a1ae-0c720816c597/unpublished-output.bin"
+    }
+  },
+  {
+    "name": "refetch-interruption-really-delivered-partial-body",
+    "pass": true,
+    "evidence": {
+      "partial_events": [
+        {
+          "actor": "mini",
+          "label": "interrupted-cache-refetch",
+          "method": "POST",
+          "path": "/v1/file/read",
+          "request_bytes": 420,
+          "response_bytes": 2097152,
+          "time": 1792949050.0334945,
+          "status": 200,
+          "content_type": "application/octet-stream",
+          "declared_response_bytes": "134217728",
+          "injected_disconnect": true,
+          "response_sha256": "88b32a40b822da24d2aa1c93b8dc81657328c116ddabadbcd74ebcdfd1d79a21"
+        }
+      ]
+    }
+  },
+  {
+    "name": "failed-refetch-preserves-unpublished-and-original-bytes",
+    "pass": true,
+    "evidence": {
+      "private_files_after_failure": [
+        {
+          "path": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/manager.lock",
+          "bytes": 0
+        },
+        {
+          "path": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/.maxio-worker",
+          "bytes": 30
+        },
+        {
+          "path": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/cache/state.json",
+          "bytes": 331
+        },
+        {
+          "path": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/attempts/a61382d6-5036-44f9-a1ae-0c720816c597/unpublished-output.bin",
+          "bytes": 74
+        },
+        {
+          "path": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/cache/receipts/cfb486ff-7b22-4e40-a499-1d0ad9479552.json",
+          "bytes": 2122
+        },
+        {
+          "path": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/cache/staging/5571201a-d298-475a-b92e-12b21da03ea1/payload.json",
+          "bytes": 404
+        },
+        {
+          "path": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/cache/staging/990f7665-125a-4e23-b8c7-7c4276b7bbe3/payload",
+          "bytes": 2097152
+        },
+        {
+          "path": "/tmp/maxio-critic-managed-cache-22c1d52-round2/data/mini-private-cache/cache/staging/990f7665-125a-4e23-b8c7-7c4276b7bbe3/payload.json",
+          "bytes": 404
+        }
+      ]
+    }
+  },
+  {
+    "name": "exact-cache-refetch-verifies-full-original-dataset",
+    "pass": true,
+    "evidence": {
+      "observed_payload_events": [
+        {
+          "actor": "mini",
+          "label": "exact-cache-refetch-after-failure",
+          "method": "POST",
+          "path": "/v1/file/read",
+          "request_bytes": 420,
+          "response_bytes": 134217728,
+          "time": 1792949054.5053287,
+          "status": 200,
+          "content_type": "application/octet-stream",
+          "declared_response_bytes": "134217728",
+          "response_sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421"
+        }
+      ],
+      "output": {
+        "result": {
+          "hydrated": [
+            {
+              "path": "data/dataset.bin",
+              "revision": {
+                "revision": "c052c2d7-7565-4e6d-86a2-55ad356054d6",
+                "sha256": "2b25fc8600699aaa415054185bbb65861be33749397a0e6f16c926e2a7778c62"
+              },
+              "version": {
+                "blob": "maxio-workspaces/selection/blobs/7a54d63f-0941-42a9-9907-8b48c4614b95",
+                "sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421",
+                "size": 134217728
+              },
+              "workspace_id": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17"
+            }
+          ],
+          "reused": [],
+          "transfer": {
+            "metadata_downloaded": 0,
+            "metadata_uploaded": 420,
+            "payload_downloaded": 134217728,
+            "payload_uploaded": 0
+          }
+        },
+        "transfers": {
+          "metadata_downloaded": 912,
+          "metadata_uploaded": 707,
+          "payload_downloaded": 134217728,
+          "payload_uploaded": 0
+        }
+      },
+      "sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421"
+    }
+  },
+  {
+    "name": "recovered-cache-has-verified-advertisement",
+    "pass": true,
+    "evidence": {
+      "inventory": {
+        "allocated_bytes": 134217728,
+        "cached_files": [
+          {
+            "version": {
+              "blob": "maxio-workspaces/selection/blobs/7a54d63f-0941-42a9-9907-8b48c4614b95",
+              "sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421",
+              "size": 134217728
+            },
+            "workspace_id": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17"
+          }
+        ],
+        "entries": [
+          {
+            "active_attempts": [],
+            "allocated_bytes": 134217728,
+            "key": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17-31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421-134217728",
+            "logical_bytes": 134217728,
+            "pinned": false,
+            "references": [
+              {
+                "path": "data/dataset.bin",
+                "revision": {
+                  "revision": "c052c2d7-7565-4e6d-86a2-55ad356054d6",
+                  "sha256": "2b25fc8600699aaa415054185bbb65861be33749397a0e6f16c926e2a7778c62"
+                },
+                "version": {
+                  "blob": "maxio-workspaces/selection/blobs/7a54d63f-0941-42a9-9907-8b48c4614b95",
+                  "sha256": "31e3c26fd85e14c0282fb6a573d2e4267a93392a54a0e2224738dfb0aef7c421",
+                  "size": 134217728
+                },
+                "workspace_id": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17"
+              }
+            ],
+            "state": "verified"
+          }
+        ],
+        "logical_bytes": 134217728
+      }
+    }
+  },
+  {
+    "name": "hardlink-refusal-preserves-both-links",
+    "pass": true,
+    "evidence": {
+      "link_count": 2
+    }
+  },
+  {
+    "name": "modified-cache-bytes-retained-and-not-advertised",
+    "pass": true,
+    "evidence": {
+      "inventory": {
+        "allocated_bytes": 4096,
+        "cached_files": [],
+        "entries": [
+          {
+            "active_attempts": [],
+            "allocated_bytes": 4096,
+            "key": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17-8df311000b45f810261284ed24874de71675443ac73abf03e7173e2717bd7f48-84",
+            "logical_bytes": 84,
+            "pinned": false,
+            "references": [
+              {
+                "path": "docs/guide.md",
+                "revision": {
+                  "revision": "c052c2d7-7565-4e6d-86a2-55ad356054d6",
+                  "sha256": "2b25fc8600699aaa415054185bbb65861be33749397a0e6f16c926e2a7778c62"
+                },
+                "version": {
+                  "blob": "maxio-workspaces/selection/blobs/aa2ca7c4-c5ee-4f1a-83eb-096ffee7b235",
+                  "sha256": "8df311000b45f810261284ed24874de71675443ac73abf03e7173e2717bd7f48",
+                  "size": 84
+                },
+                "workspace_id": "3f37c8e4-ee85-40ee-9aef-b00ceaffba17"
+              }
+            ],
+            "state": "modified"
+          }
+        ],
+        "logical_bytes": 84
+      },
+      "sha256": "2b6419d2ea690793f5089191af7af9b25f445970a95cc18471b35c77dbdcd8ec"
+    }
+  },
+  {
+    "name": "final-unrelated-book-dataset-still-absent",
+    "pass": true,
+    "evidence": {}
+  }
+]

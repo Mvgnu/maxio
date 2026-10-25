@@ -23,24 +23,30 @@ PM_PATHS = (
     "ui/tsconfig*.json", "ui/svelte.config.js", "scripts/check_architecture.py",
     "tests/architecture/", "src/files.rs", "src/workspace/mod.rs",
     "src/workspace/contract.rs", "src/execution/mod.rs", "src/execution/contract.rs",
+    "src/fabric/mod.rs", "src/fabric/contract.rs",
 )
 EXPECTED = {
     "runtime_platform", "storage_engine", "cluster_transport_security",
     "cluster_metadata_plane", "s3_auth_sigv4", "s3_api_surface", "console_api",
     "web_console_ui", "device_sync", "quality_harness",
     "workspace_catalog", "workspace_cache", "agent_execution",
+    "fabric_authority", "fabric_transport", "worker_execution",
 }
 FORBIDDEN_DEPS = {
-    "src/main.rs": ("workspace", "execution"),
-    "src/server.rs": ("workspace", "execution"),
-    "src/config.rs": ("workspace", "execution"),
-    "src/api/": ("workspace", "execution"),
-    "src/storage/": ("api", "server", "auth", "sync", "workspace", "execution"),
-    "src/metadata/": ("api", "server", "auth", "sync", "workspace", "execution"),
-    "src/cluster/": ("api", "server", "storage", "metadata", "sync", "workspace", "execution"),
-    "src/sync/": ("api", "server", "storage", "metadata", "cluster", "workspace", "execution"),
-    "src/workspace/": ("api", "server", "storage", "metadata", "cluster", "sync", "execution"),
-    "src/execution/": ("api", "server", "storage", "metadata", "cluster", "sync", "workspace"),
+    "src/main.rs": ("workspace", "execution", "fabric"),
+    "src/server.rs": ("workspace", "execution", "fabric"),
+    "src/server/": ("workspace", "execution", "fabric"),
+    "src/config.rs": ("workspace", "execution", "fabric"),
+    "src/api/": ("workspace", "execution", "fabric"),
+    "src/storage/": ("api", "server", "auth", "sync", "workspace", "execution", "fabric"),
+    "src/metadata/": ("api", "server", "auth", "sync", "workspace", "execution", "fabric"),
+    "src/cluster/": ("api", "server", "storage", "metadata", "sync", "workspace", "execution", "fabric"),
+    "src/sync/": ("api", "server", "storage", "metadata", "cluster", "workspace", "execution", "fabric"),
+    "src/workspace/": ("api", "server", "storage", "metadata", "cluster", "sync", "execution", "fabric"),
+    "src/execution/": ("api", "server", "storage", "metadata", "cluster", "sync", "workspace", "fabric"),
+    "src/fabric/authority": ("api", "server", "storage", "metadata", "cluster", "sync"),
+    "src/fabric/cache": ("api", "server", "storage", "metadata", "cluster", "sync"),
+    "src/fabric/worker": ("api", "server", "storage", "metadata", "cluster", "sync"),
 }
 BUILD_PATHS = ("target/", "ui/dist/", "ui/node_modules/", "data/")
 

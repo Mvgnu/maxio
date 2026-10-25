@@ -1,0 +1,85 @@
+{
+  "client": "aws-cli/1.46.2 Python/3.12.14 Linux/6.18.55 botocore/1.43.62",
+  "operations": [
+    {
+      "operation": "create bucket",
+      "exit_code": 0,
+      "response": {
+        "Location": "/ordinary-journey"
+      }
+    },
+    {
+      "operation": "upload",
+      "exit_code": 0,
+      "response": {
+        "ETag": "\"876011c4a7fa15a5fe52b62733dbe890\"",
+        "ChecksumCRC32": "CUPxsA=="
+      }
+    },
+    {
+      "operation": "head",
+      "exit_code": 0,
+      "response": {
+        "AcceptRanges": "bytes",
+        "LastModified": "Sun, 25 Oct 2026 17:24:01 GMT",
+        "ContentLength": 1048601,
+        "ChecksumCRC32": "CUPxsA==",
+        "ETag": "\"876011c4a7fa15a5fe52b62733dbe890\"",
+        "ContentType": "application/octet-stream",
+        "Metadata": {}
+      }
+    },
+    {
+      "operation": "list",
+      "exit_code": 0,
+      "response": {
+        "Contents": [
+          {
+            "Key": "docs/input.bin",
+            "LastModified": "2026-10-25T17:24:01.267Z",
+            "ETag": "\"876011c4a7fa15a5fe52b62733dbe890\"",
+            "Size": 1048601,
+            "StorageClass": "STANDARD"
+          }
+        ],
+        "RequestCharged": null,
+        "Prefix": "docs/"
+      }
+    },
+    {
+      "operation": "download",
+      "exit_code": 0,
+      "response": {
+        "AcceptRanges": "bytes",
+        "LastModified": "Sun, 25 Oct 2026 17:24:01 GMT",
+        "ContentLength": 1048601,
+        "ETag": "\"876011c4a7fa15a5fe52b62733dbe890\"",
+        "ChecksumCRC32": "CUPxsA==",
+        "ContentType": "application/octet-stream",
+        "Metadata": {}
+      }
+    },
+    {
+      "operation": "download after restart",
+      "exit_code": 0,
+      "response": {
+        "AcceptRanges": "bytes",
+        "LastModified": "Sun, 25 Oct 2026 17:24:01 GMT",
+        "ContentLength": 1048601,
+        "ETag": "\"876011c4a7fa15a5fe52b62733dbe890\"",
+        "ChecksumCRC32": "CUPxsA==",
+        "ContentType": "application/octet-stream",
+        "Metadata": {}
+      }
+    }
+  ],
+  "result": "pass",
+  "bytes": 1048601,
+  "sha256": "3d97005f7c64e5a37c5c231ddd08ca229c259ff550e1ff50064982192477b690",
+  "standalone_process_starts": 2,
+  "managed_configuration": false,
+  "physical_machines": 1,
+  "external_services": 0,
+  "source_commit": "22c1d523e25a390650dff1b8ddec41c1c277e3e9",
+  "binary_sha256": "ac13c5881c403f8e68a6360f64f74fd2c95520d372f6b60fdc2a0bfad00a900f"
+}

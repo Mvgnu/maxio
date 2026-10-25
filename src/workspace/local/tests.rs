@@ -3,6 +3,9 @@ use sha2::{Digest, Sha256};
 use std::io::{Seek, SeekFrom, Write};
 use tempfile::TempDir;
 
+mod managed;
+mod private_roots;
+
 fn snapshot(workspace_id: &str, bytes: &[u8]) -> Snapshot {
     let manifest = Manifest {
         format: FORMAT_VERSION,
@@ -234,6 +237,79 @@ fn offline_inspection_needs_no_credentials_and_never_initializes_an_empty_root()
     assert_eq!(offline.describe(true).unwrap()[0].local_state, "clean");
     assert!(offline.describe(false).unwrap()[0].pinned);
     offline.pin(&["notes.txt".into()], false).unwrap();
+}
+
+#[test]
+fn managed_offline_state_preserves_tombstoned_bytes_and_blocks_stale_publication() {
+    let root = TempDir::new().unwrap();
+    let target = ManagedTarget {
+        authority_id: uuid::Uuid::new_v4().to_string(),
+        vault_id: uuid::Uuid::new_v4().to_string(),
+        workspace_id: uuid::Uuid::new_v4().to_string(),
+        origin: "https://coordinator.example:9443".into(),
+    };
+    let old = snapshot(&target.workspace_id, b"retained edit");
+    let mut deleted = snapshot(&target.workspace_id, b"unused");
+    deleted.manifest.files.clear();
+    deleted.manifest.parent = Some(RevisionRef {
+        revision: old.manifest.revision.clone(),
+        sha256: old.manifest_sha256.clone(),
+    });
+    deleted.manifest_sha256 = manifest_hash(&deleted.manifest).unwrap();
+    deleted.head_etag = None;
+    let head = ManagedHead {
+        authority_id: target.authority_id.clone(),
+        workspace_id: target.workspace_id.clone(),
+        generation: 2,
+        revision: RevisionRef {
+            revision: deleted.manifest.revision.clone(),
+            sha256: deleted.manifest_sha256.clone(),
+        },
+    };
+    let control = root.path().join(STATE_DIRECTORY);
+    fs::create_dir(&control).unwrap();
+    fs::write(root.path().join("notes.txt"), b"retained edit").unwrap();
+    let saved = serde_json::to_vec(&serde_json::json!({
+        "format": 2,
+        "root": fs::canonicalize(root.path()).unwrap(),
+        "target_id": managed_target_id(&target).unwrap(),
+        "observed": deleted,
+        "baselines": {
+            "notes.txt": {
+                "revision": old.manifest.revision,
+                "file": old.manifest.files["notes.txt"],
+                "pinned": true
+            }
+        },
+        "managed_target": target,
+        "managed_head": head,
+    }))
+    .unwrap();
+    fs::write(control.join("state.json"), &saved).unwrap();
+
+    let mut local = LocalWorkspace::open_offline(root.path())
+        .expect("a persisted managed catalog must be inspectable without credentials");
+    assert!(local.snapshot().unwrap().head_etag.is_none());
+    let rows = local.describe(true).unwrap();
+    assert_eq!(
+        rows.len(),
+        1,
+        "remote deletion must not hide retained bytes"
+    );
+    assert_eq!(rows[0].path, "notes.txt");
+    assert_eq!(rows[0].local_state, "stale");
+    assert!(rows[0].pinned);
+    assert_eq!(rows[0].reference, reference(&old, "notes.txt").unwrap());
+    let error = local.prepare_publish(&["notes.txt".into()]).unwrap_err();
+    assert!(
+        error.to_string().contains("publication conflict"),
+        "{error:#}"
+    );
+    assert_eq!(
+        fs::read(root.path().join("notes.txt")).unwrap(),
+        b"retained edit"
+    );
+    assert_eq!(fs::read(control.join("state.json")).unwrap(), saved);
 }
 
 #[cfg(unix)]

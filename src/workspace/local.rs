@@ -6,7 +6,7 @@ mod staging;
 #[cfg(test)]
 mod tests;
 
-use super::{WorkspaceRemote, contract::*};
+use super::contract::*;
 use crate::files;
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize};
@@ -16,6 +16,7 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const MAX_STATE_BYTES: usize = MAX_MANIFEST_BYTES * 4;
+const MANAGED_STATE_FORMAT: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -33,6 +34,49 @@ struct LocalState {
     target_id: String,
     observed: Option<Snapshot>,
     baselines: BTreeMap<String, Baseline>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_managed_field"
+    )]
+    managed_target: Option<ManagedTarget>,
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "present_managed_field"
+    )]
+    managed_head: Option<ManagedHead>,
+}
+
+// Direct format 1 continues rejecting the new field names, including nulls.
+// An omitted managed field is distinct from a present but malformed value.
+fn present_managed_field<'de, D, T>(deserializer: D) -> std::result::Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    T::deserialize(deserializer).map(Some)
+}
+
+enum OpenTarget<'a> {
+    Direct(&'a str),
+    Managed(&'a ManagedTarget),
+}
+
+impl OpenTarget<'_> {
+    fn target_id(&self) -> Result<String> {
+        match self {
+            Self::Direct(target_id) => Ok((*target_id).into()),
+            Self::Managed(target) => managed_target_id(target),
+        }
+    }
+
+    fn managed(&self) -> Option<&ManagedTarget> {
+        match self {
+            Self::Direct(_) => None,
+            Self::Managed(target) => Some(target),
+        }
+    }
 }
 
 pub struct LocalWorkspace {
@@ -50,7 +94,14 @@ impl LocalWorkspace {
                 && !target_id.chars().any(char::is_control),
             "invalid workspace storage target identity"
         );
-        Self::open_inner(root, Some(target_id))
+        Self::open_inner(root, Some(OpenTarget::Direct(target_id)))
+    }
+
+    /// Bind a new format-2 root to one explicit managed authority and vault.
+    /// Existing direct or differently bound roots are never migrated implicitly.
+    pub fn open_managed(root: &Path, target: &ManagedTarget) -> Result<Self> {
+        managed_target_id(target)?;
+        Self::open_inner(root, Some(OpenTarget::Managed(target)))
     }
 
     /// Inspect an initialized root without storage credentials or network access.
@@ -58,17 +109,14 @@ impl LocalWorkspace {
         Self::open_inner(root, None)
     }
 
-    fn open_inner(root: &Path, target_id: Option<&str>) -> Result<Self> {
+    fn open_inner(root: &Path, target: Option<OpenTarget<'_>>) -> Result<Self> {
         let meta = fs::symlink_metadata(root).context("workspace root must already exist")?;
         ensure!(
             meta.is_dir() && !meta.file_type().is_symlink(),
             "workspace root must be a regular directory, not a symlink"
         );
         let root = fs::canonicalize(root)?;
-        ensure!(
-            !root.join(".maxio-runtime").try_exists()?,
-            "a MaxIO server data directory cannot be a workspace root"
-        );
+        staging::reject_private_ancestors(&root)?;
         for entry in fs::read_dir(&root)? {
             let name = entry?.file_name();
             if let Some(name) = name.to_str() {
@@ -79,7 +127,7 @@ impl LocalWorkspace {
             }
         }
         let control = root.join(STATE_DIRECTORY);
-        if target_id.is_none() {
+        if target.is_none() {
             let meta = fs::symlink_metadata(&control)
                 .context("workspace is not initialized; initialize or refresh it online first")?;
             ensure!(
@@ -133,9 +181,10 @@ impl LocalWorkspace {
                     state.root == root,
                     "workspace state belongs to a different local root"
                 );
-                if let Some(target_id) = target_id {
+                if let Some(target) = &target {
                     ensure!(
-                        state.target_id == target_id,
+                        state.target_id == target.target_id()?
+                            && state.managed_target.as_ref() == target.managed(),
                         "workspace root is bound to a different storage target"
                     );
                 } else {
@@ -147,14 +196,20 @@ impl LocalWorkspace {
                 (state, false)
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                let target_id = target_id.context("workspace is not initialized")?;
+                let target = target.context("workspace is not initialized")?;
                 (
                     LocalState {
-                        format: FORMAT_VERSION,
+                        format: if target.managed().is_some() {
+                            MANAGED_STATE_FORMAT
+                        } else {
+                            FORMAT_VERSION
+                        },
                         root: root.clone(),
-                        target_id: target_id.into(),
+                        target_id: target.target_id()?,
                         observed: None,
                         baselines: BTreeMap::new(),
+                        managed_target: target.managed().cloned(),
+                        managed_head: None,
                     },
                     true,
                 )
@@ -191,6 +246,16 @@ impl LocalWorkspace {
 
     fn validate_identity(&self, snapshot: &Snapshot) -> Result<()> {
         validate_snapshot(snapshot)?;
+        if let Some(target) = &self.state.managed_target {
+            ensure!(
+                snapshot.manifest.workspace_id == target.workspace_id,
+                "remote workspace identity differs from the managed target"
+            );
+            ensure!(
+                snapshot.head_etag.is_none(),
+                "managed snapshots cannot contain an S3 head ETag"
+            );
+        }
         if let Some(observed) = &self.state.observed {
             ensure!(
                 observed.manifest.workspace_id == snapshot.manifest.workspace_id,
@@ -201,6 +266,10 @@ impl LocalWorkspace {
     }
 
     pub fn observe(&mut self, snapshot: Snapshot) -> Result<()> {
+        ensure!(
+            self.state.managed_target.is_none(),
+            "managed workspace requires observe_managed"
+        );
         self.validate_identity(&snapshot)?;
         ensure!(
             snapshot.head_etag.is_some(),
@@ -209,6 +278,51 @@ impl LocalWorkspace {
         let mut next = self.state.clone();
         next.observed = Some(snapshot);
         self.replace_state(next)
+    }
+
+    fn validate_managed_catalog(&self, catalog: &ManagedCatalog) -> Result<ManagedHead> {
+        let target = self
+            .state
+            .managed_target
+            .as_ref()
+            .context("direct workspace cannot accept a managed catalog")?;
+        self.validate_identity(&catalog.snapshot)?;
+        let head = catalog
+            .head
+            .as_ref()
+            .context("a historical revision cannot become the managed publication base")?;
+        validate_managed_head(target, &catalog.snapshot, head)?;
+        if let Some(previous) = &self.state.managed_head {
+            ensure!(
+                head.generation > previous.generation || head == previous,
+                "managed head conflicts with or predates the observed publication base"
+            );
+            ensure!(
+                head.revision != previous.revision || head == previous,
+                "managed revision changed its authoritative generation"
+            );
+        }
+        Ok(head.clone())
+    }
+
+    /// Refresh discovery without advancing any editable file's working baseline.
+    pub fn observe_managed(&mut self, catalog: &ManagedCatalog) -> Result<()> {
+        let head = self.validate_managed_catalog(catalog)?;
+        let mut next = self.state.clone();
+        next.observed = Some(catalog.snapshot.clone());
+        next.managed_head = Some(head);
+        self.replace_state(next)
+    }
+
+    pub fn managed_head(&self) -> Result<ManagedHead> {
+        ensure!(
+            self.state.managed_target.is_some(),
+            "direct workspace has no managed publication base"
+        );
+        self.state
+            .managed_head
+            .clone()
+            .context("workspace has no observed managed catalog; refresh it first")
     }
 
     pub fn snapshot(&self) -> Result<Snapshot> {
@@ -236,6 +350,11 @@ impl LocalWorkspace {
                     "publication conflict at {path:?}: working baseline differs from the observed published version; preserve and reconcile the edit"
                 );
             } else {
+                if self.state.managed_target.is_some() && self.state.baselines.contains_key(path) {
+                    bail!(
+                        "publication conflict at {path:?}: the working baseline was removed remotely; preserve the bytes and make an explicit recovery decision before republishing"
+                    );
+                }
                 ensure!(
                     !self.state.baselines.contains_key(path),
                     "previously published path {path:?} is absent from this catalog; absence is not permission to recreate or delete it"
@@ -284,11 +403,33 @@ impl LocalWorkspace {
         snapshot: Snapshot,
         publications: &[Publication],
     ) -> Result<()> {
+        ensure!(
+            self.state.managed_target.is_none(),
+            "managed workspace requires accept_managed_publication"
+        );
         self.validate_identity(&snapshot)?;
         ensure!(
             snapshot.head_etag.is_some(),
             "published result has no authoritative head"
         );
+        self.accept_publication_inner(&snapshot, publications, None)
+    }
+
+    pub fn accept_managed_publication(
+        &mut self,
+        catalog: &ManagedCatalog,
+        publications: &[Publication],
+    ) -> Result<()> {
+        let head = self.validate_managed_catalog(catalog)?;
+        self.accept_publication_inner(&catalog.snapshot, publications, Some(head))
+    }
+
+    fn accept_publication_inner(
+        &mut self,
+        snapshot: &Snapshot,
+        publications: &[Publication],
+        managed_head: Option<ManagedHead>,
+    ) -> Result<()> {
         ensure!(
             !publications.is_empty(),
             "publication contains no selected files"
@@ -338,7 +479,8 @@ impl LocalWorkspace {
                 },
             );
         }
-        next.observed = Some(snapshot);
+        next.observed = Some(snapshot.clone());
+        next.managed_head = managed_head;
         // The live file may have changed during upload. Only status checks it.
         self.replace_state(next)
     }
@@ -398,9 +540,9 @@ impl LocalWorkspace {
         self.replace_state(next)
     }
 
-    pub async fn pull(
+    pub async fn pull<R: WorkspaceReader + ?Sized>(
         &mut self,
-        remote: &WorkspaceRemote,
+        remote: &R,
         snapshot: &Snapshot,
         selectors: &[String],
     ) -> Result<Vec<String>> {
@@ -450,12 +592,15 @@ impl LocalWorkspace {
                     "revision": snapshot.manifest.revision, "file": file, "stage": destination.file_name(),
                 }),
             )?;
-            remote.download(file, &destination).await.with_context(|| {
-                format!(
-                    "download incomplete for {path:?}; staging is retained at {}",
-                    destination.display()
-                )
-            })?;
+            remote
+                .download_at(snapshot, path, &destination)
+                .await
+                .with_context(|| {
+                    format!(
+                        "download incomplete for {path:?}; staging is retained at {}",
+                        destination.display()
+                    )
+                })?;
             self.install_download(snapshot, path, &destination, expected[path].as_ref())
                 .with_context(|| {
                     format!(
@@ -469,11 +614,24 @@ impl LocalWorkspace {
 
     pub fn describe(&self, verify_local: bool) -> Result<Vec<WorkspaceRow>> {
         let snapshot = self.snapshot()?;
-        snapshot
+        let mut visible: BTreeMap<_, _> = snapshot
             .manifest
             .files
             .iter()
-            .map(|(path, file)| {
+            .map(|(path, file)| (path, (file, snapshot.manifest.revision.as_str())))
+            .collect();
+        // Logical removal never discards an editable copy or its recovery identity.
+        // Direct mode retains its original current-catalog-only listing behavior.
+        if self.state.managed_target.is_some() {
+            for (path, baseline) in &self.state.baselines {
+                visible
+                    .entry(path)
+                    .or_insert((&baseline.file, &baseline.revision));
+            }
+        }
+        visible
+            .into_iter()
+            .map(|(path, (file, revision))| {
                 let destination = staging::checked_file(&self.root, path, false)?;
                 let present = match fs::symlink_metadata(&destination) {
                     Ok(_) => true,
@@ -489,7 +647,7 @@ impl LocalWorkspace {
                     let (sha256, size) = files::hash_file(&destination)?;
                     match baseline {
                         Some(base) if base.file.sha256 == sha256 && base.file.size == size => {
-                            if base.file == *file {
+                            if snapshot.manifest.files.get(path) == Some(&base.file) {
                                 "clean"
                             } else {
                                 "stale"
@@ -500,7 +658,7 @@ impl LocalWorkspace {
                 };
                 Ok(WorkspaceRow {
                     path: path.clone(),
-                    reference: reference(&snapshot, path)?,
+                    reference: reference_at(&snapshot.manifest.workspace_id, revision, path)?,
                     size: file.size,
                     sha256: file.sha256.clone(),
                     local_state: state.into(),
@@ -512,7 +670,11 @@ impl LocalWorkspace {
 
     pub fn pin(&mut self, selectors: &[String], value: bool) -> Result<Vec<String>> {
         let snapshot = self.snapshot()?;
-        let selected = files::select_paths(snapshot.manifest.files.keys(), selectors)?;
+        let mut candidates: BTreeSet<_> = snapshot.manifest.files.keys().collect();
+        if !value && self.state.managed_target.is_some() {
+            candidates.extend(self.state.baselines.keys());
+        }
+        let selected = files::select_paths(candidates.into_iter(), selectors)?;
         let mut next = self.state.clone();
         for path in &selected {
             if value {
@@ -540,10 +702,28 @@ impl LocalWorkspace {
 }
 
 fn validate_state(state: &LocalState) -> Result<()> {
-    ensure!(
-        state.format == FORMAT_VERSION,
-        "unsupported local workspace state format"
-    );
+    match state.format {
+        FORMAT_VERSION => ensure!(
+            state.managed_target.is_none() && state.managed_head.is_none(),
+            "direct state cannot contain a managed target or head"
+        ),
+        MANAGED_STATE_FORMAT => {
+            let target = state
+                .managed_target
+                .as_ref()
+                .context("managed state has no explicit target")?;
+            ensure!(
+                state.target_id == managed_target_id(target)?,
+                "managed target identity differs from the persisted binding"
+            );
+            match (&state.observed, &state.managed_head) {
+                (Some(snapshot), Some(head)) => validate_managed_head(target, snapshot, head)?,
+                (None, None) => (),
+                _ => bail!("managed state must persist its observed catalog and head together"),
+            }
+        }
+        _ => bail!("unsupported local workspace state format"),
+    }
     ensure!(
         state.root.is_absolute(),
         "workspace state root is not absolute"
@@ -565,15 +745,44 @@ fn validate_state(state: &LocalState) -> Result<()> {
     }
     if let Some(snapshot) = &state.observed {
         validate_snapshot(snapshot)?;
-        ensure!(
-            snapshot.head_etag.is_some(),
-            "persisted catalog cannot be a historical publication base"
-        );
+        if state.managed_target.is_none() {
+            ensure!(
+                snapshot.head_etag.is_some(),
+                "persisted catalog cannot be a historical publication base"
+            );
+        }
         let mut keys: BTreeSet<String> = snapshot.manifest.files.keys().cloned().collect();
         keys.extend(state.baselines.keys().cloned());
         files::validate_workspace_paths(keys.iter())?;
     } else if !state.baselines.is_empty() {
         bail!("working baselines exist without an observed workspace identity");
     }
+    Ok(())
+}
+
+fn validate_managed_head(
+    target: &ManagedTarget,
+    snapshot: &Snapshot,
+    head: &ManagedHead,
+) -> Result<()> {
+    ensure!(
+        snapshot.head_etag.is_none(),
+        "managed snapshots cannot contain an S3 head ETag"
+    );
+    ensure!(
+        head.authority_id == target.authority_id
+            && head.workspace_id == target.workspace_id
+            && snapshot.manifest.workspace_id == target.workspace_id,
+        "managed catalog identity differs from the bound authority or workspace"
+    );
+    ensure!(
+        head.generation > 0,
+        "managed head generation must be positive"
+    );
+    ensure!(
+        head.revision.revision == snapshot.manifest.revision
+            && head.revision.sha256 == snapshot.manifest_sha256,
+        "managed head does not identify the observed manifest"
+    );
     Ok(())
 }

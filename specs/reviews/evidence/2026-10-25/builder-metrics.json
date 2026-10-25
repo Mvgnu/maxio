@@ -1,0 +1,280 @@
+{
+  "evidence": "/workspace/scratch/05c136f30bb4/fabric-journey-22c1d52-run2-evidence",
+  "runtime_evidence": "/tmp/maxio-fabric-journey-22c1d52-run2",
+  "duration_seconds": 252.0491955280304,
+  "outcome": "observations_complete",
+  "scenarios": 15,
+  "source_script": {
+    "allocated_bytes": 81920,
+    "device": 27,
+    "inode": 524652,
+    "links": 1,
+    "path": "/workspace/scratch/05c136f30bb4/maxio-journeys/scripts/smoke_fabric.py",
+    "sha256": "686dddc6bf93aee2221d831edcd9fca8c48e84cb1de55cbc6cec06263dd4ab21",
+    "size": 81907
+  },
+  "runtime_filesystem": {
+    "block_size": 4096,
+    "device": 27,
+    "filesystem_id": 12609512312889320171,
+    "path": "/tmp/maxio-fabric-journey-22c1d52-run2"
+  },
+  "dataset": {
+    "allocated_bytes": 134217728,
+    "device": 27,
+    "inode": 791268,
+    "links": 1,
+    "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/working/data/dataset.bin",
+    "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+    "size": 134217728
+  },
+  "hash_result": {
+    "device_label": "Mini",
+    "pid": 46595,
+    "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+    "size": 134217728
+  },
+  "placement": {
+    "candidates": [
+      {
+        "eligible": true,
+        "incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d",
+        "missing_bytes": 611,
+        "reasons": [],
+        "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+      },
+      {
+        "eligible": true,
+        "incarnation": "932c8f30-761d-428f-a24f-9fce2a551902",
+        "missing_bytes": 134218339,
+        "reasons": [],
+        "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+      }
+    ],
+    "decided_at_unix_ms": 1792949387413,
+    "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+    "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+  },
+  "hydration": {
+    "hydrated": [
+      {
+        "path": "src/hash_dataset.py",
+        "revision": {
+          "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+          "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+        },
+        "version": {
+          "blob": "maxio-workspaces/managed-journey/blobs/ba8f022c-8cf5-48e2-9633-91c3ffdd1ac0",
+          "sha256": "e10c8c441383921ee34846c49200b300b8fc1d8b4b2f0c74f7d9bff084c04cb6",
+          "size": 611
+        },
+        "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+      }
+    ],
+    "reused": [
+      {
+        "path": "data/dataset.bin",
+        "revision": {
+          "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+          "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+        },
+        "version": {
+          "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+          "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+          "size": 134217728
+        },
+        "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+      }
+    ],
+    "transfer": {
+      "metadata_downloaded": 5256,
+      "metadata_uploaded": 3775,
+      "payload_downloaded": 611,
+      "payload_uploaded": 0
+    }
+  },
+  "during_data_local_job": {
+    "Book_dataset_bytes": 0,
+    "Mini_dataset_redownload_bytes": 0,
+    "VPS_dataset_bytes": 0
+  },
+  "eviction": {
+    "allocated_bytes_unlinked": 134217728,
+    "available_bytes_after": 17257455616,
+    "available_bytes_before": 17123454976,
+    "logical_bytes_removed": 134217728,
+    "observed_available_delta": 134000640,
+    "operation_id": "cced3b44-832f-4be5-8c88-e1000d400fb1",
+    "removed": [
+      {
+        "path": "data/dataset.bin",
+        "revision": {
+          "revision": "91c910b3-9398-415d-b666-b67d3c1f39e6",
+          "sha256": "b19e4b65d671f8f7bf5b1c18b01a13ac55f96f87a2a34d7825566d5a39c5bd3d"
+        },
+        "version": {
+          "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+          "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+          "size": 134217728
+        },
+        "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+      },
+      {
+        "path": "data/dataset.bin",
+        "revision": {
+          "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+          "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+        },
+        "version": {
+          "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+          "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+          "size": 134217728
+        },
+        "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+      }
+    ]
+  },
+  "refetch_transfer": {
+    "metadata_downloaded": 0,
+    "metadata_uploaded": 426,
+    "payload_downloaded": 134217728,
+    "payload_uploaded": 0
+  },
+  "lease_fences": {
+    "first": {
+      "epoch": 2,
+      "fence": 9,
+      "lease_id": "4d06518b-6326-459e-83bd-e46053a3f41b"
+    },
+    "replacement_after_expiry": {
+      "epoch": 2,
+      "fence": 10,
+      "lease_id": "253913bf-1e4d-4c1a-b6f1-0224de260383"
+    },
+    "pre_restart": {
+      "epoch": 2,
+      "fence": 11,
+      "lease_id": "be717dde-c73a-4f79-bc85-8894de95e4b4"
+    },
+    "replacement_after_restart": {
+      "epoch": 3,
+      "fence": 12,
+      "lease_id": "b9e23739-aff4-4969-9f5f-662da029db72"
+    }
+  },
+  "worker_recovery": {
+    "abandoned_state": "abandoned",
+    "manual_recovery_state": "succeeded",
+    "attempts": 2,
+    "superseded_attempt_rejections": {
+      "publication": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0293-Mini-stale-attempt-publication.json",
+      "renewal": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0291-Mini-stale-attempt-renewal.json"
+    }
+  },
+  "conflict_terminal_state": "abandoned",
+  "outage": {
+    "old_epoch": 3,
+    "new_epoch": 4,
+    "job_state": "abandoned"
+  },
+  "network": {
+    "Book": {
+      "dataset_download_bytes_all_scenarios": 0,
+      "injected_faults": [
+        {
+          "fault": "interrupted-selected-download",
+          "status": 200,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 65536,
+          "upstream_acknowledged": null
+        },
+        {
+          "fault": "interrupted-selected-upload",
+          "status": null,
+          "payload_upload_bytes": 65536,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": null
+        }
+      ]
+    },
+    "Mini": {
+      "dataset_download_bytes_all_scenarios": 134217728,
+      "injected_faults": [
+        {
+          "fault": "lost-finish-ack",
+          "status": 200,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": true
+        },
+        {
+          "fault": "lost-finish-ack",
+          "status": 200,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": true
+        },
+        {
+          "fault": "lost-publication-ack",
+          "status": 200,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": true
+        },
+        {
+          "fault": "lost-publication-ack",
+          "status": 200,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": true
+        },
+        {
+          "fault": "eviction-retention-unavailable",
+          "status": 503,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": null
+        },
+        {
+          "fault": "interrupt-eviction-before-proof-delivery",
+          "status": 200,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": null
+        },
+        {
+          "fault": "running-attempt-renewal-unavailable",
+          "status": 503,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": null
+        },
+        {
+          "fault": "running-attempt-renewal-unavailable",
+          "status": 503,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": null
+        },
+        {
+          "fault": "prepared-output-head-conflict",
+          "status": 409,
+          "payload_upload_bytes": 0,
+          "payload_download_bytes": 0,
+          "upstream_acknowledged": null
+        }
+      ]
+    },
+    "VPS": {
+      "dataset_download_bytes_all_scenarios": 0,
+      "injected_faults": []
+    }
+  },
+  "not_exercised": [
+    "Physical MacBook/Mini/VPS devices, WAN/NAT traversal, network partitions between machines.",
+    "Authenticated Codex/Claude model calls (only labelled protocol fixtures were run).",
+    "Host power loss or interruption after cache unlink but before final state persistence.",
+    "Malicious same-UID tampering, hardware/media failure, redundant vault durability.",
+    "Independent Gauntlet critique and standalone S3 Journey A; this builder does not award a pass."
+  ]
+}

@@ -1,0 +1,206 @@
+{
+  "attempts": [
+    {
+      "binding": {
+        "attempt_id": "9922e51f-c726-453f-8af2-02524f4d7454",
+        "job_id": "d70fa83b-1639-4087-9d2f-6c61f1e47630",
+        "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+        "worker_incarnation": "ad0156a7-da9f-4e03-9c0f-388816077ed4"
+      },
+      "claimed_at_unix_ms": 1792950088188,
+      "detail": null,
+      "finished_at_unix_ms": 1792950089029,
+      "heartbeat_at_unix_ms": 1792950088857,
+      "lease": null,
+      "prepared_outputs": [
+        {
+          "attempt": {
+            "attempt_id": "9922e51f-c726-453f-8af2-02524f4d7454",
+            "job_id": "d70fa83b-1639-4087-9d2f-6c61f1e47630",
+            "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+            "worker_incarnation": "ad0156a7-da9f-4e03-9c0f-388816077ed4"
+          },
+          "path": "results/codex-fixture.json",
+          "prepared_by": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+          "upload_id": "58d37c01-d30d-4629-b55d-d7d8487146b9",
+          "version": {
+            "blob": "maxio-workspaces/projects/blobs/6d8a0e6d-384d-4180-a5aa-6a94652b6d3b",
+            "sha256": "84f6ab916fcf0d113bbbd16e7bacc4a016f7ea3410dc9d06611cd0bded42847f",
+            "size": 78
+          },
+          "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+        }
+      ],
+      "publication": {
+        "actor": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+        "attempt": {
+          "attempt_id": "9922e51f-c726-453f-8af2-02524f4d7454",
+          "job_id": "d70fa83b-1639-4087-9d2f-6c61f1e47630",
+          "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+          "worker_incarnation": "ad0156a7-da9f-4e03-9c0f-388816077ed4"
+        },
+        "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+        "changes": [
+          {
+            "current": {
+              "blob": "maxio-workspaces/projects/blobs/6d8a0e6d-384d-4180-a5aa-6a94652b6d3b",
+              "sha256": "84f6ab916fcf0d113bbbd16e7bacc4a016f7ea3410dc9d06611cd0bded42847f",
+              "size": 78
+            },
+            "kind": "put",
+            "path": "results/codex-fixture.json",
+            "previous": null
+          }
+        ],
+        "committed_at_unix_ms": 1792950089124,
+        "committed_head": {
+          "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+          "generation": 63,
+          "revision": {
+            "revision": "489aa11c-e114-4ed5-bf85-2160088b8bdb",
+            "sha256": "3463c4732fb997329b6e578043246fba15779a7d71fd9bf8b0b809fac82e7066"
+          },
+          "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+        },
+        "lease": {
+          "epoch": 3,
+          "fence": 10,
+          "lease_id": "00b16799-7450-4c3c-97b1-9fadbfc9b164"
+        },
+        "parent": {
+          "revision": "76c899c7-415b-4fca-b4d5-9b53c9a6e2ef",
+          "sha256": "2c0672be34af7b524966b579b802ca46814a6dae73ceba05d760f9bcfbb7b4bc"
+        },
+        "publication_id": "a4e1d922-d5b6-4047-ba4c-d3f7bb25d87c",
+        "request_id": "7027e7bf-3cb7-46f8-b5dd-28a8d33f3682",
+        "retention": [
+          {
+            "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+            "committed_generation": 63,
+            "file": {
+              "path": "results/codex-fixture.json",
+              "revision": {
+                "revision": "489aa11c-e114-4ed5-bf85-2160088b8bdb",
+                "sha256": "3463c4732fb997329b6e578043246fba15779a7d71fd9bf8b0b809fac82e7066"
+              },
+              "version": {
+                "blob": "maxio-workspaces/projects/blobs/6d8a0e6d-384d-4180-a5aa-6a94652b6d3b",
+                "sha256": "84f6ab916fcf0d113bbbd16e7bacc4a016f7ea3410dc9d06611cd0bded42847f",
+                "size": 78
+              },
+              "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+            },
+            "policy": "append_only_no_gc",
+            "policy_version": 1,
+            "recovery_reference": "maxio-workspace://6289952b-5cc9-4b1c-bc95-7edc54ea6906/results/codex-fixture.json?revision=489aa11c-e114-4ed5-bf85-2160088b8bdb",
+            "vault_id": "a634f9b2-5e84-4e60-a7b5-0e5ee0528d30"
+          }
+        ],
+        "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+      },
+      "run": {
+        "adapter": "codex",
+        "detail": null,
+        "environment_names": [
+          "CODEX_HOME"
+        ],
+        "executable": "/tmp/critic-managed-execution-dri_4pg7/local-codex-protocol-fixture",
+        "executable_version": "codex 1.0.0 LOCAL PROTOCOL FIXTURE",
+        "exit_code": 0,
+        "finished_at": "2026-10-25T17:41:28.780360726+00:00",
+        "format": 1,
+        "id": "75db18f6-eed1-4ed4-bdcd-82462b245daf",
+        "input_files": [
+          {
+            "path": "src/sleeper.py",
+            "sha256": "cc4f141b4416911fd3811d5d03f020d6958943b33e7bb3adbc8012e362d3612c",
+            "size": 589
+          }
+        ],
+        "output_files": [
+          {
+            "path": "results/codex-fixture.json",
+            "sha256": "84f6ab916fcf0d113bbbd16e7bacc4a016f7ea3410dc9d06611cd0bded42847f",
+            "size": 78
+          }
+        ],
+        "provider_session_id": "fixture-thread",
+        "published": false,
+        "started_at": "2026-10-25T17:41:28.255467762+00:00",
+        "status": "succeeded",
+        "stderr_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/9922e51f-c726-453f-8af2-02524f4d7454/runs/75db18f6-eed1-4ed4-bdcd-82462b245daf/stderr.log",
+        "stdout_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/9922e51f-c726-453f-8af2-02524f4d7454/runs/75db18f6-eed1-4ed4-bdcd-82462b245daf/stdout.log",
+        "workspace": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/9922e51f-c726-453f-8af2-02524f4d7454/runs/75db18f6-eed1-4ed4-bdcd-82462b245daf/workspace"
+      },
+      "state": "succeeded"
+    }
+  ],
+  "base": {
+    "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+    "generation": 48,
+    "revision": {
+      "revision": "76c899c7-415b-4fca-b4d5-9b53c9a6e2ef",
+      "sha256": "2c0672be34af7b524966b579b802ca46814a6dae73ceba05d760f9bcfbb7b4bc"
+    },
+    "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+  },
+  "cancel_requested": false,
+  "created_at_unix_ms": 1792950080304,
+  "decision": {
+    "candidates": [
+      {
+        "eligible": false,
+        "incarnation": "e94b2d7e-673c-4ce0-b603-ff63f5e870a8",
+        "missing_bytes": 589,
+        "reasons": [
+          "worker advertisement expired",
+          "manual worker constraint",
+          "named owner profile unavailable"
+        ],
+        "worker_id": "9603d12a-de4c-4c77-9dec-a19bf7396a30"
+      },
+      {
+        "eligible": true,
+        "incarnation": "ad0156a7-da9f-4e03-9c0f-388816077ed4",
+        "missing_bytes": 0,
+        "reasons": [],
+        "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+      }
+    ],
+    "decided_at_unix_ms": 1792950088188,
+    "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+    "selected_worker": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+  },
+  "inputs": [
+    {
+      "path": "src/sleeper.py",
+      "revision": {
+        "revision": "76c899c7-415b-4fca-b4d5-9b53c9a6e2ef",
+        "sha256": "2c0672be34af7b524966b579b802ca46814a6dae73ceba05d760f9bcfbb7b4bc"
+      },
+      "version": {
+        "blob": "maxio-workspaces/projects/blobs/0cc7c0b7-bb2d-4b68-a895-ef223a5d5cf8",
+        "sha256": "cc4f141b4416911fd3811d5d03f020d6958943b33e7bb3adbc8012e362d3612c",
+        "size": 589
+      }
+    }
+  ],
+  "job_id": "d70fa83b-1639-4087-9d2f-6c61f1e47630",
+  "output_policy": "publish",
+  "output_selectors": [
+    {
+      "kind": "exact",
+      "path": "results/codex-fixture.json"
+    }
+  ],
+  "profile": "codex-fixture",
+  "required_worker": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+  "resources": {
+    "cpu_millis": 1000,
+    "memory_bytes": 268435456
+  },
+  "state": "succeeded",
+  "submitted_by": "5193beab-adec-434a-9bfd-6317c3879e6f",
+  "timeout_seconds": 10,
+  "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+}

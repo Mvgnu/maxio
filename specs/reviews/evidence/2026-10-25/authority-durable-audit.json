@@ -1,0 +1,113 @@
+{
+  "state_info": {
+    "format": 1,
+    "authority_id": "6eaeee64-dc4f-412b-a581-186655b140ba",
+    "vault_id": "5a15e86e-ea20-4bdf-b583-0bc592e351f1",
+    "epoch": 4,
+    "generation": 43,
+    "retention_policy_version": 1
+  },
+  "fence_high_water": 9,
+  "active_lease_count": 0,
+  "workspace_heads": [
+    {
+      "authority_id": "6eaeee64-dc4f-412b-a581-186655b140ba",
+      "workspace_id": "eed7b5d9-dcbe-479f-b2cc-11746702d4d2",
+      "generation": 34,
+      "revision": {
+        "revision": "ec06617a-5a64-434a-b8bf-71f9223f4c5d",
+        "sha256": "3ba9cce4246af85075709277974073d84983081037d2b6dc898f8b987a36826b"
+      }
+    }
+  ],
+  "durable_publication_receipts": [
+    {
+      "storage_key": "04a5b4d8-1d01-4299-9f82-9b8bb247cafc:2477768e-ec0e-4874-8634-a179da488d30",
+      "request_id": "2477768e-ec0e-4874-8634-a179da488d30",
+      "publication_id": "b9f2ff8b-3b44-47f1-8164-f13c21c65ed0",
+      "head": {
+        "authority_id": "6eaeee64-dc4f-412b-a581-186655b140ba",
+        "workspace_id": "eed7b5d9-dcbe-479f-b2cc-11746702d4d2",
+        "generation": 34,
+        "revision": {
+          "revision": "ec06617a-5a64-434a-b8bf-71f9223f4c5d",
+          "sha256": "3ba9cce4246af85075709277974073d84983081037d2b6dc898f8b987a36826b"
+        }
+      },
+      "fence": 7
+    },
+    {
+      "storage_key": "04a5b4d8-1d01-4299-9f82-9b8bb247cafc:51446d9c-27cf-4e33-82a5-a746cb1d3d90",
+      "request_id": "51446d9c-27cf-4e33-82a5-a746cb1d3d90",
+      "publication_id": "c5878c3c-3ae1-4da5-9813-15442dbd8b05",
+      "head": {
+        "authority_id": "6eaeee64-dc4f-412b-a581-186655b140ba",
+        "workspace_id": "eed7b5d9-dcbe-479f-b2cc-11746702d4d2",
+        "generation": 12,
+        "revision": {
+          "revision": "79aec5ad-f5af-41b9-8095-658dffadaf42",
+          "sha256": "ee75362e17676d35fce4a25dc31c5cd3a4ccbc5b6525b8c021cec3698b2679b5"
+        }
+      },
+      "fence": 1
+    },
+    {
+      "storage_key": "97f09814-6fb2-43aa-a9e3-48014352f9b4:650de698-3b0a-4fbd-a757-f9db3213a12a",
+      "request_id": "650de698-3b0a-4fbd-a757-f9db3213a12a",
+      "publication_id": "c829cac1-b67d-4793-8a32-5382d744935c",
+      "head": {
+        "authority_id": "6eaeee64-dc4f-412b-a581-186655b140ba",
+        "workspace_id": "eed7b5d9-dcbe-479f-b2cc-11746702d4d2",
+        "generation": 25,
+        "revision": {
+          "revision": "8c1bf395-137f-44c3-ae59-bb8b3c2668d6",
+          "sha256": "018adae436401e825abcf47aaee5b2154211ceaf6d76feb3bcba6ac9f85cec44"
+        }
+      },
+      "fence": 4
+    }
+  ],
+  "retained_revisions": [
+    {
+      "revision": "79aec5ad-f5af-41b9-8095-658dffadaf42",
+      "manifest_sha256": "ee75362e17676d35fce4a25dc31c5cd3a4ccbc5b6525b8c021cec3698b2679b5",
+      "docs_a": {
+        "sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70",
+        "size": 7948,
+        "blob": "maxio-workspaces/critic/blobs/f87b9ae3-0384-4e23-8716-4230eb301c76"
+      }
+    },
+    {
+      "revision": "8c1bf395-137f-44c3-ae59-bb8b3c2668d6",
+      "manifest_sha256": "018adae436401e825abcf47aaee5b2154211ceaf6d76feb3bcba6ac9f85cec44",
+      "docs_a": {
+        "sha256": "852ebbb289ed928c1cb79cb833e8d69bdea5f0280aa84b6386e0312a768deef6",
+        "size": 9507,
+        "blob": "maxio-workspaces/critic/blobs/379f3260-dab8-4d23-a419-885b1a191dfc"
+      }
+    },
+    {
+      "revision": "d70627b4-9cd6-4610-b12c-458a86fdc971",
+      "manifest_sha256": "1181cb574ce35ab93dd920f4390c99bb4c0be685d6ac530d3f356ffc2f7af049",
+      "docs_a": null
+    },
+    {
+      "revision": "ec06617a-5a64-434a-b8bf-71f9223f4c5d",
+      "manifest_sha256": "3ba9cce4246af85075709277974073d84983081037d2b6dc898f8b987a36826b",
+      "docs_a": {
+        "sha256": "0bd827622c3c51bf265a087b4b022584581fd3768a193d0bbf39755ef77c8b0b",
+        "size": 9234,
+        "blob": "maxio-workspaces/critic/blobs/4f663b76-1977-44b5-b4ec-33ed164c726a"
+      }
+    }
+  ],
+  "exact_committed_file_versions": {
+    "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70": 7948,
+    "852ebbb289ed928c1cb79cb833e8d69bdea5f0280aa84b6386e0312a768deef6": 9507,
+    "0bd827622c3c51bf265a087b4b022584581fd3768a193d0bbf39755ef77c8b0b": 9234
+  },
+  "rejected_uploads_not_in_committed_manifest": true,
+  "lost_response_receipt_count": 1,
+  "completed_checks": 48,
+  "all_checks_passed": true
+}
