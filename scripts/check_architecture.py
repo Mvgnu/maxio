@@ -26,6 +26,7 @@ PM_PATHS = (
     "src/fabric/mod.rs", "src/fabric/contract.rs",
     "mcp/package.json", "mcp/bun.lock", "mcp/tsconfig.json", "mcp/.gitignore",
     "mcp/plugin.json", "mcp/mcp.json",
+    "mcp/skills/",
 )
 EXPECTED = {
     "runtime_platform", "storage_engine", "cluster_transport_security",
