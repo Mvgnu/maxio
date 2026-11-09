@@ -35,3 +35,11 @@ Report unavailable components and failed observations explicitly. Polling a heal
 endpoint is not continuous monitoring. Native process control applies only to
 children owned by this MCP session. Standing reconciliation is a separate product
 decision. See the PM ruling in the system contract for the acceptance scope.
+
+## Acceptance boundary
+
+Scoped MCP acceptance does not certify the complete Rust product or its optional
+worker execution. The inherited macOS TLS and private-root regression failures
+remain outside this adapter change; the full repository gate must remain visibly
+failed until those underlying domains are repaired. Do not weaken their tests to
+turn an adapter release into a whole-product pass.

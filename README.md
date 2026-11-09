@@ -30,6 +30,8 @@ through its existing authenticated interfaces. It runs separately from the Rust
 server. See [MCP setup and tool coverage](mcp/README.md) for installation, private
 configuration, supported operations and verification. An MCP connection provides
 tools to an active agent; it does not itself schedule a monitoring service.
+The [complete agent skill](mcp/skills/operate-maxio/SKILL.md) covers all product
+layers, MCP tools, operational workflows and the full six-executable CLI in one file.
 
 ### Server and companion binaries
 
