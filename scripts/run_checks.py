@@ -68,6 +68,7 @@ def full_gate():
     agent = shlex.quote(str(target / "debug/maxio-agent"))
     fabric = shlex.quote(str(target / "debug/maxio-fabric"))
     worker = shlex.quote(str(target / "debug/maxio-worker"))
+    run(f"cd mcp && MAXIO_TEST_BINARY={binary} bun run smoke")
     run(f"python3 scripts/smoke_standalone.py --binary {binary}")
     run(f"python3 scripts/smoke_peer_s3.py --binary {binary}")
     run(f"python3 scripts/smoke_secure_peers.py --binary {binary}")
