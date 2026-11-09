@@ -1,5 +1,15 @@
 # MaxIO MCP
 
+Current adapter source and setup live in
+[MCP-Host/components/maxio/mcp](https://github.com/Mvgnu/MCP-Host/tree/main/components/maxio/mcp).
+Current agent instructions are in its
+[operate-maxio skill](https://github.com/Mvgnu/MCP-Host/blob/main/components/maxio/mcp/skills/operate-maxio/SKILL.md).
+This directory retains the imported historical adapter; send current fixes and
+features to the monorepo. [The cutover](../MIGRATION.md) changes source ownership,
+not running MCP registrations, credentials or service supervision.
+
+## Historical setup and behavior
+
 Optional Bun stdio adapter for an existing MaxIO console and managed authority.
 The ordinary S3 server does not depend on this package. Requires Bun 1.3.10.
 
