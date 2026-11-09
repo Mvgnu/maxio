@@ -22,7 +22,8 @@ export async function connect(config: string) {
     transport,
     call: async (name: string, args: Record<string, unknown> = {}) => {
       const result = await client.callTool({ name, arguments: args });
-      if (result.isError) throw new Error(JSON.stringify(result.content));
+      if (result.isError)
+        throw new Error(name + ": " + JSON.stringify(result.content));
       return (result.structuredContent as { data: any }).data;
     },
   };
