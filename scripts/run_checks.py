@@ -48,6 +48,7 @@ def full_gate():
     run("python3 scripts/check_architecture.py")
     run("python3 -m unittest discover -s tests/architecture -v")
     run("cd ui && bun run check && bun run test && bun run build")
+    run("cd mcp && bun install --frozen-lockfile && bun run check && bun run test && bun build src/index.ts --target=bun --outdir=dist")
     run("cargo fmt --check")
     run("cargo check --locked --all-targets")
     run("cargo clippy --locked --all-targets -- -D warnings")

@@ -24,13 +24,15 @@ PM_PATHS = (
     "tests/architecture/", "src/files.rs", "src/workspace/mod.rs",
     "src/workspace/contract.rs", "src/execution/mod.rs", "src/execution/contract.rs",
     "src/fabric/mod.rs", "src/fabric/contract.rs",
+    "mcp/package.json", "mcp/bun.lock", "mcp/tsconfig.json", "mcp/.gitignore",
+    "mcp/plugin.json", "mcp/mcp.json",
 )
 EXPECTED = {
     "runtime_platform", "storage_engine", "cluster_transport_security",
     "cluster_metadata_plane", "s3_auth_sigv4", "s3_api_surface", "console_api",
     "web_console_ui", "device_sync", "quality_harness",
     "workspace_catalog", "workspace_cache", "agent_execution",
-    "fabric_authority", "fabric_transport", "worker_execution",
+    "fabric_authority", "fabric_transport", "worker_execution", "mcp_management",
 }
 FORBIDDEN_DEPS = {
     "src/main.rs": ("workspace", "execution", "fabric"),
@@ -48,7 +50,7 @@ FORBIDDEN_DEPS = {
     "src/fabric/cache": ("api", "server", "storage", "metadata", "cluster", "sync"),
     "src/fabric/worker": ("api", "server", "storage", "metadata", "cluster", "sync"),
 }
-BUILD_PATHS = ("target/", "ui/dist/", "ui/node_modules/", "data/")
+BUILD_PATHS = ("target/", "ui/dist/", "ui/node_modules/", "data/", "mcp/dist/", "mcp/node_modules/")
 
 
 def matches(path, pattern):
@@ -121,7 +123,7 @@ def load_specs():
 
 
 def source_path(path):
-    return path.startswith(("src/", "ui/src/", "scripts/", "tests/")) and Path(path).suffix in {".rs", ".ts", ".svelte", ".py", ".sh"}
+    return path.startswith(("src/", "ui/src/", "scripts/", "tests/", "mcp/")) and Path(path).suffix in {".rs", ".ts", ".svelte", ".py", ".sh"}
 
 
 def check_repository(specs):

@@ -64,8 +64,46 @@ named adjacent test module. Cross-process acceptance lives in scripts/tests.
 | Managed catalog, leases and job authority | [fabric_authority](domains/fabric_authority.md) |
 | Managed device authentication, HTTPS and CLI | [fabric_transport](domains/fabric_transport.md) |
 | Remote workers and private immutable cache | [worker_execution](domains/worker_execution.md) |
+| Agent management through MCP | [mcp_management](domains/mcp_management.md) |
 
 ## Shared contracts and ownership
+
+## PM ruling: agent-operated management (2026-11-09)
+
+Add an optional Bun/TypeScript stdio MCP adapter in `mcp/`, independent of server
+startup. Agents can inspect health, metrics/topology and storage, manage buckets,
+objects, versions and lifecycle, and operate configured managed workspaces,
+devices, grants and jobs through the existing authenticated public contracts.
+The S3 server and on-disk formats remain unchanged. The console API is authoritative
+for storage management; `maxio-fabric rpc` and Rust `ControlRequest` remain
+authoritative for managed operations. Do not duplicate signing or device proof.
+
+The PM owns this new domain boundary, its manifests/lockfile, inventory/gate
+integration, journey documentation and host registration. The MCP builder owns
+only `mcp/src/`, `mcp/tests/`, `mcp/scripts/` and `mcp/README.md`. Freeze the existing
+Rust/console contracts. A missing managed-authority configuration must be an
+explicit unavailable capability, never a fabricated healthy or empty result.
+
+Configuration, endpoints, credentials, executable paths and service commands are
+owner-local settings, not tool arguments. HTTP is permitted only on loopback;
+remote connections require verified HTTPS. Never follow redirects with credentials.
+Sessions stay private and refresh after restart; do not automatically retry an
+uncertain mutation. Tool annotations distinguish inspection from destructive
+operations. There is no generic shell, arbitrary HTTP proxy or arbitrary local
+file read/write tool. Bound protocol results, transfers, subprocess output and
+waits. A service supervisor may terminate only child processes it owns in the
+current session; no saved PID is authority to kill a process. Existing externally
+managed servers can be inspected but must not be stopped by that supervisor.
+
+Acceptance is an actual MCP SDK client discovering tools and creating, uploading,
+listing, reading and deleting disposable storage through a running MaxIO server,
+including restart/session/error handling. Managed actions must be exercised
+against a real disposable HTTPS authority before being called verified. Monitoring
+is on-demand diagnostics or bounded observation; installing MCP alone is not a
+standing alert or unattended reconciliation service. A fresh Gauntlet critic
+must judge the running protocol and operator setup, not the builder's report.
+
+## Shared contract inventory
 
 The checked-in Rust types are authoritative. These are existing interfaces, not
 permission to create equivalent types in each domain:
