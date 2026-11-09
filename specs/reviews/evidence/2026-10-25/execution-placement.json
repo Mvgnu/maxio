@@ -1,0 +1,32 @@
+{
+  "result": {
+    "decision": {
+      "candidates": [
+        {
+          "eligible": true,
+          "incarnation": "e94b2d7e-673c-4ce0-b603-ff63f5e870a8",
+          "missing_bytes": 134218469,
+          "reasons": [],
+          "worker_id": "9603d12a-de4c-4c77-9dec-a19bf7396a30"
+        },
+        {
+          "eligible": true,
+          "incarnation": "52d54661-aa88-4711-8995-541960f9c882",
+          "missing_bytes": 741,
+          "reasons": [],
+          "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+        }
+      ],
+      "decided_at_unix_ms": 1792949840790,
+      "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+      "selected_worker": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+    },
+    "result": "placement"
+  },
+  "transfers": {
+    "metadata_downloaded": 1289,
+    "metadata_uploaded": 348,
+    "payload_downloaded": 0,
+    "payload_uploaded": 0
+  }
+}

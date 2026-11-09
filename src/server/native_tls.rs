@@ -42,6 +42,16 @@ pub struct ServerTls {
 }
 
 impl ServerTls {
+    /// Reuse the native verified HTTPS listener for optional upper-layer services.
+    /// This constructor has no S3 configuration or peer identity dependency.
+    pub fn standalone(cert_path: &str, key_path: &str) -> Result<Self, String> {
+        Ok(Self {
+            acceptor: Some(Arc::new(build_server_acceptor(cert_path, key_path)?)),
+            peer_tls: false,
+            revocations: None,
+        })
+    }
+
     pub fn from_config(config: &Config) -> Result<Self, String> {
         let peers = config.parsed_cluster_peers()?;
         let generic_configured = config.tls_cert_path.is_some() || config.tls_key_path.is_some();

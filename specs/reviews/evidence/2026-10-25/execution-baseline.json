@@ -1,0 +1,220 @@
+{
+  "attempts": [
+    {
+      "binding": {
+        "attempt_id": "c3eebf1b-3266-40f3-a425-0d56116b0336",
+        "job_id": "62047d45-be32-48f6-a3d5-494490c37fe6",
+        "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+        "worker_incarnation": "52d54661-aa88-4711-8995-541960f9c882"
+      },
+      "claimed_at_unix_ms": 1792949840790,
+      "detail": null,
+      "finished_at_unix_ms": 1792949857961,
+      "heartbeat_at_unix_ms": 1792949857984,
+      "lease": null,
+      "prepared_outputs": [
+        {
+          "attempt": {
+            "attempt_id": "c3eebf1b-3266-40f3-a425-0d56116b0336",
+            "job_id": "62047d45-be32-48f6-a3d5-494490c37fe6",
+            "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+            "worker_incarnation": "52d54661-aa88-4711-8995-541960f9c882"
+          },
+          "path": "results/hash.json",
+          "prepared_by": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+          "upload_id": "553006e2-5d6f-436a-9954-335d8e3ab3f5",
+          "version": {
+            "blob": "maxio-workspaces/projects/blobs/1437447f-fa77-482a-a582-c0cfc4e4db8f",
+            "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc",
+            "size": 98
+          },
+          "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+        }
+      ],
+      "publication": {
+        "actor": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+        "attempt": {
+          "attempt_id": "c3eebf1b-3266-40f3-a425-0d56116b0336",
+          "job_id": "62047d45-be32-48f6-a3d5-494490c37fe6",
+          "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+          "worker_incarnation": "52d54661-aa88-4711-8995-541960f9c882"
+        },
+        "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+        "changes": [
+          {
+            "current": {
+              "blob": "maxio-workspaces/projects/blobs/1437447f-fa77-482a-a582-c0cfc4e4db8f",
+              "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc",
+              "size": 98
+            },
+            "kind": "put",
+            "path": "results/hash.json",
+            "previous": null
+          }
+        ],
+        "committed_at_unix_ms": 1792949858055,
+        "committed_head": {
+          "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+          "generation": 21,
+          "revision": {
+            "revision": "467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+            "sha256": "ef65b10c6503f5a2913ed3fcedc108844658b1b3c0d012dcc5d60742fdc544bb"
+          },
+          "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+        },
+        "lease": {
+          "epoch": 2,
+          "fence": 2,
+          "lease_id": "9aa9dc7d-4ba6-4085-bb2c-6227dd8af1ac"
+        },
+        "parent": {
+          "revision": "20c8f6e1-efc4-4d03-9210-350f221f835e",
+          "sha256": "6bdf9217488868703df613790ca716098e28c2c750de66ac2618ca1b7aa130bc"
+        },
+        "publication_id": "6fa4a8ee-8d5c-4006-9b51-a1985ee6c06b",
+        "request_id": "249d4731-5474-4500-b32d-1d82189fb3a6",
+        "retention": [
+          {
+            "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+            "committed_generation": 21,
+            "file": {
+              "path": "results/hash.json",
+              "revision": {
+                "revision": "467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+                "sha256": "ef65b10c6503f5a2913ed3fcedc108844658b1b3c0d012dcc5d60742fdc544bb"
+              },
+              "version": {
+                "blob": "maxio-workspaces/projects/blobs/1437447f-fa77-482a-a582-c0cfc4e4db8f",
+                "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc",
+                "size": 98
+              },
+              "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+            },
+            "policy": "append_only_no_gc",
+            "policy_version": 1,
+            "recovery_reference": "maxio-workspace://6289952b-5cc9-4b1c-bc95-7edc54ea6906/results/hash.json?revision=467e4b2e-0dc3-4e4a-9256-50e8d6e0345a",
+            "vault_id": "a634f9b2-5e84-4e60-a7b5-0e5ee0528d30"
+          }
+        ],
+        "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+      },
+      "run": {
+        "adapter": "command",
+        "detail": null,
+        "environment_names": [
+          "CRITIC_OBSERVATIONS",
+          "CRITIC_WORKER"
+        ],
+        "executable": "/usr/bin/python3.12",
+        "executable_version": "sha256:a92f0f95e883390c7256b2e441484aac06b1002dbe1d924141a77c8d82f96223",
+        "exit_code": 0,
+        "finished_at": "2026-10-25T17:37:37.695258459+00:00",
+        "format": 1,
+        "id": "b4b1d800-9ae9-417c-98a9-2eaae0e0b410",
+        "input_files": [
+          {
+            "path": "data/example.bin",
+            "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611",
+            "size": 134217728
+          },
+          {
+            "path": "src/hash.py",
+            "sha256": "8c4869c4e2a69c8ec3f4da77a9715bd7a1347ab490a67b9b37b6def4001a61d7",
+            "size": 741
+          }
+        ],
+        "output_files": [
+          {
+            "path": "results/hash.json",
+            "sha256": "27a3ddc83f63c3db1a9ff08dafb43fb63c8db33e4f9c61617040106600c28bcc",
+            "size": 98
+          }
+        ],
+        "provider_session_id": null,
+        "published": false,
+        "started_at": "2026-10-25T17:37:32.790920772+00:00",
+        "status": "succeeded",
+        "stderr_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/c3eebf1b-3266-40f3-a425-0d56116b0336/runs/b4b1d800-9ae9-417c-98a9-2eaae0e0b410/stderr.log",
+        "stdout_log": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/c3eebf1b-3266-40f3-a425-0d56116b0336/runs/b4b1d800-9ae9-417c-98a9-2eaae0e0b410/stdout.log",
+        "workspace": "/tmp/critic-managed-execution-dri_4pg7/mini-worker/attempts/c3eebf1b-3266-40f3-a425-0d56116b0336/runs/b4b1d800-9ae9-417c-98a9-2eaae0e0b410/workspace"
+      },
+      "state": "succeeded"
+    }
+  ],
+  "base": {
+    "authority_id": "50eb4b17-3378-456b-9b25-88a1d848a4b0",
+    "generation": 12,
+    "revision": {
+      "revision": "20c8f6e1-efc4-4d03-9210-350f221f835e",
+      "sha256": "6bdf9217488868703df613790ca716098e28c2c750de66ac2618ca1b7aa130bc"
+    },
+    "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+  },
+  "cancel_requested": false,
+  "created_at_unix_ms": 1792949837712,
+  "decision": {
+    "candidates": [
+      {
+        "eligible": true,
+        "incarnation": "e94b2d7e-673c-4ce0-b603-ff63f5e870a8",
+        "missing_bytes": 134218469,
+        "reasons": [],
+        "worker_id": "9603d12a-de4c-4c77-9dec-a19bf7396a30"
+      },
+      {
+        "eligible": true,
+        "incarnation": "52d54661-aa88-4711-8995-541960f9c882",
+        "missing_bytes": 741,
+        "reasons": [],
+        "worker_id": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+      }
+    ],
+    "decided_at_unix_ms": 1792949840790,
+    "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 9a2b78d2-b428-4fe0-bfd7-2878b4d45feb",
+    "selected_worker": "9a2b78d2-b428-4fe0-bfd7-2878b4d45feb"
+  },
+  "inputs": [
+    {
+      "path": "data/example.bin",
+      "revision": {
+        "revision": "20c8f6e1-efc4-4d03-9210-350f221f835e",
+        "sha256": "6bdf9217488868703df613790ca716098e28c2c750de66ac2618ca1b7aa130bc"
+      },
+      "version": {
+        "blob": "maxio-workspaces/projects/blobs/9b79b41e-b46d-496e-9d04-85a0636a9a66",
+        "sha256": "30c9df269d1bc8900ad2249ecbc03dc6adc8c9019e5101092f82e09baa008611",
+        "size": 134217728
+      }
+    },
+    {
+      "path": "src/hash.py",
+      "revision": {
+        "revision": "20c8f6e1-efc4-4d03-9210-350f221f835e",
+        "sha256": "6bdf9217488868703df613790ca716098e28c2c750de66ac2618ca1b7aa130bc"
+      },
+      "version": {
+        "blob": "maxio-workspaces/projects/blobs/30cd9ba3-a411-4650-b555-d94c181d871f",
+        "sha256": "8c4869c4e2a69c8ec3f4da77a9715bd7a1347ab490a67b9b37b6def4001a61d7",
+        "size": 741
+      }
+    }
+  ],
+  "job_id": "62047d45-be32-48f6-a3d5-494490c37fe6",
+  "output_policy": "publish",
+  "output_selectors": [
+    {
+      "kind": "exact",
+      "path": "results/hash.json"
+    }
+  ],
+  "profile": "hash",
+  "required_worker": null,
+  "resources": {
+    "cpu_millis": 1000,
+    "memory_bytes": 268435456
+  },
+  "state": "succeeded",
+  "submitted_by": "5193beab-adec-434a-9bfd-6317c3879e6f",
+  "timeout_seconds": 3600,
+  "workspace_id": "6289952b-5cc9-4b1c-bc95-7edc54ea6906"
+}

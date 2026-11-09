@@ -1,0 +1,162 @@
+{
+  "source_commit": "8f120ac548a2b78a6b37d95f43299814affe204a",
+  "verdict": "original_documented_human_readable_log_gap_closed",
+  "original_job_text": "Hashed 1048576 bytes on the selected worker\n",
+  "original_job_checks": {
+    "job_id": "f461619e-fddb-497d-8541-ba56cc515d9f",
+    "attempt_id": "7da952cb-2031-41b6-8036-10c0b0039f64",
+    "text": "Hashed 1048576 bytes on the selected worker\n",
+    "stdout": {
+      "offset": 0,
+      "next_offset": 44,
+      "eof": true,
+      "truncated": false,
+      "byte_count": 44,
+      "sha256": "fa3e6a9835aa53febed4c08f1a43c750ddbcf859d86b09e53abac92ef5d02e4f",
+      "text_equals_decoded_json": true,
+      "default_json_has_transfers": true
+    },
+    "offset_7": {
+      "offset": 7,
+      "next_offset": 44,
+      "eof": true,
+      "truncated": false,
+      "byte_count": 37,
+      "sha256": "bba68afea1e967df395c058f38d8dd0ba46cac046821bea72e9bb378280cf597",
+      "text_equals_decoded_json": true,
+      "default_json_has_transfers": true
+    },
+    "at_eof": {
+      "offset": 44,
+      "next_offset": 44,
+      "eof": true,
+      "truncated": false,
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "text_equals_decoded_json": true,
+      "default_json_has_transfers": true
+    },
+    "stderr": {
+      "offset": 0,
+      "next_offset": 0,
+      "eof": true,
+      "truncated": false,
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "text_equals_decoded_json": true,
+      "default_json_has_transfers": true
+    }
+  },
+  "pagination_and_stderr_checks": {
+    "source_commit": "8f120ac548a2b78a6b37d95f43299814affe204a",
+    "job_id": "82f31fbe-bf06-405c-8973-4fe0a660da95",
+    "attempt_id": "11a64bf5-6a6e-43f1-b1bd-7a19ac397778",
+    "runtime_root": "/tmp/maxio-managed-log-pages-8f120ac.w2_l6v9c",
+    "reopened_authority_root": "/tmp/maxio-managed-onboarding.GfQSIf/authority",
+    "job_state": "succeeded",
+    "stdout_retained_bytes": 70002,
+    "stdout_pages": [
+      {
+        "offset": 0,
+        "next_offset": 65536,
+        "eof": false,
+        "truncated": false,
+        "byte_count": 65536,
+        "sha256": "b14e5e8f6a32eb42abc75b52b5335a15de3ad4467d0e7e9122440b3d8a0b980d",
+        "text_equals_decoded_json": true,
+        "default_json_has_transfers": true,
+        "text_cli_stderr_bytes": 0
+      },
+      {
+        "offset": 65536,
+        "next_offset": 70002,
+        "eof": true,
+        "truncated": false,
+        "byte_count": 4466,
+        "sha256": "398702eeaf869f3461e467fb1c9941abab391a8f7069037350da0be425ba71b6",
+        "text_equals_decoded_json": true,
+        "default_json_has_transfers": true,
+        "text_cli_stderr_bytes": 0
+      }
+    ],
+    "stdout_at_eof": {
+      "offset": 70002,
+      "next_offset": 70002,
+      "eof": true,
+      "truncated": false,
+      "byte_count": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "text_equals_decoded_json": true,
+      "default_json_has_transfers": true,
+      "text_cli_stderr_bytes": 0
+    },
+    "stderr_retained_bytes": 22,
+    "stderr": {
+      "offset": 0,
+      "next_offset": 22,
+      "eof": true,
+      "truncated": false,
+      "byte_count": 22,
+      "sha256": "c9f9e6f265a88470a8a9f23700675acfcd93b1014848a4d05db8997e5534ffff",
+      "text_equals_decoded_json": true,
+      "default_json_has_transfers": true,
+      "text_cli_stderr_bytes": 0
+    },
+    "stderr_offset_4": {
+      "offset": 4,
+      "next_offset": 22,
+      "eof": true,
+      "truncated": false,
+      "byte_count": 18,
+      "sha256": "91db80a3041601d6775582dd927b7fa21b69db819f17149209047084092e0da7",
+      "text_equals_decoded_json": true,
+      "default_json_has_transfers": true,
+      "text_cli_stderr_bytes": 0
+    },
+    "mid_utf8_byte_offset": {
+      "offset": 69995,
+      "next_offset": 70002,
+      "eof": true,
+      "truncated": false,
+      "byte_count": 7,
+      "sha256": "f0606db61882495104b196d5d5bd6f2852dfdaf28bbb19053e54900f609a723f",
+      "text_equals_decoded_json": true,
+      "default_json_has_transfers": true,
+      "text_cli_stderr_bytes": 0,
+      "first_bytes_hex": "bfbd5441494c"
+    },
+    "all_text_pages_equal_json_and_retained_bytes": true,
+    "verdict": "documented_readable_log_gap_closed",
+    "process_stopped": true
+  },
+  "probe_job_succeeded": true,
+  "probe_publication_present": false,
+  "separate_native_output_normalization": {
+    "job_id": "82f31fbe-bf06-405c-8973-4fe0a660da95",
+    "job_state": "succeeded",
+    "attempt_id": "11a64bf5-6a6e-43f1-b1bd-7a19ac397778",
+    "run_status": "succeeded",
+    "exit_code": 0,
+    "stdout": {
+      "expected_bytes": 70000,
+      "actual_bytes": 70002,
+      "expected_tail_hex": "414141414141414141414141414141414141414141414100ff5441494c0a",
+      "actual_tail_hex": "41414141414141414141414141414141414141414100efbfbd5441494c0a",
+      "first_difference": 69994,
+      "actual_sha256": "6816551fd9dba9ccfb7ebc6cfe1db2858bce59ac05d638662205e9937ca696b5",
+      "path": "/tmp/maxio-managed-log-followup-8f120ac.daw04g_c/worker/attempts/11a64bf5-6a6e-43f1-b1bd-7a19ac397778/runs/02aebf20-7c28-4cd3-a61b-c5a8bc9a8982/stdout.log"
+    },
+    "stderr": {
+      "expected_bytes": 20,
+      "actual_bytes": 22,
+      "expected_tail_hex": "4c4f472d4552524f522d53545245414d0a00ff0a",
+      "actual_tail_hex": "4c4f472d4552524f522d53545245414d0a00efbfbd0a",
+      "first_difference": 18,
+      "actual_sha256": "c9f9e6f265a88470a8a9f23700675acfcd93b1014848a4d05db8997e5534ffff",
+      "path": "/tmp/maxio-managed-log-followup-8f120ac.daw04g_c/worker/attempts/11a64bf5-6a6e-43f1-b1bd-7a19ac397778/runs/02aebf20-7c28-4cd3-a61b-c5a8bc9a8982/stderr.log"
+    }
+  },
+  "first_probe_harness_note": "The initial extra binary-output assertion compared native emitted bytes with the saved log and stopped. Continuation compares --text with actual retained page bytes as documented; the initial evidence is preserved.",
+  "first_round_assessment_preserved_sha256": "d95dfcd7f8ddd6ee326dcd960f201b88ac1294613c69ca7e341ba2913cae60a8",
+  "all_processes_stopped_before_copy": true
+}

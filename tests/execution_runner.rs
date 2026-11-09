@@ -1,6 +1,8 @@
 #![cfg(unix)]
 
-use maxio::execution::{AdapterKind, PermissionMode, RunRequest, doctor, run};
+use maxio::execution::{
+    AdapterKind, PermissionMode, RunFile, RunRequest, doctor, run, run_verified,
+};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -26,6 +28,80 @@ fn request(root: &std::path::Path, script: &str) -> RunRequest {
         timeout_seconds: 5,
         environment: BTreeMap::new(),
         permission: PermissionMode::WorkspaceWrite,
+    }
+}
+
+#[tokio::test]
+async fn immutable_admission_rejects_changed_input_before_starting_task() {
+    let root = tempfile::tempdir().unwrap();
+    let req = request(
+        root.path(),
+        "import pathlib\npathlib.Path('result.txt').write_text('must not execute')\n",
+    );
+    let (sha256, size) = maxio::files::hash_file(&req.source.join("task.py")).unwrap();
+    let expected = vec![RunFile {
+        path: "task.py".into(),
+        sha256,
+        size,
+    }];
+    fs::write(
+        req.source.join("task.py"),
+        "import pathlib\npathlib.Path('result.txt').write_text('changed source executed')\n",
+    )
+    .unwrap();
+    let record = run_verified(req, &expected).await.unwrap();
+    assert_eq!(record.status, "failed");
+    assert!(
+        record
+            .detail
+            .unwrap()
+            .contains("input identity mismatch before execution")
+    );
+    assert!(!record.workspace.join("result.txt").exists());
+    assert!(record.workspace.join("task.py").exists());
+    assert_eq!(record.exit_code, None);
+    assert!(!record.published);
+}
+
+#[tokio::test]
+async fn immutable_admission_requires_the_complete_exact_input_set() {
+    for mode in ["correct", "missing", "duplicate", "extra"] {
+        let root = tempfile::tempdir().unwrap();
+        let req = request(
+            root.path(),
+            "import pathlib\npathlib.Path('result.txt').write_text('verified')\n",
+        );
+        let (sha256, size) = maxio::files::hash_file(&req.source.join("task.py")).unwrap();
+        let item = RunFile {
+            path: "task.py".into(),
+            sha256,
+            size,
+        };
+        let expected = match mode {
+            "correct" => vec![item],
+            "missing" => vec![],
+            "duplicate" => vec![item.clone(), item],
+            _ => vec![
+                item.clone(),
+                RunFile {
+                    path: "unselected.txt".into(),
+                    ..item
+                },
+            ],
+        };
+        let record = run_verified(req, &expected).await.unwrap();
+        assert_eq!(
+            record.status,
+            if mode == "correct" {
+                "succeeded"
+            } else {
+                "failed"
+            }
+        );
+        assert_eq!(
+            record.workspace.join("result.txt").exists(),
+            mode == "correct"
+        );
     }
 }
 

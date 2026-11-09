@@ -50,6 +50,10 @@
 - CI builds assets with locked dependencies and runs ownership/dependency/spec checks.
 - Process scenarios own and clean only their temporary directories and child processes.
 - A green harness must never overwrite an independent Gauntlet verdict.
+- The complete gate includes standalone, peer, sync, direct-workspace, local-agent
+  and managed B–E process journeys, using binaries from the selected Cargo target.
+  Managed three-device runs are isolated processes on one host; provider fixtures
+  establish adapter protocol behavior only.
 
 ## Known limits / next decision
 

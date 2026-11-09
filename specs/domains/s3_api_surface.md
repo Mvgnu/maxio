@@ -58,6 +58,13 @@
 - Response Content-Length describes the response body, never the stored object for an empty PUT response.
 - Standalone PutObject honors If-None-Match:* and exact If-Match; failed conditions return 412.
 - Reject unsupported conditional mutation families and distributed conditional writes explicitly; never ignore them.
+- Reject unsupported `retention`, `legal-hold` and `object-lock` subresources and
+  `x-amz-object-lock-*`, `x-amz-bucket-object-lock-enabled` and
+  `x-amz-bypass-governance-retention` headers with S3 `NotImplemented` (501) at the
+  authenticated S3 router before operation dispatch. Mixed multipart, copy, batch
+  delete, version-specific delete or bucket-configuration requests must not mutate
+  objects, versions, uploads or buckets. Read requests must not return ordinary
+  object/listing data as if it were retention metadata.
 - Map storage errors to canonical S3 XML and preserve the request ID.
 - Keep S3 handlers and console handlers on the same storage contracts.
 - Count each rolled-up common prefix as one result before applying the listing
@@ -71,6 +78,8 @@
   CopyObject, DELETE and multipart conditions are rejected with 501. Batch
   version-specific and conditional selectors are also rejected before deletion.
 - Full AWS API compatibility is not claimed; see the README capability limits.
+- MaxIO does not implement S3 Object Lock, retention periods or legal holds.
+  Bucket versioning and a successful object read do not establish retention.
 
 ## Review
 

@@ -1,0 +1,9 @@
+{
+  "platform": "Linux-6.18.55-x86_64-with-glibc2.39",
+  "python": "3.12.14",
+  "binary": "/workspace/scratch/05c136f30bb4/fabric-integration-22c1d52/maxio-fabric",
+  "binary_sha256": "1d6d171f43a5388a94e3534ef53c1a2086bb8ab6129ce7ed5cc13122890db00b",
+  "runtime": "/tmp/maxio-critic-managed-cache-22c1d52-round2",
+  "run_exit_code": 0,
+  "checks": 31
+}

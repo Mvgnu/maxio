@@ -154,11 +154,16 @@ pub fn sync_directory(path: &Path) -> Result<()> {
 pub fn validate_workspace_relative(key: &str) -> Result<()> {
     validate_relative(key)?;
     ensure!(
-        !key.split('/').any(
-            |part| [".git", ".maxio-workspace", ".maxio-runs", ".maxio-runtime"]
-                .iter()
-                .any(|reserved| part.eq_ignore_ascii_case(reserved))
-        ),
+        !key.split('/').any(|part| [
+            ".git",
+            ".maxio-workspace",
+            ".maxio-runs",
+            ".maxio-runtime",
+            ".maxio-fabric",
+            ".maxio-worker"
+        ]
+        .iter()
+        .any(|reserved| part.eq_ignore_ascii_case(reserved))),
         "reserved workspace path: {key:?}"
     );
     Ok(())

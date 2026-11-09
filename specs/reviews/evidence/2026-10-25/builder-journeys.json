@@ -1,0 +1,3082 @@
+{
+  "artifact_manifest": {
+    "binaries": {
+      "maxio": "ac13c5881c403f8e68a6360f64f74fd2c95520d372f6b60fdc2a0bfad00a900f",
+      "maxio-agent": "347be02599e83d170d38c9f9197f40dc7c5005d9200272042badff49915675c9",
+      "maxio-fabric": "1d6d171f43a5388a94e3534ef53c1a2086bb8ab6129ce7ed5cc13122890db00b",
+      "maxio-sync": "ac25b610d4dba332bac217fa41d8c3431536ac19bb3310047191fd15a834f8f7",
+      "maxio-worker": "5c172e129d435a2cfdbf535f803535ce59fc7d2c207c6bb6d651a8b869a09a19",
+      "maxio-workspace": "924a748beaa5ecaa943967cfc003b3b30b720b706dcbe5c330176f1153839749"
+    },
+    "platform": "Linux x86_64, debug build, Rust 1.94.0",
+    "source_commit": "22c1d523e25a390650dff1b8ddec41c1c277e3e9"
+  },
+  "binaries": {
+    "fabric": {
+      "allocated_bytes": 34566144,
+      "device": 27,
+      "inode": 430660,
+      "links": 1,
+      "path": "/workspace/scratch/05c136f30bb4/fabric-integration-22c1d52/maxio-fabric",
+      "sha256": "1d6d171f43a5388a94e3534ef53c1a2086bb8ab6129ce7ed5cc13122890db00b",
+      "size": 34565120
+    },
+    "worker": {
+      "allocated_bytes": 26447872,
+      "device": 27,
+      "inode": 430661,
+      "links": 1,
+      "path": "/workspace/scratch/05c136f30bb4/fabric-integration-22c1d52/maxio-worker",
+      "sha256": "5c172e129d435a2cfdbf535f803535ce59fc7d2c207c6bb6d651a8b869a09a19",
+      "size": 26447800
+    }
+  },
+  "cases": [
+    {
+      "evidence": {
+        "Book_without_grant": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0016-Book-no-grant-rejected.json",
+        "coordinator_pid": 42787,
+        "identities": {
+          "Book": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "Mini": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+          "Owner": "2257e36d-fc05-4ff1-90a2-96312a7f2c38",
+          "VPS": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+        },
+        "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+      },
+      "finished_unix": 1792949340.6565366,
+      "name": "Setup: proper TLS, independent enrolled identities and explicit grants",
+      "started_unix": 1792949339.1966288,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "Mini_cache_import": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0023-Mini-cache-import.json",
+        "dataset": {
+          "allocated_bytes": 134217728,
+          "device": 27,
+          "inode": 791268,
+          "links": 1,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/working/data/dataset.bin",
+          "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+          "size": 134217728
+        },
+        "references": "/tmp/maxio-fabric-journey-22c1d52-run2/references/dataset.json",
+        "seed": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0020-Mini-workspace-publish.json"
+      },
+      "finished_unix": 1792949381.9255865,
+      "name": "B/D: Mini seeds a real non-sparse dataset and imports private cache",
+      "started_unix": 1792949340.6568444,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "Book_dataset_download_bytes": 0,
+        "conflict_rejection": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0031-VPS-workspace-publish.json",
+        "logical_delete": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0035-Book-workspace-delete.json",
+        "metadata_only": {
+          "Book": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0024-Book-workspace-pull.json",
+          "Mini": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0025-Mini-workspace-pull.json",
+          "VPS": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0026-VPS-workspace-pull.json"
+        },
+        "preserved_VPS_edit": {
+          "allocated_bytes": 4096,
+          "device": 27,
+          "inode": 918016,
+          "links": 2,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/VPS/working/docs/readme.md",
+          "sha256": "4b76f6121870e3ad9003f92df4c987ff5af3e707c5f1b12d1a68932f51c3fba0",
+          "size": 45
+        },
+        "restore": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0038-Book-workspace-restore.json",
+        "selected_publication": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0029-Book-workspace-publish.json"
+      },
+      "finished_unix": 1792949382.9676914,
+      "name": "B: metadata/docs selection, selected publication, conflicts, delete/restore",
+      "started_unix": 1792949381.925874,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "Book_dataset_bytes": 0,
+        "Mini_dataset_redownload_bytes": 0,
+        "VPS_dataset_bytes": 0,
+        "actual_worker_pids": {
+          "Mini": 45280,
+          "VPS": 45498
+        },
+        "hydration": {
+          "hydrated": [
+            {
+              "path": "src/hash_dataset.py",
+              "revision": {
+                "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+                "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/ba8f022c-8cf5-48e2-9633-91c3ffdd1ac0",
+                "sha256": "e10c8c441383921ee34846c49200b300b8fc1d8b4b2f0c74f7d9bff084c04cb6",
+                "size": 611
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            }
+          ],
+          "reused": [
+            {
+              "path": "data/dataset.bin",
+              "revision": {
+                "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+                "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+                "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+                "size": 134217728
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            }
+          ],
+          "transfer": {
+            "metadata_downloaded": 5256,
+            "metadata_uploaded": 3775,
+            "payload_downloaded": 611,
+            "payload_uploaded": 0
+          }
+        },
+        "independent_input_copies": [
+          {
+            "allocated_bytes": 134217728,
+            "device": 27,
+            "inode": 917885,
+            "links": 1,
+            "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/cache/objects/70ac051a-aed4-4670-aa23-b022561baa3f-8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc-134217728",
+            "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+            "size": 134217728
+          },
+          {
+            "allocated_bytes": 134217728,
+            "device": 27,
+            "inode": 918075,
+            "links": 1,
+            "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/9de9c626-8324-400f-8330-365dff789c5b/source/data/dataset.bin",
+            "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+            "size": 134217728
+          },
+          {
+            "allocated_bytes": 134217728,
+            "device": 27,
+            "inode": 918109,
+            "links": 1,
+            "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/9de9c626-8324-400f-8330-365dff789c5b/runs/1c93ba48-49c0-4042-a974-5097e35702db/workspace/data/dataset.bin",
+            "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+            "size": 134217728
+          },
+          {
+            "allocated_bytes": 134217728,
+            "device": 27,
+            "inode": 791268,
+            "links": 1,
+            "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/working/data/dataset.bin",
+            "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+            "size": 134217728
+          }
+        ],
+        "job": {
+          "attempts": [
+            {
+              "binding": {
+                "attempt_id": "9de9c626-8324-400f-8330-365dff789c5b",
+                "job_id": "33f26313-01e5-49d6-a2ae-4090fedd27ba",
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+              },
+              "claimed_at_unix_ms": 1792949391015,
+              "detail": null,
+              "finished_at_unix_ms": 1792949409394,
+              "heartbeat_at_unix_ms": 1792949409045,
+              "lease": null,
+              "prepared_outputs": [
+                {
+                  "attempt": {
+                    "attempt_id": "9de9c626-8324-400f-8330-365dff789c5b",
+                    "job_id": "33f26313-01e5-49d6-a2ae-4090fedd27ba",
+                    "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                    "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                  },
+                  "path": "results/hash.json",
+                  "prepared_by": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "upload_id": "bcb49469-01fc-48d0-bacc-7dbebc1bb8b9",
+                  "version": {
+                    "blob": "maxio-workspaces/managed-journey/blobs/de6d843b-8c48-4d83-a561-dca50ea5e960",
+                    "sha256": "0ece6821af017b08e3385a661f545f41ce3bf37adc2315bce1684415829928c8",
+                    "size": 136
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                }
+              ],
+              "publication": {
+                "actor": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "attempt": {
+                  "attempt_id": "9de9c626-8324-400f-8330-365dff789c5b",
+                  "job_id": "33f26313-01e5-49d6-a2ae-4090fedd27ba",
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                },
+                "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                "changes": [
+                  {
+                    "current": {
+                      "blob": "maxio-workspaces/managed-journey/blobs/de6d843b-8c48-4d83-a561-dca50ea5e960",
+                      "sha256": "0ece6821af017b08e3385a661f545f41ce3bf37adc2315bce1684415829928c8",
+                      "size": 136
+                    },
+                    "kind": "put",
+                    "path": "results/hash.json",
+                    "previous": null
+                  }
+                ],
+                "committed_at_unix_ms": 1792949409417,
+                "committed_head": {
+                  "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                  "generation": 40,
+                  "revision": {
+                    "revision": "db1e8d39-5621-4725-b76d-58ebe4e12510",
+                    "sha256": "d79ca7bbcb8e9fbda90e08d57cc580b82b332ad38edc299dc69d7a580c67d175"
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                },
+                "lease": {
+                  "epoch": 2,
+                  "fence": 5,
+                  "lease_id": "6e147f49-e0ba-4cd9-8b12-2638788958ef"
+                },
+                "parent": {
+                  "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+                  "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+                },
+                "publication_id": "29977ab1-f751-45cc-9a11-d9d729476285",
+                "request_id": "a8c59320-4127-4b1e-bffa-4c8cb4f97373",
+                "retention": [
+                  {
+                    "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                    "committed_generation": 40,
+                    "file": {
+                      "path": "results/hash.json",
+                      "revision": {
+                        "revision": "db1e8d39-5621-4725-b76d-58ebe4e12510",
+                        "sha256": "d79ca7bbcb8e9fbda90e08d57cc580b82b332ad38edc299dc69d7a580c67d175"
+                      },
+                      "version": {
+                        "blob": "maxio-workspaces/managed-journey/blobs/de6d843b-8c48-4d83-a561-dca50ea5e960",
+                        "sha256": "0ece6821af017b08e3385a661f545f41ce3bf37adc2315bce1684415829928c8",
+                        "size": 136
+                      },
+                      "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                    },
+                    "policy": "append_only_no_gc",
+                    "policy_version": 1,
+                    "recovery_reference": "maxio-workspace://70ac051a-aed4-4670-aa23-b022561baa3f/results/hash.json?revision=db1e8d39-5621-4725-b76d-58ebe4e12510",
+                    "vault_id": "4a206802-994d-410f-af05-137b22de465b"
+                  }
+                ],
+                "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+              },
+              "run": {
+                "adapter": "command",
+                "detail": null,
+                "environment_names": [
+                  "DEVICE_LABEL"
+                ],
+                "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+                "exit_code": 0,
+                "finished_at": "2026-10-25T17:30:09.317181413+00:00",
+                "format": 1,
+                "id": "1c93ba48-49c0-4042-a974-5097e35702db",
+                "input_files": [
+                  {
+                    "path": "data/dataset.bin",
+                    "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+                    "size": 134217728
+                  },
+                  {
+                    "path": "src/hash_dataset.py",
+                    "sha256": "e10c8c441383921ee34846c49200b300b8fc1d8b4b2f0c74f7d9bff084c04cb6",
+                    "size": 611
+                  }
+                ],
+                "output_files": [
+                  {
+                    "path": "results/hash.json",
+                    "sha256": "0ece6821af017b08e3385a661f545f41ce3bf37adc2315bce1684415829928c8",
+                    "size": 136
+                  }
+                ],
+                "provider_session_id": null,
+                "published": false,
+                "started_at": "2026-10-25T17:30:03.349339061+00:00",
+                "status": "succeeded",
+                "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/9de9c626-8324-400f-8330-365dff789c5b/runs/1c93ba48-49c0-4042-a974-5097e35702db/stderr.log",
+                "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/9de9c626-8324-400f-8330-365dff789c5b/runs/1c93ba48-49c0-4042-a974-5097e35702db/stdout.log",
+                "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/9de9c626-8324-400f-8330-365dff789c5b/runs/1c93ba48-49c0-4042-a974-5097e35702db/workspace"
+              },
+              "state": "succeeded"
+            }
+          ],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 31,
+            "revision": {
+              "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+              "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": false,
+          "created_at_unix_ms": 1792949387413,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": true,
+                "incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d",
+                "missing_bytes": 611,
+                "reasons": [],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": true,
+                "incarnation": "932c8f30-761d-428f-a24f-9fce2a551902",
+                "missing_bytes": 134218339,
+                "reasons": [],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949391015,
+            "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+          },
+          "inputs": [
+            {
+              "path": "data/dataset.bin",
+              "revision": {
+                "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+                "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+                "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+                "size": 134217728
+              }
+            },
+            {
+              "path": "src/hash_dataset.py",
+              "revision": {
+                "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+                "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/ba8f022c-8cf5-48e2-9633-91c3ffdd1ac0",
+                "sha256": "e10c8c441383921ee34846c49200b300b8fc1d8b4b2f0c74f7d9bff084c04cb6",
+                "size": 611
+              }
+            }
+          ],
+          "job_id": "33f26313-01e5-49d6-a2ae-4090fedd27ba",
+          "output_policy": "publish",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/hash.json"
+            }
+          ],
+          "profile": "python-hash",
+          "required_worker": null,
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "succeeded",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "placement": {
+          "candidates": [
+            {
+              "eligible": true,
+              "incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d",
+              "missing_bytes": 611,
+              "reasons": [],
+              "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+            },
+            {
+              "eligible": true,
+              "incarnation": "932c8f30-761d-428f-a24f-9fce2a551902",
+              "missing_bytes": 134218339,
+              "reasons": [],
+              "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+            }
+          ],
+          "decided_at_unix_ms": 1792949387413,
+          "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+          "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+        },
+        "result": {
+          "device_label": "Mini",
+          "pid": 46595,
+          "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+          "size": 134217728
+        }
+      },
+      "finished_unix": 1792949410.1323307,
+      "name": "D: two real workers, exact locality, actual Python hash and published result",
+      "started_unix": 1792949382.967991,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "claude": {
+          "job": {
+            "attempts": [
+              {
+                "binding": {
+                  "attempt_id": "c38cf67c-5054-4f75-a295-3baaef2029ac",
+                  "job_id": "83c362bc-2069-4248-a54a-bf69575a41e9",
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                },
+                "claimed_at_unix_ms": 1792949418386,
+                "detail": null,
+                "finished_at_unix_ms": 1792949418863,
+                "heartbeat_at_unix_ms": 1792949418410,
+                "lease": null,
+                "prepared_outputs": [
+                  {
+                    "attempt": {
+                      "attempt_id": "c38cf67c-5054-4f75-a295-3baaef2029ac",
+                      "job_id": "83c362bc-2069-4248-a54a-bf69575a41e9",
+                      "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                      "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                    },
+                    "path": "results/claude-fixture.json",
+                    "prepared_by": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                    "upload_id": "2da7f459-309d-48f7-8881-4e6858f5563d",
+                    "version": {
+                      "blob": "maxio-workspaces/managed-journey/blobs/a9f1144b-00c4-473a-866f-e46af5d24a08",
+                      "sha256": "d7c922eb545545dcf1a8b4048249697335de8e32ef938b86d3addb0f85358444",
+                      "size": 44
+                    },
+                    "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                  }
+                ],
+                "publication": {
+                  "actor": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "attempt": {
+                    "attempt_id": "c38cf67c-5054-4f75-a295-3baaef2029ac",
+                    "job_id": "83c362bc-2069-4248-a54a-bf69575a41e9",
+                    "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                    "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                  },
+                  "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                  "changes": [
+                    {
+                      "current": {
+                        "blob": "maxio-workspaces/managed-journey/blobs/a9f1144b-00c4-473a-866f-e46af5d24a08",
+                        "sha256": "d7c922eb545545dcf1a8b4048249697335de8e32ef938b86d3addb0f85358444",
+                        "size": 44
+                      },
+                      "kind": "put",
+                      "path": "results/claude-fixture.json",
+                      "previous": null
+                    }
+                  ],
+                  "committed_at_unix_ms": 1792949418887,
+                  "committed_head": {
+                    "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                    "generation": 52,
+                    "revision": {
+                      "revision": "ffbe5cf8-07d6-42f7-85a1-286e8cbb48e2",
+                      "sha256": "06c90b199e64df2fb25044bc3f165ddb933b490ff0a91eb0a0a65558238bb025"
+                    },
+                    "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                  },
+                  "lease": {
+                    "epoch": 2,
+                    "fence": 7,
+                    "lease_id": "288f21df-1a14-4a23-bcd4-a2ba65c0d9c5"
+                  },
+                  "parent": {
+                    "revision": "489ad3cf-cbdd-4dbc-9990-14d9989217b0",
+                    "sha256": "03d441cdc36cb08d0abf9ede8c8f2a92e7696436432427b4324455105a764406"
+                  },
+                  "publication_id": "e96355ef-8965-486e-a2e9-5d0d5c9adfb4",
+                  "request_id": "90d5ba25-54a1-419b-819c-f1192780cd9a",
+                  "retention": [
+                    {
+                      "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                      "committed_generation": 52,
+                      "file": {
+                        "path": "results/claude-fixture.json",
+                        "revision": {
+                          "revision": "ffbe5cf8-07d6-42f7-85a1-286e8cbb48e2",
+                          "sha256": "06c90b199e64df2fb25044bc3f165ddb933b490ff0a91eb0a0a65558238bb025"
+                        },
+                        "version": {
+                          "blob": "maxio-workspaces/managed-journey/blobs/a9f1144b-00c4-473a-866f-e46af5d24a08",
+                          "sha256": "d7c922eb545545dcf1a8b4048249697335de8e32ef938b86d3addb0f85358444",
+                          "size": 44
+                        },
+                        "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                      },
+                      "policy": "append_only_no_gc",
+                      "policy_version": 1,
+                      "recovery_reference": "maxio-workspace://70ac051a-aed4-4670-aa23-b022561baa3f/results/claude-fixture.json?revision=ffbe5cf8-07d6-42f7-85a1-286e8cbb48e2",
+                      "vault_id": "4a206802-994d-410f-af05-137b22de465b"
+                    }
+                  ],
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                },
+                "run": {
+                  "adapter": "claude",
+                  "detail": null,
+                  "environment_names": [
+                    "ANTHROPIC_API_KEY"
+                  ],
+                  "executable": "/tmp/maxio-fabric-journey-22c1d52-run2/fixtures/provider-protocol-fixture",
+                  "executable_version": "2.1.309 journey-protocol-fixture",
+                  "exit_code": 0,
+                  "finished_at": "2026-10-25T17:30:18.787912281+00:00",
+                  "format": 1,
+                  "id": "110c29eb-6cfb-41f9-abaa-5ac3b60faf53",
+                  "input_files": [
+                    {
+                      "path": "src/provider-context.txt",
+                      "sha256": "4e1a42fdea1210a79dcc56573cd43191e6db6fe6d545e707c5ec9e95651803f0",
+                      "size": 59
+                    }
+                  ],
+                  "output_files": [
+                    {
+                      "path": "results/claude-fixture.json",
+                      "sha256": "d7c922eb545545dcf1a8b4048249697335de8e32ef938b86d3addb0f85358444",
+                      "size": 44
+                    }
+                  ],
+                  "provider_session_id": "journey-protocol-fixture",
+                  "published": false,
+                  "started_at": "2026-10-25T17:30:18.409406685+00:00",
+                  "status": "succeeded",
+                  "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/c38cf67c-5054-4f75-a295-3baaef2029ac/runs/110c29eb-6cfb-41f9-abaa-5ac3b60faf53/stderr.log",
+                  "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/c38cf67c-5054-4f75-a295-3baaef2029ac/runs/110c29eb-6cfb-41f9-abaa-5ac3b60faf53/stdout.log",
+                  "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/c38cf67c-5054-4f75-a295-3baaef2029ac/runs/110c29eb-6cfb-41f9-abaa-5ac3b60faf53/workspace"
+                },
+                "state": "succeeded"
+              }
+            ],
+            "base": {
+              "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+              "generation": 46,
+              "revision": {
+                "revision": "489ad3cf-cbdd-4dbc-9990-14d9989217b0",
+                "sha256": "03d441cdc36cb08d0abf9ede8c8f2a92e7696436432427b4324455105a764406"
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            },
+            "cancel_requested": false,
+            "created_at_unix_ms": 1792949414356,
+            "decision": {
+              "candidates": [
+                {
+                  "eligible": true,
+                  "incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d",
+                  "missing_bytes": 0,
+                  "reasons": [],
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+                },
+                {
+                  "eligible": false,
+                  "incarnation": "932c8f30-761d-428f-a24f-9fce2a551902",
+                  "missing_bytes": 59,
+                  "reasons": [
+                    "manual worker constraint"
+                  ],
+                  "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+                }
+              ],
+              "decided_at_unix_ms": 1792949418386,
+              "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+              "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+            },
+            "inputs": [
+              {
+                "path": "src/provider-context.txt",
+                "revision": {
+                  "revision": "489ad3cf-cbdd-4dbc-9990-14d9989217b0",
+                  "sha256": "03d441cdc36cb08d0abf9ede8c8f2a92e7696436432427b4324455105a764406"
+                },
+                "version": {
+                  "blob": "maxio-workspaces/managed-journey/blobs/1c686b0d-0604-4706-9b59-e23db76e68b6",
+                  "sha256": "4e1a42fdea1210a79dcc56573cd43191e6db6fe6d545e707c5ec9e95651803f0",
+                  "size": 59
+                }
+              }
+            ],
+            "job_id": "83c362bc-2069-4248-a54a-bf69575a41e9",
+            "output_policy": "publish",
+            "output_selectors": [
+              {
+                "kind": "exact",
+                "path": "results/claude-fixture.json"
+              }
+            ],
+            "profile": "claude-protocol-fixture",
+            "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "resources": {
+              "cpu_millis": 1000,
+              "memory_bytes": 268435456
+            },
+            "state": "succeeded",
+            "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+            "timeout_seconds": 60,
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "result": {
+            "adapter": "claude",
+            "fixture_only": true
+          }
+        },
+        "codex": {
+          "job": {
+            "attempts": [
+              {
+                "binding": {
+                  "attempt_id": "6d00f73e-7273-44b2-952b-2f3e3b00addf",
+                  "job_id": "e42dc776-c1bc-4b58-9f16-de5bc01ff932",
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                },
+                "claimed_at_unix_ms": 1792949413599,
+                "detail": null,
+                "finished_at_unix_ms": 1792949414179,
+                "heartbeat_at_unix_ms": 1792949414120,
+                "lease": null,
+                "prepared_outputs": [
+                  {
+                    "attempt": {
+                      "attempt_id": "6d00f73e-7273-44b2-952b-2f3e3b00addf",
+                      "job_id": "e42dc776-c1bc-4b58-9f16-de5bc01ff932",
+                      "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                      "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                    },
+                    "path": "results/codex-fixture.json",
+                    "prepared_by": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                    "upload_id": "c5501af7-b1fe-4a40-a92c-a591b65c5573",
+                    "version": {
+                      "blob": "maxio-workspaces/managed-journey/blobs/59c72e6a-1bd5-407f-9a3d-6c21934e18b0",
+                      "sha256": "50e89efa4a226f5cc6620cef78aaf72f1733f514f5135bfdde716c84c07b77cd",
+                      "size": 43
+                    },
+                    "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                  }
+                ],
+                "publication": {
+                  "actor": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "attempt": {
+                    "attempt_id": "6d00f73e-7273-44b2-952b-2f3e3b00addf",
+                    "job_id": "e42dc776-c1bc-4b58-9f16-de5bc01ff932",
+                    "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                    "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                  },
+                  "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                  "changes": [
+                    {
+                      "current": {
+                        "blob": "maxio-workspaces/managed-journey/blobs/59c72e6a-1bd5-407f-9a3d-6c21934e18b0",
+                        "sha256": "50e89efa4a226f5cc6620cef78aaf72f1733f514f5135bfdde716c84c07b77cd",
+                        "size": 43
+                      },
+                      "kind": "put",
+                      "path": "results/codex-fixture.json",
+                      "previous": null
+                    }
+                  ],
+                  "committed_at_unix_ms": 1792949414201,
+                  "committed_head": {
+                    "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                    "generation": 46,
+                    "revision": {
+                      "revision": "489ad3cf-cbdd-4dbc-9990-14d9989217b0",
+                      "sha256": "03d441cdc36cb08d0abf9ede8c8f2a92e7696436432427b4324455105a764406"
+                    },
+                    "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                  },
+                  "lease": {
+                    "epoch": 2,
+                    "fence": 6,
+                    "lease_id": "260dd9eb-ec7b-458b-87c4-27d54a58fa6e"
+                  },
+                  "parent": {
+                    "revision": "db1e8d39-5621-4725-b76d-58ebe4e12510",
+                    "sha256": "d79ca7bbcb8e9fbda90e08d57cc580b82b332ad38edc299dc69d7a580c67d175"
+                  },
+                  "publication_id": "01dd9e38-5861-43ab-8957-9dff9f2d393d",
+                  "request_id": "bec0fe16-3a2f-40de-ad42-f9cd969a74dc",
+                  "retention": [
+                    {
+                      "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                      "committed_generation": 46,
+                      "file": {
+                        "path": "results/codex-fixture.json",
+                        "revision": {
+                          "revision": "489ad3cf-cbdd-4dbc-9990-14d9989217b0",
+                          "sha256": "03d441cdc36cb08d0abf9ede8c8f2a92e7696436432427b4324455105a764406"
+                        },
+                        "version": {
+                          "blob": "maxio-workspaces/managed-journey/blobs/59c72e6a-1bd5-407f-9a3d-6c21934e18b0",
+                          "sha256": "50e89efa4a226f5cc6620cef78aaf72f1733f514f5135bfdde716c84c07b77cd",
+                          "size": 43
+                        },
+                        "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                      },
+                      "policy": "append_only_no_gc",
+                      "policy_version": 1,
+                      "recovery_reference": "maxio-workspace://70ac051a-aed4-4670-aa23-b022561baa3f/results/codex-fixture.json?revision=489ad3cf-cbdd-4dbc-9990-14d9989217b0",
+                      "vault_id": "4a206802-994d-410f-af05-137b22de465b"
+                    }
+                  ],
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                },
+                "run": {
+                  "adapter": "codex",
+                  "detail": null,
+                  "environment_names": [
+                    "CODEX_API_KEY"
+                  ],
+                  "executable": "/tmp/maxio-fabric-journey-22c1d52-run2/fixtures/provider-protocol-fixture",
+                  "executable_version": "2.1.309 journey-protocol-fixture",
+                  "exit_code": 0,
+                  "finished_at": "2026-10-25T17:30:14.124517967+00:00",
+                  "format": 1,
+                  "id": "3c18f396-e392-4c43-a0c1-011fad16233f",
+                  "input_files": [
+                    {
+                      "path": "src/provider-context.txt",
+                      "sha256": "4e1a42fdea1210a79dcc56573cd43191e6db6fe6d545e707c5ec9e95651803f0",
+                      "size": 59
+                    }
+                  ],
+                  "output_files": [
+                    {
+                      "path": "results/codex-fixture.json",
+                      "sha256": "50e89efa4a226f5cc6620cef78aaf72f1733f514f5135bfdde716c84c07b77cd",
+                      "size": 43
+                    }
+                  ],
+                  "provider_session_id": "journey-protocol-fixture",
+                  "published": false,
+                  "started_at": "2026-10-25T17:30:13.629639037+00:00",
+                  "status": "succeeded",
+                  "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/6d00f73e-7273-44b2-952b-2f3e3b00addf/runs/3c18f396-e392-4c43-a0c1-011fad16233f/stderr.log",
+                  "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/6d00f73e-7273-44b2-952b-2f3e3b00addf/runs/3c18f396-e392-4c43-a0c1-011fad16233f/stdout.log",
+                  "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/6d00f73e-7273-44b2-952b-2f3e3b00addf/runs/3c18f396-e392-4c43-a0c1-011fad16233f/workspace"
+                },
+                "state": "succeeded"
+              }
+            ],
+            "base": {
+              "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+              "generation": 40,
+              "revision": {
+                "revision": "db1e8d39-5621-4725-b76d-58ebe4e12510",
+                "sha256": "d79ca7bbcb8e9fbda90e08d57cc580b82b332ad38edc299dc69d7a580c67d175"
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            },
+            "cancel_requested": false,
+            "created_at_unix_ms": 1792949410175,
+            "decision": {
+              "candidates": [
+                {
+                  "eligible": true,
+                  "incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d",
+                  "missing_bytes": 59,
+                  "reasons": [],
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+                },
+                {
+                  "eligible": false,
+                  "incarnation": "932c8f30-761d-428f-a24f-9fce2a551902",
+                  "missing_bytes": 59,
+                  "reasons": [
+                    "manual worker constraint"
+                  ],
+                  "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+                }
+              ],
+              "decided_at_unix_ms": 1792949413599,
+              "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+              "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+            },
+            "inputs": [
+              {
+                "path": "src/provider-context.txt",
+                "revision": {
+                  "revision": "db1e8d39-5621-4725-b76d-58ebe4e12510",
+                  "sha256": "d79ca7bbcb8e9fbda90e08d57cc580b82b332ad38edc299dc69d7a580c67d175"
+                },
+                "version": {
+                  "blob": "maxio-workspaces/managed-journey/blobs/1c686b0d-0604-4706-9b59-e23db76e68b6",
+                  "sha256": "4e1a42fdea1210a79dcc56573cd43191e6db6fe6d545e707c5ec9e95651803f0",
+                  "size": 59
+                }
+              }
+            ],
+            "job_id": "e42dc776-c1bc-4b58-9f16-de5bc01ff932",
+            "output_policy": "publish",
+            "output_selectors": [
+              {
+                "kind": "exact",
+                "path": "results/codex-fixture.json"
+              }
+            ],
+            "profile": "codex-protocol-fixture",
+            "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "resources": {
+              "cpu_millis": 1000,
+              "memory_bytes": 268435456
+            },
+            "state": "succeeded",
+            "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+            "timeout_seconds": 60,
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "result": {
+            "adapter": "codex",
+            "fixture_only": true
+          }
+        }
+      },
+      "finished_unix": 1792949419.4622018,
+      "name": "D: Codex and Claude existing adapters with labelled protocol fixtures",
+      "started_unix": 1792949410.1334283,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "injected_ack_losses": [
+          {
+            "actor": "Mini",
+            "fault": "lost-finish-ack",
+            "fault_action": "drop_response",
+            "finished_unix": 1792949424.4430673,
+            "metadata_request_bytes": 1714,
+            "metadata_response_bytes": 4091,
+            "operation": "finish_attempt",
+            "payload_download_bytes": 0,
+            "payload_upload_bytes": 0,
+            "request_id": "6d6d9e09-5cac-435f-adf9-37d488c6073c",
+            "route": "/v1/control",
+            "started_unix": 1792949424.426455,
+            "status": 200,
+            "upstream_acknowledged": true
+          },
+          {
+            "actor": "Mini",
+            "fault": "lost-finish-ack",
+            "fault_action": "drop_response",
+            "finished_unix": 1792949424.4490845,
+            "metadata_request_bytes": 1714,
+            "metadata_response_bytes": 4091,
+            "operation": "finish_attempt",
+            "payload_download_bytes": 0,
+            "payload_upload_bytes": 0,
+            "request_id": "6d6d9e09-5cac-435f-adf9-37d488c6073c",
+            "route": "/v1/control",
+            "started_unix": 1792949424.4453063,
+            "status": 200,
+            "upstream_acknowledged": true
+          },
+          {
+            "actor": "Mini",
+            "fault": "lost-publication-ack",
+            "fault_action": "drop_response",
+            "finished_unix": 1792949424.4809544,
+            "metadata_request_bytes": 846,
+            "metadata_response_bytes": 2059,
+            "operation": "publish",
+            "payload_download_bytes": 0,
+            "payload_upload_bytes": 0,
+            "request_id": "6404d67f-746d-4393-a631-ef7ebb272d7a",
+            "route": "/v1/control",
+            "started_unix": 1792949424.4601781,
+            "status": 200,
+            "upstream_acknowledged": true
+          },
+          {
+            "actor": "Mini",
+            "fault": "lost-publication-ack",
+            "fault_action": "drop_response",
+            "finished_unix": 1792949424.4871845,
+            "metadata_request_bytes": 846,
+            "metadata_response_bytes": 2059,
+            "operation": "publish",
+            "payload_download_bytes": 0,
+            "payload_upload_bytes": 0,
+            "request_id": "6404d67f-746d-4393-a631-ef7ebb272d7a",
+            "route": "/v1/control",
+            "started_unix": 1792949424.4834342,
+            "status": 200,
+            "upstream_acknowledged": true
+          }
+        ],
+        "job": {
+          "attempts": [
+            {
+              "binding": {
+                "attempt_id": "28a580f7-e3b5-44be-9d40-9c0ef9eefd0d",
+                "job_id": "413d18e6-efcb-4349-8ab5-954895070750",
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+              },
+              "claimed_at_unix_ms": 1792949423178,
+              "detail": null,
+              "finished_at_unix_ms": 1792949424429,
+              "heartbeat_at_unix_ms": 1792949424202,
+              "lease": null,
+              "prepared_outputs": [
+                {
+                  "attempt": {
+                    "attempt_id": "28a580f7-e3b5-44be-9d40-9c0ef9eefd0d",
+                    "job_id": "413d18e6-efcb-4349-8ab5-954895070750",
+                    "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                    "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                  },
+                  "path": "results/quick.txt",
+                  "prepared_by": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "upload_id": "fc857202-82fc-4d5f-b405-3e7ebe9ed292",
+                  "version": {
+                    "blob": "maxio-workspaces/managed-journey/blobs/273abf2d-1305-4107-8c71-886f823f96dd",
+                    "sha256": "4091ea55dd0159e3c407e5ae8c417a02874c06a89e276905eb979239de29b72b",
+                    "size": 60
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                }
+              ],
+              "publication": {
+                "actor": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "attempt": {
+                  "attempt_id": "28a580f7-e3b5-44be-9d40-9c0ef9eefd0d",
+                  "job_id": "413d18e6-efcb-4349-8ab5-954895070750",
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "worker_incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d"
+                },
+                "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                "changes": [
+                  {
+                    "current": {
+                      "blob": "maxio-workspaces/managed-journey/blobs/273abf2d-1305-4107-8c71-886f823f96dd",
+                      "sha256": "4091ea55dd0159e3c407e5ae8c417a02874c06a89e276905eb979239de29b72b",
+                      "size": 60
+                    },
+                    "kind": "put",
+                    "path": "results/quick.txt",
+                    "previous": null
+                  }
+                ],
+                "committed_at_unix_ms": 1792949424466,
+                "committed_head": {
+                  "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                  "generation": 58,
+                  "revision": {
+                    "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+                    "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                },
+                "lease": {
+                  "epoch": 2,
+                  "fence": 8,
+                  "lease_id": "7e649ce4-9c16-4088-b985-af77e55219b5"
+                },
+                "parent": {
+                  "revision": "ffbe5cf8-07d6-42f7-85a1-286e8cbb48e2",
+                  "sha256": "06c90b199e64df2fb25044bc3f165ddb933b490ff0a91eb0a0a65558238bb025"
+                },
+                "publication_id": "e4f2762d-c0d4-42cd-8f0a-dcd6fff0ffa3",
+                "request_id": "6404d67f-746d-4393-a631-ef7ebb272d7a",
+                "retention": [
+                  {
+                    "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+                    "committed_generation": 58,
+                    "file": {
+                      "path": "results/quick.txt",
+                      "revision": {
+                        "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+                        "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+                      },
+                      "version": {
+                        "blob": "maxio-workspaces/managed-journey/blobs/273abf2d-1305-4107-8c71-886f823f96dd",
+                        "sha256": "4091ea55dd0159e3c407e5ae8c417a02874c06a89e276905eb979239de29b72b",
+                        "size": 60
+                      },
+                      "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                    },
+                    "policy": "append_only_no_gc",
+                    "policy_version": 1,
+                    "recovery_reference": "maxio-workspace://70ac051a-aed4-4670-aa23-b022561baa3f/results/quick.txt?revision=d1070b79-ebd6-4d27-8e92-e09955e9a630",
+                    "vault_id": "4a206802-994d-410f-af05-137b22de465b"
+                  }
+                ],
+                "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+              },
+              "run": {
+                "adapter": "command",
+                "detail": null,
+                "environment_names": [
+                  "DEVICE_LABEL"
+                ],
+                "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+                "exit_code": 0,
+                "finished_at": "2026-10-25T17:30:24.362428821+00:00",
+                "format": 1,
+                "id": "837d7f3a-0f4a-4dce-970f-909f646ab76f",
+                "input_files": [
+                  {
+                    "path": "src/quick_task.py",
+                    "sha256": "95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24",
+                    "size": 501
+                  }
+                ],
+                "output_files": [
+                  {
+                    "path": "results/quick.txt",
+                    "sha256": "4091ea55dd0159e3c407e5ae8c417a02874c06a89e276905eb979239de29b72b",
+                    "size": 60
+                  }
+                ],
+                "provider_session_id": null,
+                "published": false,
+                "started_at": "2026-10-25T17:30:23.211950606+00:00",
+                "status": "succeeded",
+                "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/28a580f7-e3b5-44be-9d40-9c0ef9eefd0d/runs/837d7f3a-0f4a-4dce-970f-909f646ab76f/stderr.log",
+                "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/28a580f7-e3b5-44be-9d40-9c0ef9eefd0d/runs/837d7f3a-0f4a-4dce-970f-909f646ab76f/stdout.log",
+                "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/28a580f7-e3b5-44be-9d40-9c0ef9eefd0d/runs/837d7f3a-0f4a-4dce-970f-909f646ab76f/workspace"
+              },
+              "state": "succeeded"
+            }
+          ],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 52,
+            "revision": {
+              "revision": "ffbe5cf8-07d6-42f7-85a1-286e8cbb48e2",
+              "sha256": "06c90b199e64df2fb25044bc3f165ddb933b490ff0a91eb0a0a65558238bb025"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": false,
+          "created_at_unix_ms": 1792949419503,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": true,
+                "incarnation": "44398da1-7a68-4adc-b0ba-2555fc59f96d",
+                "missing_bytes": 501,
+                "reasons": [],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": false,
+                "incarnation": "932c8f30-761d-428f-a24f-9fce2a551902",
+                "missing_bytes": 501,
+                "reasons": [
+                  "manual worker constraint"
+                ],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949423178,
+            "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+          },
+          "inputs": [
+            {
+              "path": "src/quick_task.py",
+              "revision": {
+                "revision": "ffbe5cf8-07d6-42f7-85a1-286e8cbb48e2",
+                "sha256": "06c90b199e64df2fb25044bc3f165ddb933b490ff0a91eb0a0a65558238bb025"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/9c686ffe-6629-4091-a0ca-13ec734b3424",
+                "sha256": "95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24",
+                "size": 501
+              }
+            }
+          ],
+          "job_id": "413d18e6-efcb-4349-8ab5-954895070750",
+          "output_policy": "publish",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/quick.txt"
+            }
+          ],
+          "profile": "quick-output",
+          "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "succeeded",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "run_record": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/28a580f7-e3b5-44be-9d40-9c0ef9eefd0d/runs/837d7f3a-0f4a-4dce-970f-909f646ab76f/record.json"
+      },
+      "finished_unix": 1792949424.9854634,
+      "name": "E: lost finish/publication acknowledgments reconcile without rerunning",
+      "started_unix": 1792949419.463669,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "after_interruption": {
+          "allocated_bytes": 134230016,
+          "cached_files": [
+            {
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/1c686b0d-0604-4706-9b59-e23db76e68b6",
+                "sha256": "4e1a42fdea1210a79dcc56573cd43191e6db6fe6d545e707c5ec9e95651803f0",
+                "size": 59
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            },
+            {
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+                "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+                "size": 134217728
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            },
+            {
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/9c686ffe-6629-4091-a0ca-13ec734b3424",
+                "sha256": "95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24",
+                "size": 501
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            },
+            {
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/ba8f022c-8cf5-48e2-9633-91c3ffdd1ac0",
+                "sha256": "e10c8c441383921ee34846c49200b300b8fc1d8b4b2f0c74f7d9bff084c04cb6",
+                "size": 611
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            }
+          ],
+          "entries": [
+            {
+              "active_attempts": [],
+              "allocated_bytes": 4096,
+              "key": "70ac051a-aed4-4670-aa23-b022561baa3f-4e1a42fdea1210a79dcc56573cd43191e6db6fe6d545e707c5ec9e95651803f0-59",
+              "logical_bytes": 59,
+              "pinned": false,
+              "references": [
+                {
+                  "path": "src/provider-context.txt",
+                  "revision": {
+                    "revision": "db1e8d39-5621-4725-b76d-58ebe4e12510",
+                    "sha256": "d79ca7bbcb8e9fbda90e08d57cc580b82b332ad38edc299dc69d7a580c67d175"
+                  },
+                  "version": {
+                    "blob": "maxio-workspaces/managed-journey/blobs/1c686b0d-0604-4706-9b59-e23db76e68b6",
+                    "sha256": "4e1a42fdea1210a79dcc56573cd43191e6db6fe6d545e707c5ec9e95651803f0",
+                    "size": 59
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                },
+                {
+                  "path": "src/provider-context.txt",
+                  "revision": {
+                    "revision": "489ad3cf-cbdd-4dbc-9990-14d9989217b0",
+                    "sha256": "03d441cdc36cb08d0abf9ede8c8f2a92e7696436432427b4324455105a764406"
+                  },
+                  "version": {
+                    "blob": "maxio-workspaces/managed-journey/blobs/1c686b0d-0604-4706-9b59-e23db76e68b6",
+                    "sha256": "4e1a42fdea1210a79dcc56573cd43191e6db6fe6d545e707c5ec9e95651803f0",
+                    "size": 59
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                }
+              ],
+              "state": "verified"
+            },
+            {
+              "active_attempts": [],
+              "allocated_bytes": 134217728,
+              "key": "70ac051a-aed4-4670-aa23-b022561baa3f-8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc-134217728",
+              "logical_bytes": 134217728,
+              "pinned": false,
+              "references": [
+                {
+                  "path": "data/dataset.bin",
+                  "revision": {
+                    "revision": "91c910b3-9398-415d-b666-b67d3c1f39e6",
+                    "sha256": "b19e4b65d671f8f7bf5b1c18b01a13ac55f96f87a2a34d7825566d5a39c5bd3d"
+                  },
+                  "version": {
+                    "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+                    "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+                    "size": 134217728
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                },
+                {
+                  "path": "data/dataset.bin",
+                  "revision": {
+                    "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+                    "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+                  },
+                  "version": {
+                    "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+                    "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+                    "size": 134217728
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                }
+              ],
+              "state": "verified"
+            },
+            {
+              "active_attempts": [],
+              "allocated_bytes": 4096,
+              "key": "70ac051a-aed4-4670-aa23-b022561baa3f-95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24-501",
+              "logical_bytes": 501,
+              "pinned": false,
+              "references": [
+                {
+                  "path": "src/quick_task.py",
+                  "revision": {
+                    "revision": "ffbe5cf8-07d6-42f7-85a1-286e8cbb48e2",
+                    "sha256": "06c90b199e64df2fb25044bc3f165ddb933b490ff0a91eb0a0a65558238bb025"
+                  },
+                  "version": {
+                    "blob": "maxio-workspaces/managed-journey/blobs/9c686ffe-6629-4091-a0ca-13ec734b3424",
+                    "sha256": "95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24",
+                    "size": 501
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                }
+              ],
+              "state": "verified"
+            },
+            {
+              "active_attempts": [],
+              "allocated_bytes": 4096,
+              "key": "70ac051a-aed4-4670-aa23-b022561baa3f-e10c8c441383921ee34846c49200b300b8fc1d8b4b2f0c74f7d9bff084c04cb6-611",
+              "logical_bytes": 611,
+              "pinned": false,
+              "references": [
+                {
+                  "path": "src/hash_dataset.py",
+                  "revision": {
+                    "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+                    "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+                  },
+                  "version": {
+                    "blob": "maxio-workspaces/managed-journey/blobs/ba8f022c-8cf5-48e2-9633-91c3ffdd1ac0",
+                    "sha256": "e10c8c441383921ee34846c49200b300b8fc1d8b4b2f0c74f7d9bff084c04cb6",
+                    "size": 611
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                }
+              ],
+              "state": "verified"
+            }
+          ],
+          "logical_bytes": 134218899
+        },
+        "eviction": {
+          "allocated_bytes_unlinked": 134217728,
+          "available_bytes_after": 17257455616,
+          "available_bytes_before": 17123454976,
+          "logical_bytes_removed": 134217728,
+          "observed_available_delta": 134000640,
+          "operation_id": "cced3b44-832f-4be5-8c88-e1000d400fb1",
+          "removed": [
+            {
+              "path": "data/dataset.bin",
+              "revision": {
+                "revision": "91c910b3-9398-415d-b666-b67d3c1f39e6",
+                "sha256": "b19e4b65d671f8f7bf5b1c18b01a13ac55f96f87a2a34d7825566d5a39c5bd3d"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+                "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+                "size": 134217728
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            },
+            {
+              "path": "data/dataset.bin",
+              "revision": {
+                "revision": "b8e627e4-e392-49ef-acaa-86a5de91dd3f",
+                "sha256": "4e9b5ecb59da2712688eb93ee3f9ea614071321b164194ba480a5a0f94a92a9f"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+                "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+                "size": 134217728
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            }
+          ]
+        },
+        "interruption": "SIGKILL while verified proof response was withheld, before unlink",
+        "pinned_refusal": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0155-pinned-eviction-refused.json",
+        "proof_refusal": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0157-eviction-no-fresh-proof.json",
+        "recovered": {
+          "allocated_bytes": 134217728,
+          "device": 27,
+          "inode": 1048870,
+          "links": 1,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/refetched/data/dataset.bin",
+          "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+          "size": 134217728
+        },
+        "refetch": {
+          "hydrated": [
+            {
+              "path": "data/dataset.bin",
+              "revision": {
+                "revision": "91c910b3-9398-415d-b666-b67d3c1f39e6",
+                "sha256": "b19e4b65d671f8f7bf5b1c18b01a13ac55f96f87a2a34d7825566d5a39c5bd3d"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/2237e106-1174-4e98-85d4-98295fe3cd9d",
+                "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+                "size": 134217728
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            }
+          ],
+          "reused": [],
+          "transfer": {
+            "metadata_downloaded": 0,
+            "metadata_uploaded": 426,
+            "payload_downloaded": 134217728,
+            "payload_uploaded": 0
+          }
+        },
+        "retained_editable_original": {
+          "allocated_bytes": 134217728,
+          "device": 27,
+          "inode": 791268,
+          "links": 1,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/working/data/dataset.bin",
+          "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+          "size": 134217728
+        }
+      },
+      "finished_unix": 1792949502.4706564,
+      "name": "B/E: pins, failed/interrupted proof, measured private eviction and exact refetch",
+      "started_unix": 1792949424.9869275,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "durable_head": {
+          "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+          "generation": 58,
+          "revision": {
+            "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+            "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+          },
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "first_lease": {
+          "expires_at_unix_ms": 1792949504566,
+          "holder": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "issued_at_unix_ms": 1792949502566,
+          "key_generation": 1,
+          "remaining_ms": 2000,
+          "scopes": [
+            {
+              "kind": "exact",
+              "path": "control/lease-target.txt"
+            }
+          ],
+          "token": {
+            "epoch": 2,
+            "fence": 9,
+            "lease_id": "4d06518b-6326-459e-83bd-e46053a3f41b"
+          },
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "new_epoch": 3,
+        "offline_inspection": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0173-offline-workspace-status.json",
+        "old_epoch": 2,
+        "pre_restart": {
+          "expires_at_unix_ms": 1792949535203,
+          "holder": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "issued_at_unix_ms": 1792949505203,
+          "key_generation": 1,
+          "remaining_ms": 30000,
+          "scopes": [
+            {
+              "kind": "exact",
+              "path": "control/lease-target.txt"
+            }
+          ],
+          "token": {
+            "epoch": 2,
+            "fence": 11,
+            "lease_id": "be717dde-c73a-4f79-bc85-8894de95e4b4"
+          },
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "replacement_after_expiry": {
+          "expires_at_unix_ms": 1792949524945,
+          "holder": "f184e189-fd08-4587-bded-3fd0ef86fa46",
+          "issued_at_unix_ms": 1792949504945,
+          "key_generation": 1,
+          "remaining_ms": 20000,
+          "scopes": [
+            {
+              "kind": "exact",
+              "path": "control/lease-target.txt"
+            }
+          ],
+          "token": {
+            "epoch": 2,
+            "fence": 10,
+            "lease_id": "253913bf-1e4d-4c1a-b6f1-0224de260383"
+          },
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "replacement_after_restart": {
+          "expires_at_unix_ms": 1792949525699,
+          "holder": "f184e189-fd08-4587-bded-3fd0ef86fa46",
+          "issued_at_unix_ms": 1792949505699,
+          "key_generation": 1,
+          "remaining_ms": 20000,
+          "scopes": [
+            {
+              "kind": "exact",
+              "path": "control/lease-target.txt"
+            }
+          ],
+          "token": {
+            "epoch": 3,
+            "fence": 12,
+            "lease_id": "b9e23739-aff4-4969-9f5f-662da029db72"
+          },
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "stale_delete": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0168-Book-stale-publication-rejected.json",
+        "stale_epoch_delete": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0178-Book-stale-publication-rejected.json"
+      },
+      "finished_unix": 1792949505.9322836,
+      "name": "C/B: overlapping leases, committed read, expiry/new fence, durable restart",
+      "started_unix": 1792949502.4724603,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "abandoned": {
+          "attempts": [
+            {
+              "binding": {
+                "attempt_id": "485e244c-2224-4aea-aa11-396d9a96fe39",
+                "job_id": "e6eb7859-82d7-4127-8e31-fef80730d622",
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "worker_incarnation": "5570708e-ac3e-4954-8e1e-42bec4f57cd6"
+              },
+              "claimed_at_unix_ms": 1792949514264,
+              "detail": "worker heartbeat or write authority expired; manual retry required",
+              "finished_at_unix_ms": 1792949519405,
+              "heartbeat_at_unix_ms": 1792949515297,
+              "lease": null,
+              "prepared_outputs": [],
+              "publication": null,
+              "run": null,
+              "state": "abandoned"
+            }
+          ],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 58,
+            "revision": {
+              "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+              "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": false,
+          "created_at_unix_ms": 1792949510701,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": true,
+                "incarnation": "5570708e-ac3e-4954-8e1e-42bec4f57cd6",
+                "missing_bytes": 504,
+                "reasons": [],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": false,
+                "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+                "missing_bytes": 504,
+                "reasons": [
+                  "manual worker constraint"
+                ],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949514264,
+            "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+          },
+          "inputs": [
+            {
+              "path": "src/slow_task.py",
+              "revision": {
+                "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+                "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/a650426a-2083-43bd-a152-149659bed3ad",
+                "sha256": "b42834e2bf3d64ae0d5c1d4be5919ebf6c2abcc94249b3ea3cf3b429921e1a75",
+                "size": 504
+              }
+            }
+          ],
+          "job_id": "e6eb7859-82d7-4127-8e31-fef80730d622",
+          "output_policy": "retain",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/conflict.txt"
+            }
+          ],
+          "profile": "slow-output",
+          "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "abandoned",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "manual_recovery": {
+          "attempts": [
+            {
+              "binding": {
+                "attempt_id": "485e244c-2224-4aea-aa11-396d9a96fe39",
+                "job_id": "e6eb7859-82d7-4127-8e31-fef80730d622",
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "worker_incarnation": "5570708e-ac3e-4954-8e1e-42bec4f57cd6"
+              },
+              "claimed_at_unix_ms": 1792949514264,
+              "detail": "worker heartbeat or write authority expired; manual retry required",
+              "finished_at_unix_ms": 1792949519405,
+              "heartbeat_at_unix_ms": 1792949515297,
+              "lease": null,
+              "prepared_outputs": [],
+              "publication": null,
+              "run": null,
+              "state": "abandoned"
+            },
+            {
+              "binding": {
+                "attempt_id": "70f09d10-11bd-4fa6-9ec7-e71b64f9ecd3",
+                "job_id": "e6eb7859-82d7-4127-8e31-fef80730d622",
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "worker_incarnation": "bcc2df48-8111-4e85-aa2b-40d1b7cbdbd0"
+              },
+              "claimed_at_unix_ms": 1792949537332,
+              "detail": null,
+              "finished_at_unix_ms": 1792949546569,
+              "heartbeat_at_unix_ms": 1792949546376,
+              "lease": null,
+              "prepared_outputs": [],
+              "publication": null,
+              "run": {
+                "adapter": "command",
+                "detail": null,
+                "environment_names": [
+                  "DEVICE_LABEL"
+                ],
+                "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+                "exit_code": 0,
+                "finished_at": "2026-10-25T17:32:26.516282349+00:00",
+                "format": 1,
+                "id": "8d9607d9-438f-4780-991f-a4618e21c729",
+                "input_files": [
+                  {
+                    "path": "src/slow_task.py",
+                    "sha256": "b42834e2bf3d64ae0d5c1d4be5919ebf6c2abcc94249b3ea3cf3b429921e1a75",
+                    "size": 504
+                  }
+                ],
+                "output_files": [
+                  {
+                    "path": "results/conflict.txt",
+                    "sha256": "a5cd57879c14107c173d8ea2d125c679a6b4d824307d114f794b33dc20628312",
+                    "size": 60
+                  }
+                ],
+                "provider_session_id": null,
+                "published": false,
+                "started_at": "2026-10-25T17:32:17.374544114+00:00",
+                "status": "succeeded",
+                "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/70f09d10-11bd-4fa6-9ec7-e71b64f9ecd3/runs/8d9607d9-438f-4780-991f-a4618e21c729/stderr.log",
+                "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/70f09d10-11bd-4fa6-9ec7-e71b64f9ecd3/runs/8d9607d9-438f-4780-991f-a4618e21c729/stdout.log",
+                "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/70f09d10-11bd-4fa6-9ec7-e71b64f9ecd3/runs/8d9607d9-438f-4780-991f-a4618e21c729/workspace"
+              },
+              "state": "succeeded"
+            }
+          ],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 58,
+            "revision": {
+              "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+              "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": false,
+          "created_at_unix_ms": 1792949510701,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": true,
+                "incarnation": "bcc2df48-8111-4e85-aa2b-40d1b7cbdbd0",
+                "missing_bytes": 0,
+                "reasons": [],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": false,
+                "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+                "missing_bytes": 0,
+                "reasons": [
+                  "manual worker constraint"
+                ],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949537332,
+            "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+          },
+          "inputs": [
+            {
+              "path": "src/slow_task.py",
+              "revision": {
+                "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+                "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/a650426a-2083-43bd-a152-149659bed3ad",
+                "sha256": "b42834e2bf3d64ae0d5c1d4be5919ebf6c2abcc94249b3ea3cf3b429921e1a75",
+                "size": 504
+              }
+            }
+          ],
+          "job_id": "e6eb7859-82d7-4127-8e31-fef80730d622",
+          "output_policy": "retain",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/conflict.txt"
+            }
+          ],
+          "profile": "slow-output",
+          "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "succeeded",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "placement": {
+          "candidates": [
+            {
+              "eligible": false,
+              "incarnation": "5570708e-ac3e-4954-8e1e-42bec4f57cd6",
+              "missing_bytes": 504,
+              "reasons": [
+                "worker already has an active attempt",
+                "manual worker constraint",
+                "output scope is leased"
+              ],
+              "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+            },
+            {
+              "eligible": false,
+              "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+              "missing_bytes": 504,
+              "reasons": [
+                "output scope is leased"
+              ],
+              "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+            }
+          ],
+          "decided_at_unix_ms": 1792949515417,
+          "reason": "no eligible worker; task remains queued without automatic execution",
+          "selected_worker": null
+        },
+        "queued_conflicting_job": {
+          "attempts": [],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 58,
+            "revision": {
+              "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+              "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": false,
+          "created_at_unix_ms": 1792949515335,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": false,
+                "incarnation": "5570708e-ac3e-4954-8e1e-42bec4f57cd6",
+                "missing_bytes": 504,
+                "reasons": [
+                  "worker already has an active attempt",
+                  "manual worker constraint",
+                  "output scope is leased"
+                ],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": false,
+                "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+                "missing_bytes": 504,
+                "reasons": [
+                  "output scope is leased"
+                ],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949515335,
+            "reason": "no eligible worker; task remains queued without automatic execution",
+            "selected_worker": null
+          },
+          "inputs": [
+            {
+              "path": "src/slow_task.py",
+              "revision": {
+                "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+                "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/a650426a-2083-43bd-a152-149659bed3ad",
+                "sha256": "b42834e2bf3d64ae0d5c1d4be5919ebf6c2abcc94249b3ea3cf3b429921e1a75",
+                "size": 504
+              }
+            }
+          ],
+          "job_id": "b47ade1e-ec8d-4f74-8a8a-ab21061c41f2",
+          "output_policy": "retain",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/conflict.txt"
+            }
+          ],
+          "profile": "slow-output",
+          "required_worker": "f184e189-fd08-4587-bded-3fd0ef86fa46",
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "queued",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "retained_old_work": {
+          "allocated_bytes": 4096,
+          "device": 27,
+          "inode": 1049050,
+          "links": 1,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/485e244c-2224-4aea-aa11-396d9a96fe39/runs/d28dcd7d-597f-4a16-b0b8-d786d29c4157/workspace/results/conflict.txt",
+          "sha256": "4dafed4b430d0bdf6ac1e1aa1d6e8760475b1663db600e86e08077779a54ceaa",
+          "size": 60
+        },
+        "stale_authority_rejections": {
+          "publication": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0254-Mini-stale-attempt-publication.json",
+          "renewal": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0252-Mini-stale-attempt-renewal.json"
+        },
+        "superseded_attempt_rejections": {
+          "publication": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0293-Mini-stale-attempt-publication.json",
+          "renewal": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0291-Mini-stale-attempt-renewal.json"
+        },
+        "waiting_job_completed": {
+          "attempts": [
+            {
+              "binding": {
+                "attempt_id": "b889f45d-5b02-4b36-9192-081ec621783a",
+                "job_id": "b47ade1e-ec8d-4f74-8a8a-ab21061c41f2",
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46",
+                "worker_incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906"
+              },
+              "claimed_at_unix_ms": 1792949519444,
+              "detail": null,
+              "finished_at_unix_ms": 1792949528560,
+              "heartbeat_at_unix_ms": 1792949528478,
+              "lease": null,
+              "prepared_outputs": [],
+              "publication": null,
+              "run": {
+                "adapter": "command",
+                "detail": null,
+                "environment_names": [
+                  "DEVICE_LABEL"
+                ],
+                "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+                "exit_code": 0,
+                "finished_at": "2026-10-25T17:32:08.547896443+00:00",
+                "format": 1,
+                "id": "073c18ee-9823-41ec-8c23-78f25d7db9dd",
+                "input_files": [
+                  {
+                    "path": "src/slow_task.py",
+                    "sha256": "b42834e2bf3d64ae0d5c1d4be5919ebf6c2abcc94249b3ea3cf3b429921e1a75",
+                    "size": 504
+                  }
+                ],
+                "output_files": [
+                  {
+                    "path": "results/conflict.txt",
+                    "sha256": "c748ce9a1b8b1041b74f0afd7d0da8efe4b32f59b07d6f99861b316b2da803bd",
+                    "size": 59
+                  }
+                ],
+                "provider_session_id": null,
+                "published": false,
+                "started_at": "2026-10-25T17:31:59.486673668+00:00",
+                "status": "succeeded",
+                "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/VPS/cache/attempts/b889f45d-5b02-4b36-9192-081ec621783a/runs/073c18ee-9823-41ec-8c23-78f25d7db9dd/stderr.log",
+                "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/VPS/cache/attempts/b889f45d-5b02-4b36-9192-081ec621783a/runs/073c18ee-9823-41ec-8c23-78f25d7db9dd/stdout.log",
+                "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/VPS/cache/attempts/b889f45d-5b02-4b36-9192-081ec621783a/runs/073c18ee-9823-41ec-8c23-78f25d7db9dd/workspace"
+              },
+              "state": "succeeded"
+            }
+          ],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 58,
+            "revision": {
+              "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+              "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": false,
+          "created_at_unix_ms": 1792949515335,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": false,
+                "incarnation": "5570708e-ac3e-4954-8e1e-42bec4f57cd6",
+                "missing_bytes": 504,
+                "reasons": [
+                  "worker advertisement expired",
+                  "manual worker constraint"
+                ],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": true,
+                "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+                "missing_bytes": 504,
+                "reasons": [],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949519444,
+            "reason": "minimum missing selected bytes; deterministic worker-ID tie break: f184e189-fd08-4587-bded-3fd0ef86fa46",
+            "selected_worker": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+          },
+          "inputs": [
+            {
+              "path": "src/slow_task.py",
+              "revision": {
+                "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+                "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/a650426a-2083-43bd-a152-149659bed3ad",
+                "sha256": "b42834e2bf3d64ae0d5c1d4be5919ebf6c2abcc94249b3ea3cf3b429921e1a75",
+                "size": 504
+              }
+            }
+          ],
+          "job_id": "b47ade1e-ec8d-4f74-8a8a-ab21061c41f2",
+          "output_policy": "retain",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/conflict.txt"
+            }
+          ],
+          "profile": "slow-output",
+          "required_worker": "f184e189-fd08-4587-bded-3fd0ef86fa46",
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "succeeded",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        }
+      },
+      "finished_unix": 1792949546.9117684,
+      "name": "C/E: overlapping worker jobs, unexpected kill, abandonment and manual retry",
+      "started_unix": 1792949505.9346728,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "job": {
+          "attempts": [
+            {
+              "binding": {
+                "attempt_id": "adf2727f-f6a1-4494-830a-51ad35f05af4",
+                "job_id": "2ae3df48-fdbf-4907-9405-788836853843",
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "worker_incarnation": "bcc2df48-8111-4e85-aa2b-40d1b7cbdbd0"
+              },
+              "claimed_at_unix_ms": 1792949550901,
+              "detail": null,
+              "finished_at_unix_ms": 1792949552574,
+              "heartbeat_at_unix_ms": 1792949551934,
+              "lease": null,
+              "prepared_outputs": [],
+              "publication": null,
+              "run": {
+                "adapter": "command",
+                "detail": "Process terminated by signal 15.",
+                "environment_names": [
+                  "DEVICE_LABEL"
+                ],
+                "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+                "exit_code": null,
+                "finished_at": "2026-10-25T17:32:32.564161747+00:00",
+                "format": 1,
+                "id": "f06ce17e-14b4-48d2-bead-96a937e40d19",
+                "input_files": [
+                  {
+                    "path": "src/long_task.py",
+                    "sha256": "baea4d238428e18874ad8fabda34e2a1b1ece2e455dac422e5324990fdafae22",
+                    "size": 501
+                  }
+                ],
+                "output_files": [
+                  {
+                    "path": "results/long.txt",
+                    "sha256": "4b70333bd467b61301a3bee25fad893b963f3425d2ada1eb73c46c06c201be57",
+                    "size": 57
+                  }
+                ],
+                "provider_session_id": null,
+                "published": false,
+                "started_at": "2026-10-25T17:32:30.950739185+00:00",
+                "status": "cancelled",
+                "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/adf2727f-f6a1-4494-830a-51ad35f05af4/runs/f06ce17e-14b4-48d2-bead-96a937e40d19/stderr.log",
+                "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/adf2727f-f6a1-4494-830a-51ad35f05af4/runs/f06ce17e-14b4-48d2-bead-96a937e40d19/stdout.log",
+                "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/adf2727f-f6a1-4494-830a-51ad35f05af4/runs/f06ce17e-14b4-48d2-bead-96a937e40d19/workspace"
+              },
+              "state": "cancelled"
+            }
+          ],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 58,
+            "revision": {
+              "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+              "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": true,
+          "created_at_unix_ms": 1792949546951,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": true,
+                "incarnation": "bcc2df48-8111-4e85-aa2b-40d1b7cbdbd0",
+                "missing_bytes": 501,
+                "reasons": [],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": false,
+                "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+                "missing_bytes": 501,
+                "reasons": [
+                  "manual worker constraint"
+                ],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949550901,
+            "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+          },
+          "inputs": [
+            {
+              "path": "src/long_task.py",
+              "revision": {
+                "revision": "d1070b79-ebd6-4d27-8e92-e09955e9a630",
+                "sha256": "65494511e4a107a7594950bbc28b2e8533efcfc29a19355be2fa83911454f410"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/60b984b7-d827-4c50-a4c8-0db3f69002bc",
+                "sha256": "baea4d238428e18874ad8fabda34e2a1b1ece2e455dac422e5324990fdafae22",
+                "size": 501
+              }
+            }
+          ],
+          "job_id": "2ae3df48-fdbf-4907-9405-788836853843",
+          "output_policy": "publish",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/long.txt"
+            }
+          ],
+          "profile": "long-output",
+          "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "cancelled",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "local_run": {
+          "adapter": "command",
+          "detail": "Process terminated by signal 15.",
+          "environment_names": [
+            "DEVICE_LABEL"
+          ],
+          "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+          "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+          "exit_code": null,
+          "finished_at": "2026-10-25T17:32:32.564161747+00:00",
+          "format": 1,
+          "id": "f06ce17e-14b4-48d2-bead-96a937e40d19",
+          "input_files": [
+            {
+              "path": "src/long_task.py",
+              "sha256": "baea4d238428e18874ad8fabda34e2a1b1ece2e455dac422e5324990fdafae22",
+              "size": 501
+            }
+          ],
+          "output_files": [
+            {
+              "path": "results/long.txt",
+              "sha256": "4b70333bd467b61301a3bee25fad893b963f3425d2ada1eb73c46c06c201be57",
+              "size": 57
+            }
+          ],
+          "provider_session_id": null,
+          "published": false,
+          "started_at": "2026-10-25T17:32:30.950739185+00:00",
+          "status": "cancelled",
+          "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/adf2727f-f6a1-4494-830a-51ad35f05af4/runs/f06ce17e-14b4-48d2-bead-96a937e40d19/stderr.log",
+          "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/adf2727f-f6a1-4494-830a-51ad35f05af4/runs/f06ce17e-14b4-48d2-bead-96a937e40d19/stdout.log",
+          "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/adf2727f-f6a1-4494-830a-51ad35f05af4/runs/f06ce17e-14b4-48d2-bead-96a937e40d19/workspace"
+        },
+        "retained_unpublished_output": {
+          "allocated_bytes": 4096,
+          "device": 27,
+          "inode": 1049277,
+          "links": 1,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/adf2727f-f6a1-4494-830a-51ad35f05af4/runs/f06ce17e-14b4-48d2-bead-96a937e40d19/workspace/results/long.txt",
+          "sha256": "4b70333bd467b61301a3bee25fad893b963f3425d2ada1eb73c46c06c201be57",
+          "size": 57
+        }
+      },
+      "finished_unix": 1792949552.6555016,
+      "name": "E: cancel a real running command and retain unpublished work",
+      "started_unix": 1792949546.91385,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "download_failure": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0337-interrupted-selected-download.json",
+        "preserved_local_upload": {
+          "allocated_bytes": 4194304,
+          "device": 27,
+          "inode": 1049298,
+          "links": 1,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Book/working/assets/upload-interrupted.bin",
+          "sha256": "6c0af839a44b5659329a87c1006978b763395e5bc4f77abc3071a4ed57e293be",
+          "size": 4194304
+        },
+        "recovered_download": {
+          "allocated_bytes": 4194304,
+          "device": 27,
+          "inode": 1049295,
+          "links": 2,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Book/interrupted-download/assets/failure.bin",
+          "sha256": "7fa61656f444262d1c477924ff50bf4d400b8aed2be039f6bccd41a82e40f288",
+          "size": 4194300
+        },
+        "retained_download_partials": [
+          {
+            "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Book/interrupted-download/.maxio-workspace/staging/pull-9fc74254-933e-487c-a97c-89173f79b965/0f7a7001-e66a-4e3a-8133-622c41171e79.data",
+            "size": 65536
+          },
+          {
+            "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Book/interrupted-download/.maxio-workspace/staging/pull-9fc74254-933e-487c-a97c-89173f79b965/0f7a7001-e66a-4e3a-8133-622c41171e79.json",
+            "size": 789
+          }
+        ],
+        "retained_upload_partials": [
+          {
+            "path": "/tmp/maxio-fabric-journey-22c1d52-run2/authority/transport-spool/914f25bf-4236-45b7-843d-9339f49368cf/body",
+            "size": 65536
+          }
+        ],
+        "upload_failure": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0340-Book-workspace-publish.json"
+      },
+      "finished_unix": 1792949555.0392482,
+      "name": "E: interrupted selected upload/download preserve bytes and recover",
+      "started_unix": 1792949552.657772,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "injected_renewal_rejections": 2,
+        "job": {
+          "attempts": [
+            {
+              "binding": {
+                "attempt_id": "99343fe3-655e-4a5f-a5d9-c4966b9abd66",
+                "job_id": "81981886-a537-46d9-b6cc-09a2494c8b39",
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "worker_incarnation": "bcc2df48-8111-4e85-aa2b-40d1b7cbdbd0"
+              },
+              "claimed_at_unix_ms": 1792949556762,
+              "detail": null,
+              "finished_at_unix_ms": 1792949558038,
+              "heartbeat_at_unix_ms": 1792949557298,
+              "lease": null,
+              "prepared_outputs": [],
+              "publication": null,
+              "run": {
+                "adapter": "command",
+                "detail": "Process terminated by signal 15.",
+                "environment_names": [
+                  "DEVICE_LABEL"
+                ],
+                "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+                "exit_code": null,
+                "finished_at": "2026-10-25T17:32:38.024947632+00:00",
+                "format": 1,
+                "id": "304fbbea-6d1a-4072-8955-6f39a81ee9e2",
+                "input_files": [
+                  {
+                    "path": "src/long_task.py",
+                    "sha256": "baea4d238428e18874ad8fabda34e2a1b1ece2e455dac422e5324990fdafae22",
+                    "size": 501
+                  }
+                ],
+                "output_files": [
+                  {
+                    "path": "results/long.txt",
+                    "sha256": "03ec7164616e2fee7442f66968262c47ba26401f295d7a2014268bc0ab3d67aa",
+                    "size": 57
+                  }
+                ],
+                "provider_session_id": null,
+                "published": false,
+                "started_at": "2026-10-25T17:32:36.796715544+00:00",
+                "status": "cancelled",
+                "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/99343fe3-655e-4a5f-a5d9-c4966b9abd66/runs/304fbbea-6d1a-4072-8955-6f39a81ee9e2/stderr.log",
+                "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/99343fe3-655e-4a5f-a5d9-c4966b9abd66/runs/304fbbea-6d1a-4072-8955-6f39a81ee9e2/stdout.log",
+                "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/99343fe3-655e-4a5f-a5d9-c4966b9abd66/runs/304fbbea-6d1a-4072-8955-6f39a81ee9e2/workspace"
+              },
+              "state": "cancelled"
+            }
+          ],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 93,
+            "revision": {
+              "revision": "9d21d118-dfcc-4171-bae0-12a1dbf118e6",
+              "sha256": "a4e4508a0123a49625a1ddc4007afcc0e1c75662c435ca744d7955cedeb6fbe8"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": false,
+          "created_at_unix_ms": 1792949555083,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": true,
+                "incarnation": "bcc2df48-8111-4e85-aa2b-40d1b7cbdbd0",
+                "missing_bytes": 0,
+                "reasons": [],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": false,
+                "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+                "missing_bytes": 501,
+                "reasons": [
+                  "manual worker constraint"
+                ],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949556762,
+            "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+          },
+          "inputs": [
+            {
+              "path": "src/long_task.py",
+              "revision": {
+                "revision": "9d21d118-dfcc-4171-bae0-12a1dbf118e6",
+                "sha256": "a4e4508a0123a49625a1ddc4007afcc0e1c75662c435ca744d7955cedeb6fbe8"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/60b984b7-d827-4c50-a4c8-0db3f69002bc",
+                "sha256": "baea4d238428e18874ad8fabda34e2a1b1ece2e455dac422e5324990fdafae22",
+                "size": 501
+              }
+            }
+          ],
+          "job_id": "81981886-a537-46d9-b6cc-09a2494c8b39",
+          "output_policy": "publish",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/long.txt"
+            }
+          ],
+          "profile": "long-output",
+          "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "cancelled",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "local_run": {
+          "adapter": "command",
+          "detail": "Process terminated by signal 15.",
+          "environment_names": [
+            "DEVICE_LABEL"
+          ],
+          "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+          "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+          "exit_code": null,
+          "finished_at": "2026-10-25T17:32:38.024947632+00:00",
+          "format": 1,
+          "id": "304fbbea-6d1a-4072-8955-6f39a81ee9e2",
+          "input_files": [
+            {
+              "path": "src/long_task.py",
+              "sha256": "baea4d238428e18874ad8fabda34e2a1b1ece2e455dac422e5324990fdafae22",
+              "size": 501
+            }
+          ],
+          "output_files": [
+            {
+              "path": "results/long.txt",
+              "sha256": "03ec7164616e2fee7442f66968262c47ba26401f295d7a2014268bc0ab3d67aa",
+              "size": 57
+            }
+          ],
+          "provider_session_id": null,
+          "published": false,
+          "started_at": "2026-10-25T17:32:36.796715544+00:00",
+          "status": "cancelled",
+          "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/99343fe3-655e-4a5f-a5d9-c4966b9abd66/runs/304fbbea-6d1a-4072-8955-6f39a81ee9e2/stderr.log",
+          "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/99343fe3-655e-4a5f-a5d9-c4966b9abd66/runs/304fbbea-6d1a-4072-8955-6f39a81ee9e2/stdout.log",
+          "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/99343fe3-655e-4a5f-a5d9-c4966b9abd66/runs/304fbbea-6d1a-4072-8955-6f39a81ee9e2/workspace"
+        },
+        "retained_unpublished_output": {
+          "allocated_bytes": 4096,
+          "device": 27,
+          "inode": 1049346,
+          "links": 1,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/99343fe3-655e-4a5f-a5d9-c4966b9abd66/runs/304fbbea-6d1a-4072-8955-6f39a81ee9e2/workspace/results/long.txt",
+          "sha256": "03ec7164616e2fee7442f66968262c47ba26401f295d7a2014268bc0ab3d67aa",
+          "size": 57
+        }
+      },
+      "finished_unix": 1792949558.283538,
+      "name": "E: running command stops after real renewal failure",
+      "started_unix": 1792949555.0417101,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "concurrent_head_change": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0359-Owner-workspace-restore.json",
+        "job": {
+          "attempts": [
+            {
+              "binding": {
+                "attempt_id": "88ffea44-46ea-41cf-9d11-5a12d81e7341",
+                "job_id": "673e3302-dbea-4d62-8b6d-564ff41c2e30",
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "worker_incarnation": "b44cb252-8e39-4634-b94e-3c360a1c82ea"
+              },
+              "claimed_at_unix_ms": 1792949566192,
+              "detail": "worker heartbeat or write authority expired; manual retry required",
+              "finished_at_unix_ms": 1792949571226,
+              "heartbeat_at_unix_ms": 1792949567225,
+              "lease": null,
+              "prepared_outputs": [
+                {
+                  "attempt": {
+                    "attempt_id": "88ffea44-46ea-41cf-9d11-5a12d81e7341",
+                    "job_id": "673e3302-dbea-4d62-8b6d-564ff41c2e30",
+                    "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                    "worker_incarnation": "b44cb252-8e39-4634-b94e-3c360a1c82ea"
+                  },
+                  "path": "results/quick.txt",
+                  "prepared_by": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "upload_id": "94c0165c-b97e-4eae-92b4-a4c81357f31f",
+                  "version": {
+                    "blob": "maxio-workspaces/managed-journey/blobs/924cdd10-5ec7-4783-a443-21e72e38f201",
+                    "sha256": "7bdee9e35887e776f8228ff1c7a4ced4a84a06f45dfb785a5dade084ece80f65",
+                    "size": 60
+                  },
+                  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                }
+              ],
+              "publication": null,
+              "run": {
+                "adapter": "command",
+                "detail": null,
+                "environment_names": [
+                  "DEVICE_LABEL"
+                ],
+                "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+                "exit_code": 0,
+                "finished_at": "2026-10-25T17:32:47.217472409+00:00",
+                "format": 1,
+                "id": "0455fcea-7474-4f63-9e9c-2877f59c0e4f",
+                "input_files": [
+                  {
+                    "path": "src/quick_task.py",
+                    "sha256": "95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24",
+                    "size": 501
+                  }
+                ],
+                "output_files": [
+                  {
+                    "path": "results/quick.txt",
+                    "sha256": "7bdee9e35887e776f8228ff1c7a4ced4a84a06f45dfb785a5dade084ece80f65",
+                    "size": 60
+                  }
+                ],
+                "provider_session_id": null,
+                "published": false,
+                "started_at": "2026-10-25T17:32:46.224429241+00:00",
+                "status": "succeeded",
+                "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/runs/0455fcea-7474-4f63-9e9c-2877f59c0e4f/stderr.log",
+                "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/runs/0455fcea-7474-4f63-9e9c-2877f59c0e4f/stdout.log",
+                "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/runs/0455fcea-7474-4f63-9e9c-2877f59c0e4f/workspace"
+              },
+              "state": "abandoned"
+            }
+          ],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 93,
+            "revision": {
+              "revision": "9d21d118-dfcc-4171-bae0-12a1dbf118e6",
+              "sha256": "a4e4508a0123a49625a1ddc4007afcc0e1c75662c435ca744d7955cedeb6fbe8"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": false,
+          "created_at_unix_ms": 1792949558363,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": true,
+                "incarnation": "b44cb252-8e39-4634-b94e-3c360a1c82ea",
+                "missing_bytes": 0,
+                "reasons": [],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": false,
+                "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+                "missing_bytes": 501,
+                "reasons": [
+                  "manual worker constraint"
+                ],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949566192,
+            "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+          },
+          "inputs": [
+            {
+              "path": "src/quick_task.py",
+              "revision": {
+                "revision": "9d21d118-dfcc-4171-bae0-12a1dbf118e6",
+                "sha256": "a4e4508a0123a49625a1ddc4007afcc0e1c75662c435ca744d7955cedeb6fbe8"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/9c686ffe-6629-4091-a0ca-13ec734b3424",
+                "sha256": "95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24",
+                "size": 501
+              }
+            }
+          ],
+          "job_id": "673e3302-dbea-4d62-8b6d-564ff41c2e30",
+          "output_policy": "publish",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/quick.txt"
+            }
+          ],
+          "profile": "quick-output",
+          "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "abandoned",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "local_attempt": {
+          "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+          "binding": {
+            "attempt_id": "88ffea44-46ea-41cf-9d11-5a12d81e7341",
+            "job_id": "673e3302-dbea-4d62-8b6d-564ff41c2e30",
+            "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "worker_incarnation": "b44cb252-8e39-4634-b94e-3c360a1c82ea"
+          },
+          "cancellation_requested": true,
+          "detail": "publication outcome unconfirmed; candidates and request identity retained: Conflict: publication base is stale; staged work retained",
+          "finish_request_id": "7a022490-250b-4513-ae66-bd988cb94544",
+          "format": 1,
+          "job": {
+            "attempts": [
+              {
+                "binding": {
+                  "attempt_id": "88ffea44-46ea-41cf-9d11-5a12d81e7341",
+                  "job_id": "673e3302-dbea-4d62-8b6d-564ff41c2e30",
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "worker_incarnation": "b44cb252-8e39-4634-b94e-3c360a1c82ea"
+                },
+                "claimed_at_unix_ms": 1792949566192,
+                "detail": null,
+                "finished_at_unix_ms": 1792949567315,
+                "heartbeat_at_unix_ms": 1792949567225,
+                "lease": {
+                  "epoch": 3,
+                  "fence": 20,
+                  "lease_id": "31be1e2a-fab6-418b-96ed-ba0ff4db3322"
+                },
+                "prepared_outputs": [
+                  {
+                    "attempt": {
+                      "attempt_id": "88ffea44-46ea-41cf-9d11-5a12d81e7341",
+                      "job_id": "673e3302-dbea-4d62-8b6d-564ff41c2e30",
+                      "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                      "worker_incarnation": "b44cb252-8e39-4634-b94e-3c360a1c82ea"
+                    },
+                    "path": "results/quick.txt",
+                    "prepared_by": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                    "upload_id": "94c0165c-b97e-4eae-92b4-a4c81357f31f",
+                    "version": {
+                      "blob": "maxio-workspaces/managed-journey/blobs/924cdd10-5ec7-4783-a443-21e72e38f201",
+                      "sha256": "7bdee9e35887e776f8228ff1c7a4ced4a84a06f45dfb785a5dade084ece80f65",
+                      "size": 60
+                    },
+                    "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+                  }
+                ],
+                "publication": null,
+                "run": {
+                  "adapter": "command",
+                  "detail": null,
+                  "environment_names": [
+                    "DEVICE_LABEL"
+                  ],
+                  "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+                  "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+                  "exit_code": 0,
+                  "finished_at": "2026-10-25T17:32:47.217472409+00:00",
+                  "format": 1,
+                  "id": "0455fcea-7474-4f63-9e9c-2877f59c0e4f",
+                  "input_files": [
+                    {
+                      "path": "src/quick_task.py",
+                      "sha256": "95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24",
+                      "size": 501
+                    }
+                  ],
+                  "output_files": [
+                    {
+                      "path": "results/quick.txt",
+                      "sha256": "7bdee9e35887e776f8228ff1c7a4ced4a84a06f45dfb785a5dade084ece80f65",
+                      "size": 60
+                    }
+                  ],
+                  "provider_session_id": null,
+                  "published": false,
+                  "started_at": "2026-10-25T17:32:46.224429241+00:00",
+                  "status": "succeeded",
+                  "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/runs/0455fcea-7474-4f63-9e9c-2877f59c0e4f/stderr.log",
+                  "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/runs/0455fcea-7474-4f63-9e9c-2877f59c0e4f/stdout.log",
+                  "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/runs/0455fcea-7474-4f63-9e9c-2877f59c0e4f/workspace"
+                },
+                "state": "succeeded"
+              }
+            ],
+            "base": {
+              "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+              "generation": 93,
+              "revision": {
+                "revision": "9d21d118-dfcc-4171-bae0-12a1dbf118e6",
+                "sha256": "a4e4508a0123a49625a1ddc4007afcc0e1c75662c435ca744d7955cedeb6fbe8"
+              },
+              "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+            },
+            "cancel_requested": false,
+            "created_at_unix_ms": 1792949558363,
+            "decision": {
+              "candidates": [
+                {
+                  "eligible": true,
+                  "incarnation": "b44cb252-8e39-4634-b94e-3c360a1c82ea",
+                  "missing_bytes": 0,
+                  "reasons": [],
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+                },
+                {
+                  "eligible": false,
+                  "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+                  "missing_bytes": 501,
+                  "reasons": [
+                    "manual worker constraint"
+                  ],
+                  "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+                }
+              ],
+              "decided_at_unix_ms": 1792949566192,
+              "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+              "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+            },
+            "inputs": [
+              {
+                "path": "src/quick_task.py",
+                "revision": {
+                  "revision": "9d21d118-dfcc-4171-bae0-12a1dbf118e6",
+                  "sha256": "a4e4508a0123a49625a1ddc4007afcc0e1c75662c435ca744d7955cedeb6fbe8"
+                },
+                "version": {
+                  "blob": "maxio-workspaces/managed-journey/blobs/9c686ffe-6629-4091-a0ca-13ec734b3424",
+                  "sha256": "95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24",
+                  "size": 501
+                }
+              }
+            ],
+            "job_id": "673e3302-dbea-4d62-8b6d-564ff41c2e30",
+            "output_policy": "publish",
+            "output_selectors": [
+              {
+                "kind": "exact",
+                "path": "results/quick.txt"
+              }
+            ],
+            "profile": "quick-output",
+            "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "resources": {
+              "cpu_millis": 1000,
+              "memory_bytes": 268435456
+            },
+            "state": "running",
+            "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+            "timeout_seconds": 60,
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "lease": {
+            "expires_at_unix_ms": 1792949570726,
+            "holder": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "issued_at_unix_ms": 1792949566192,
+            "key_generation": 1,
+            "remaining_ms": 4000,
+            "scopes": [
+              {
+                "kind": "exact",
+                "path": "results/quick.txt"
+              }
+            ],
+            "token": {
+              "epoch": 3,
+              "fence": 20,
+              "lease_id": "31be1e2a-fab6-418b-96ed-ba0ff4db3322"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "outputs": [
+            {
+              "file": {
+                "path": "results/quick.txt",
+                "sha256": "7bdee9e35887e776f8228ff1c7a4ced4a84a06f45dfb785a5dade084ece80f65",
+                "size": 60
+              },
+              "prepared": {
+                "attempt": {
+                  "attempt_id": "88ffea44-46ea-41cf-9d11-5a12d81e7341",
+                  "job_id": "673e3302-dbea-4d62-8b6d-564ff41c2e30",
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "worker_incarnation": "b44cb252-8e39-4634-b94e-3c360a1c82ea"
+                },
+                "path": "results/quick.txt",
+                "prepared_by": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "upload_id": "94c0165c-b97e-4eae-92b4-a4c81357f31f",
+                "version": {
+                  "blob": "maxio-workspaces/managed-journey/blobs/924cdd10-5ec7-4783-a443-21e72e38f201",
+                  "sha256": "7bdee9e35887e776f8228ff1c7a4ced4a84a06f45dfb785a5dade084ece80f65",
+                  "size": 60
+                },
+                "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+              },
+              "request": {
+                "attempt": {
+                  "attempt_id": "88ffea44-46ea-41cf-9d11-5a12d81e7341",
+                  "job_id": "673e3302-dbea-4d62-8b6d-564ff41c2e30",
+                  "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                  "worker_incarnation": "b44cb252-8e39-4634-b94e-3c360a1c82ea"
+                },
+                "lease": {
+                  "epoch": 3,
+                  "fence": 20,
+                  "lease_id": "31be1e2a-fab6-418b-96ed-ba0ff4db3322"
+                },
+                "path": "results/quick.txt",
+                "request_id": "c5842103-6be9-4328-8ff2-dee4cce5f48b",
+                "sha256": "7bdee9e35887e776f8228ff1c7a4ced4a84a06f45dfb785a5dade084ece80f65",
+                "size": 60,
+                "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+              },
+              "stage_name": "acea8756-046b-4265-9c56-58895de45e46"
+            }
+          ],
+          "phase": "retained",
+          "publication": null,
+          "publication_request_id": "52530189-acfe-436c-9fd5-8e43deb74f48",
+          "run": {
+            "adapter": "command",
+            "detail": null,
+            "environment_names": [
+              "DEVICE_LABEL"
+            ],
+            "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+            "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+            "exit_code": 0,
+            "finished_at": "2026-10-25T17:32:47.217472409+00:00",
+            "format": 1,
+            "id": "0455fcea-7474-4f63-9e9c-2877f59c0e4f",
+            "input_files": [
+              {
+                "path": "src/quick_task.py",
+                "sha256": "95d7726c9159bf15ae141bb963c32f81b3965d1a1bfd59628cf45234c6779e24",
+                "size": 501
+              }
+            ],
+            "output_files": [
+              {
+                "path": "results/quick.txt",
+                "sha256": "7bdee9e35887e776f8228ff1c7a4ced4a84a06f45dfb785a5dade084ece80f65",
+                "size": 60
+              }
+            ],
+            "provider_session_id": null,
+            "published": false,
+            "started_at": "2026-10-25T17:32:46.224429241+00:00",
+            "status": "succeeded",
+            "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/runs/0455fcea-7474-4f63-9e9c-2877f59c0e4f/stderr.log",
+            "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/runs/0455fcea-7474-4f63-9e9c-2877f59c0e4f/stdout.log",
+            "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/runs/0455fcea-7474-4f63-9e9c-2877f59c0e4f/workspace"
+          },
+          "transfer": {
+            "metadata_downloaded": 10312,
+            "metadata_uploaded": 5355,
+            "payload_downloaded": 0,
+            "payload_uploaded": 60
+          },
+          "vault_id": "4a206802-994d-410f-af05-137b22de465b"
+        },
+        "retained_candidates": [
+          {
+            "allocated_bytes": 4096,
+            "device": 27,
+            "inode": 1049379,
+            "links": 1,
+            "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/88ffea44-46ea-41cf-9d11-5a12d81e7341/outputs/acea8756-046b-4265-9c56-58895de45e46",
+            "sha256": "7bdee9e35887e776f8228ff1c7a4ced4a84a06f45dfb785a5dade084ece80f65",
+            "size": 60
+          }
+        ],
+        "winning_head": {
+          "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+          "generation": 106,
+          "revision": {
+            "revision": "0f6c5256-6fcb-437f-b319-ce1435dd2374",
+            "sha256": "6984227306b95c2045bdafa7f8cddf63ce89adad291211172f702759b17a9693"
+          },
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        }
+      },
+      "finished_unix": 1792949571.3807256,
+      "name": "E: prepared worker output conflicts with a concurrent head publication",
+      "started_unix": 1792949558.2862756,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "job": {
+          "attempts": [
+            {
+              "binding": {
+                "attempt_id": "4b343587-62d8-4574-96df-786f858e968b",
+                "job_id": "c35a08d3-a102-4bf4-971d-1351178a819f",
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+                "worker_incarnation": "1ff7a975-937c-4cb6-bd2d-7fd67d2e56ce"
+              },
+              "claimed_at_unix_ms": 1792949579340,
+              "detail": "coordinator restarted; old authority expired; manual retry required",
+              "finished_at_unix_ms": 1792949581464,
+              "heartbeat_at_unix_ms": 1792949580379,
+              "lease": {
+                "epoch": 3,
+                "fence": 22,
+                "lease_id": "d9f31b38-3572-4d97-bead-62d3fe4048d3"
+              },
+              "prepared_outputs": [],
+              "publication": null,
+              "run": null,
+              "state": "abandoned"
+            }
+          ],
+          "base": {
+            "authority_id": "3dcf2ede-bfa8-4af1-b65d-c311971b3bb3",
+            "generation": 106,
+            "revision": {
+              "revision": "0f6c5256-6fcb-437f-b319-ce1435dd2374",
+              "sha256": "6984227306b95c2045bdafa7f8cddf63ce89adad291211172f702759b17a9693"
+            },
+            "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+          },
+          "cancel_requested": false,
+          "created_at_unix_ms": 1792949575551,
+          "decision": {
+            "candidates": [
+              {
+                "eligible": true,
+                "incarnation": "1ff7a975-937c-4cb6-bd2d-7fd67d2e56ce",
+                "missing_bytes": 0,
+                "reasons": [],
+                "worker_id": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+              },
+              {
+                "eligible": false,
+                "incarnation": "849a7aa1-3317-4b3b-a0a3-a44368567906",
+                "missing_bytes": 501,
+                "reasons": [
+                  "manual worker constraint"
+                ],
+                "worker_id": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+              }
+            ],
+            "decided_at_unix_ms": 1792949579340,
+            "reason": "minimum missing selected bytes; deterministic worker-ID tie break: 0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+            "selected_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea"
+          },
+          "inputs": [
+            {
+              "path": "src/long_task.py",
+              "revision": {
+                "revision": "0f6c5256-6fcb-437f-b319-ce1435dd2374",
+                "sha256": "6984227306b95c2045bdafa7f8cddf63ce89adad291211172f702759b17a9693"
+              },
+              "version": {
+                "blob": "maxio-workspaces/managed-journey/blobs/60b984b7-d827-4c50-a4c8-0db3f69002bc",
+                "sha256": "baea4d238428e18874ad8fabda34e2a1b1ece2e455dac422e5324990fdafae22",
+                "size": 501
+              }
+            }
+          ],
+          "job_id": "c35a08d3-a102-4bf4-971d-1351178a819f",
+          "output_policy": "publish",
+          "output_selectors": [
+            {
+              "kind": "exact",
+              "path": "results/long.txt"
+            }
+          ],
+          "profile": "long-output",
+          "required_worker": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+          "resources": {
+            "cpu_millis": 1000,
+            "memory_bytes": 268435456
+          },
+          "state": "abandoned",
+          "submitted_by": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+          "timeout_seconds": 60,
+          "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+        },
+        "local_run": {
+          "adapter": "command",
+          "detail": "Process terminated by signal 15.",
+          "environment_names": [
+            "DEVICE_LABEL"
+          ],
+          "executable": "/opt/codex/runtimes/codex-primary-runtime/dependencies/python/bin/python3.12",
+          "executable_version": "sha256:fa67443527ed9647f760d807e2a38f26340757123e643c4639cf273ed15d5ea7",
+          "exit_code": null,
+          "finished_at": "2026-10-25T17:33:01.094981495+00:00",
+          "format": 1,
+          "id": "33e6c1e3-44c9-4b96-b388-8103410cbef7",
+          "input_files": [
+            {
+              "path": "src/long_task.py",
+              "sha256": "baea4d238428e18874ad8fabda34e2a1b1ece2e455dac422e5324990fdafae22",
+              "size": 501
+            }
+          ],
+          "output_files": [
+            {
+              "path": "results/long.txt",
+              "sha256": "690d7196d0a8e34d3dfc4313539371b8a876d1d44ed60f6be9be187d5e38cbcb",
+              "size": 57
+            }
+          ],
+          "provider_session_id": null,
+          "published": false,
+          "started_at": "2026-10-25T17:32:59.374479472+00:00",
+          "status": "cancelled",
+          "stderr_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/4b343587-62d8-4574-96df-786f858e968b/runs/33e6c1e3-44c9-4b96-b388-8103410cbef7/stderr.log",
+          "stdout_log": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/4b343587-62d8-4574-96df-786f858e968b/runs/33e6c1e3-44c9-4b96-b388-8103410cbef7/stdout.log",
+          "workspace": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/4b343587-62d8-4574-96df-786f858e968b/runs/33e6c1e3-44c9-4b96-b388-8103410cbef7/workspace"
+        },
+        "new_epoch": 4,
+        "offline_status": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0407-offline-workspace-status.json",
+        "old_epoch": 3,
+        "retained_unpublished_output": {
+          "allocated_bytes": 4096,
+          "device": 27,
+          "inode": 1049430,
+          "links": 1,
+          "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/cache/attempts/4b343587-62d8-4574-96df-786f858e968b/runs/33e6c1e3-44c9-4b96-b388-8103410cbef7/workspace/results/long.txt",
+          "sha256": "690d7196d0a8e34d3dfc4313539371b8a876d1d44ed60f6be9be187d5e38cbcb",
+          "size": 57
+        },
+        "stale_attempt_rejection": {
+          "publication": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0413-Mini-stale-attempt-publication.json",
+          "renewal": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0411-Mini-stale-attempt-renewal.json"
+        }
+      },
+      "finished_unix": 1792949586.3944092,
+      "name": "E: coordinator dies during execution; restart fences and retains work",
+      "started_unix": 1792949571.3839173,
+      "status": "observed"
+    },
+    {
+      "evidence": {
+        "Book_dataset_download_bytes_across_entire_run": 0,
+        "Book_local_files_checked": 41,
+        "revoked_VPS_rejection": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0433-revoked-VPS-read-rejected.json"
+      },
+      "finished_unix": 1792949590.2045693,
+      "name": "Final: Book zero dataset throughout; revoked identity rejected",
+      "started_unix": 1792949586.3974981,
+      "status": "observed"
+    }
+  ],
+  "dataset": {
+    "allocated_bytes": 134217728,
+    "device": 27,
+    "inode": 791268,
+    "links": 1,
+    "path": "/tmp/maxio-fabric-journey-22c1d52-run2/devices/Mini/working/data/dataset.bin",
+    "sha256": "8b8303d23b3ef412c9aa4bae37d6e2f10e0213fda56a4c954806d49a327d6bbc",
+    "size": 134217728
+  },
+  "device_ids": {
+    "Book": "f7b78351-0146-479f-898f-2dbb0125a5b1",
+    "Mini": "0f28989a-bb0a-4cfa-b631-316e96ec93ea",
+    "Owner": "2257e36d-fc05-4ff1-90a2-96312a7f2c38",
+    "VPS": "f184e189-fd08-4587-bded-3fd0ef86fa46"
+  },
+  "evidence": "/tmp/maxio-fabric-journey-22c1d52-run2",
+  "finished_unix": 1792949591.1985326,
+  "format": 1,
+  "not_exercised": [
+    "Physical MacBook/Mini/VPS devices, WAN/NAT traversal, network partitions between machines.",
+    "Authenticated Codex/Claude model calls (only labelled protocol fixtures were run).",
+    "Host power loss or interruption after cache unlink but before final state persistence.",
+    "Malicious same-UID tampering, hardware/media failure, redundant vault durability.",
+    "Independent Gauntlet critique and standalone S3 Journey A; this builder does not award a pass."
+  ],
+  "outcome": "observations_complete",
+  "ownership": "owner-trusted native processes; no hostile same-UID isolation claim",
+  "payload_measurement": "actual application bytes forwarded by per-actor HTTPS observers; not TLS framing bytes",
+  "processes": [
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0010-coordinator.json",
+      "label": "coordinator",
+      "pid": 42787,
+      "returncode": -9,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0010-coordinator.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0010-coordinator.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0040-Mini-worker.json",
+      "label": "Mini-worker",
+      "pid": 45280,
+      "returncode": 0,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0040-Mini-worker.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0040-Mini-worker.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0056-VPS-worker.json",
+      "label": "VPS-worker",
+      "pid": 45498,
+      "returncode": 0,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0056-VPS-worker.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0056-VPS-worker.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0158-interrupted-cache-eviction.json",
+      "label": "interrupted-cache-eviction",
+      "pid": 47554,
+      "returncode": -9,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0158-interrupted-cache-eviction.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0158-interrupted-cache-eviction.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0174-coordinator.json",
+      "label": "coordinator",
+      "pid": 50536,
+      "returncode": -9,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0174-coordinator.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0174-coordinator.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0182-Mini-worker.json",
+      "label": "Mini-worker",
+      "pid": 50682,
+      "returncode": -9,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0182-Mini-worker.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0182-Mini-worker.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0198-VPS-worker.json",
+      "label": "VPS-worker",
+      "pid": 51164,
+      "returncode": 0,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0198-VPS-worker.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0198-VPS-worker.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0256-Mini-worker.json",
+      "label": "Mini-worker",
+      "pid": 52809,
+      "returncode": 0,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0256-Mini-worker.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0256-Mini-worker.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0356-Mini-worker.json",
+      "label": "Mini-worker",
+      "pid": 55616,
+      "returncode": 1,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0356-Mini-worker.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0356-Mini-worker.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0372-Mini-worker.json",
+      "label": "Mini-worker",
+      "pid": 55945,
+      "returncode": 1,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0372-Mini-worker.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0372-Mini-worker.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0408-coordinator.json",
+      "label": "coordinator",
+      "pid": 56439,
+      "returncode": 0,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0408-coordinator.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0408-coordinator.stdout"
+    },
+    {
+      "command": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0415-Mini-worker.json",
+      "label": "Mini-worker",
+      "pid": 56527,
+      "returncode": 0,
+      "stderr": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0415-Mini-worker.stderr",
+      "stdout": "/tmp/maxio-fabric-journey-22c1d52-run2/commands/0415-Mini-worker.stdout"
+    }
+  ],
+  "provider_execution": "Codex and Claude protocol fixtures only; no model calls or authentication",
+  "runtime_filesystem": {
+    "block_size": 4096,
+    "device": 27,
+    "filesystem_id": 12609512312889320171,
+    "path": "/tmp/maxio-fabric-journey-22c1d52-run2"
+  },
+  "script": {
+    "allocated_bytes": 81920,
+    "device": 27,
+    "inode": 524652,
+    "links": 1,
+    "path": "/workspace/scratch/05c136f30bb4/maxio-journeys/scripts/smoke_fabric.py",
+    "sha256": "686dddc6bf93aee2221d831edcd9fca8c48e84cb1de55cbc6cec06263dd4ab21",
+    "size": 81907
+  },
+  "started_unix": 1792949339.149337,
+  "tls": "fixture CA signs CA:false localhost/127.0.0.1 leaf; both observer hops verify CA",
+  "topology": "Book, Mini, VPS and coordinator are separate processes/roots on ONE host",
+  "workspace_id": "70ac051a-aed4-4670-aa23-b022561baa3f"
+}

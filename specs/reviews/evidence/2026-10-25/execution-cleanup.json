@@ -1,0 +1,29 @@
+{
+  "checked_at_unix": 1792950248.7258065,
+  "runtime_roots": [
+    "/tmp/critic-managed-execution-l6zqab4r",
+    "/tmp/critic-managed-execution-hyxablzl",
+    "/tmp/critic-managed-execution-dri_4pg7"
+  ],
+  "tracked_process_groups": [
+    49053,
+    52514,
+    52515,
+    56822,
+    57210,
+    57211,
+    58890,
+    59098,
+    59099,
+    60152,
+    60827,
+    61642,
+    63139,
+    63162,
+    63595,
+    63618
+  ],
+  "live_runtime_processes": [],
+  "non_running_zombie_entries": [],
+  "copied_after_check": true
+}

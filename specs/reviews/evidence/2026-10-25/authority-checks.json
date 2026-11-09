@@ -1,0 +1,249 @@
+[
+  {
+    "name": "seed_exact_bytes",
+    "pass": true,
+    "sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70"
+  },
+  {
+    "name": "stranger_unauthenticated",
+    "pass": true
+  },
+  {
+    "name": "forged_owner_unauthenticated",
+    "pass": true
+  },
+  {
+    "name": "server_certificate_is_verified",
+    "pass": true
+  },
+  {
+    "name": "no_grant_current_forbidden",
+    "pass": true
+  },
+  {
+    "name": "no_grant_acquire_lease_forbidden",
+    "pass": true
+  },
+  {
+    "name": "enrollment_alone_has_no_read",
+    "pass": true
+  },
+  {
+    "name": "catalog_grant_is_not_payload_grant",
+    "pass": true
+  },
+  {
+    "name": "scope_boundary_private/secret.txt",
+    "pass": true
+  },
+  {
+    "name": "write_boundary_private/secret.txt",
+    "pass": true
+  },
+  {
+    "name": "scope_boundary_docs-sibling/not-allowed.txt",
+    "pass": true
+  },
+  {
+    "name": "write_boundary_docs-sibling/not-allowed.txt",
+    "pass": true
+  },
+  {
+    "name": "explicitly_granted_read_exact",
+    "pass": true,
+    "expected_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70",
+    "actual_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70"
+  },
+  {
+    "name": "exactly_one_overlapping_lease",
+    "pass": true,
+    "outcomes": [
+      {
+        "device": "alice",
+        "exit": 1
+      },
+      {
+        "device": "bob",
+        "exit": 0
+      }
+    ]
+  },
+  {
+    "name": "read_while_other_holds_lease_exact",
+    "pass": true,
+    "expected_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70",
+    "actual_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70"
+  },
+  {
+    "name": "expired_staged_upload_prepared",
+    "pass": true
+  },
+  {
+    "name": "fence_increases_after_expiry",
+    "pass": true,
+    "expired": {
+      "epoch": 2,
+      "fence": 3,
+      "lease_id": "39fa7142-39b0-47a2-9dbc-3d5aa7cfe9d2"
+    },
+    "replacement": {
+      "epoch": 2,
+      "fence": 4,
+      "lease_id": "768755ca-6eef-462a-ba33-6add4a92a929"
+    }
+  },
+  {
+    "name": "expired_publication_is_fenced",
+    "pass": true
+  },
+  {
+    "name": "expired_attempt_preserves_head",
+    "pass": true
+  },
+  {
+    "name": "new_fence_upload_prepared",
+    "pass": true
+  },
+  {
+    "name": "new_fence_exact_read_exact",
+    "pass": true,
+    "expected_sha256": "852ebbb289ed928c1cb79cb833e8d69bdea5f0280aa84b6386e0312a768deef6",
+    "actual_sha256": "852ebbb289ed928c1cb79cb833e8d69bdea5f0280aa84b6386e0312a768deef6"
+  },
+  {
+    "name": "prior_revision_still_exact_exact",
+    "pass": true,
+    "expected_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70",
+    "actual_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70"
+  },
+  {
+    "name": "pre_crash_upload_prepared",
+    "pass": true
+  },
+  {
+    "name": "restart_epoch_increases",
+    "pass": true,
+    "before": 2,
+    "after": 3
+  },
+  {
+    "name": "restart_invalidates_session",
+    "pass": true
+  },
+  {
+    "name": "old_epoch_publication_fenced",
+    "pass": true
+  },
+  {
+    "name": "restart_and_reject_preserve_head",
+    "pass": true
+  },
+  {
+    "name": "restart_fence_increases",
+    "pass": true,
+    "old": {
+      "epoch": 2,
+      "fence": 5,
+      "lease_id": "778b02ef-9f8c-4848-bce8-06db5924ff66"
+    },
+    "new": {
+      "epoch": 3,
+      "fence": 6,
+      "lease_id": "53c1a434-081e-4976-8be6-81ddd1a76686"
+    }
+  },
+  {
+    "name": "restart_retained_old_exact_exact",
+    "pass": true,
+    "expected_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70",
+    "actual_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70"
+  },
+  {
+    "name": "restart_retained_current_exact_exact",
+    "pass": true,
+    "expected_sha256": "852ebbb289ed928c1cb79cb833e8d69bdea5f0280aa84b6386e0312a768deef6",
+    "actual_sha256": "852ebbb289ed928c1cb79cb833e8d69bdea5f0280aa84b6386e0312a768deef6"
+  },
+  {
+    "name": "reply_was_dropped_after_native_commit",
+    "pass": true
+  },
+  {
+    "name": "uncertain_request_is_retained",
+    "pass": true
+  },
+  {
+    "name": "lost_reply_recovers_identical_receipt",
+    "pass": true,
+    "publication_id": "b9f2ff8b-3b44-47f1-8164-f13c21c65ed0",
+    "request_id": "2477768e-ec0e-4874-8634-a179da488d30"
+  },
+  {
+    "name": "recovery_does_not_advance_head",
+    "pass": true
+  },
+  {
+    "name": "same_id_changed_body_rejected",
+    "pass": true
+  },
+  {
+    "name": "lost_reply_bytes_survive_restart_exact",
+    "pass": true,
+    "expected_sha256": "0bd827622c3c51bf265a087b4b022584581fd3768a193d0bbf39755ef77c8b0b",
+    "actual_sha256": "0bd827622c3c51bf265a087b4b022584581fd3768a193d0bbf39755ef77c8b0b"
+  },
+  {
+    "name": "first_revision_survives_two_crashes_exact",
+    "pass": true,
+    "expected_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70",
+    "actual_sha256": "4e6fee374d77a2b3c83509b783501f8dd66129fef6580b3eb35d9f884dacea70"
+  },
+  {
+    "name": "second_revision_survives_two_crashes_exact",
+    "pass": true,
+    "expected_sha256": "852ebbb289ed928c1cb79cb833e8d69bdea5f0280aa84b6386e0312a768deef6",
+    "actual_sha256": "852ebbb289ed928c1cb79cb833e8d69bdea5f0280aa84b6386e0312a768deef6"
+  },
+  {
+    "name": "grant_removed_pending_publish_arrived",
+    "pass": true
+  },
+  {
+    "name": "grant_removal_rechecked_at_commit",
+    "pass": true
+  },
+  {
+    "name": "grant_removal_preserves_head_and_local_work",
+    "pass": true
+  },
+  {
+    "name": "revoked_pending_publish_arrived",
+    "pass": true
+  },
+  {
+    "name": "read_waiting_before_revocation",
+    "pass": true
+  },
+  {
+    "name": "revoked_session_cannot_commit",
+    "pass": true
+  },
+  {
+    "name": "revoked_session_cannot_start_read",
+    "pass": true
+  },
+  {
+    "name": "revoked_new_session_denied",
+    "pass": true
+  },
+  {
+    "name": "revocation_preserves_head_and_local_work",
+    "pass": true
+  },
+  {
+    "name": "final_committed_exact_read_exact",
+    "pass": true,
+    "expected_sha256": "0bd827622c3c51bf265a087b4b022584581fd3768a193d0bbf39755ef77c8b0b",
+    "actual_sha256": "0bd827622c3c51bf265a087b4b022584581fd3768a193d0bbf39755ef77c8b0b"
+  }
+]

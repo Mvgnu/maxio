@@ -2,4 +2,4 @@
 pub mod contract;
 pub mod runner;
 pub use contract::*;
-pub use runner::{doctor, run};
+pub use runner::{doctor, run, run_verified};

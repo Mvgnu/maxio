@@ -15,8 +15,8 @@ Product journey specs define the user-visible cross-domain bar. Compare the exac
 property, not every feature of the reference and not a vague overall impression.
 
 MaxIO's artifact is the built binary operating on disposable real data, plus its
-embedded console and the optional `maxio-sync`, `maxio-workspace` and `maxio-agent`
-executables. A static export cannot prove server persistence, authorization,
+embedded console and the optional `maxio-sync`, `maxio-workspace`, `maxio-agent`,
+`maxio-fabric` and `maxio-worker` executables. A static export cannot prove server persistence, authorization,
 replication, or synchronization. Do not
 copy a web-only review recipe into this repository.
 
@@ -33,6 +33,9 @@ copy a web-only review recipe into this repository.
 | Workspace catalog | Metadata-only discovery, measured selected transfers, exact revisions, competing publications, interrupted transfers |
 | Workspace cache | Actual baselines and retained bytes, dirty/stale state, offline pins, failed replacement, explicit eviction outcome |
 | Local execution | Actual child process, selected input copies, terminal records, logs, cancellation and retained unpublished outputs; fixtures distinguished from authenticated providers |
+| Managed authority and transport | Individually enrolled keys, current grants/revocation, live verified HTTPS, competing leases, stale publication rejection, retained exact versions after restart |
+| Managed private cache | Independent immutable copies, pins/use guards, fresh retained-version verification, actual bytes/space reclaimed and exact refetch; editable/unpublished bytes preserved |
+| Managed workers | Separate worker processes, explained locality choice, actual execution and output publication, measured per-device transfers, loss/cancellation/restart recovery |
 | Harness | Deliberately invalid ownership/spec/test selection must fail, clean checkout must run |
 
 ## Review loop

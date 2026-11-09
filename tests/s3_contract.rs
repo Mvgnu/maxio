@@ -294,6 +294,350 @@ async fn unsupported_conditions_are_rejected_before_mutation() {
     );
 }
 
+async fn assert_retention_unsupported(response: Response, context: &str) {
+    let status = response.status();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, StatusCode::NOT_IMPLEMENTED, "{context}: {body}");
+    assert!(
+        body.contains("<Code>NotImplemented</Code>"),
+        "{context}: {body}"
+    );
+}
+
+#[tokio::test]
+async fn unsupported_retention_put_preserves_existing_bytes_and_version_history() {
+    let (base, _tmp) = server().await;
+    assert_eq!(
+        request(
+            &base,
+            Method::PUT,
+            "/contract?versioning",
+            b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+            &[]
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    let initial = request(&base, Method::PUT, "/contract/object", b"original", &[]).await;
+    assert_eq!(initial.status(), StatusCode::OK);
+    let version = initial.headers()["x-amz-version-id"]
+        .to_str()
+        .unwrap()
+        .to_owned();
+    let before = request(&base, Method::GET, "/contract?versions", b"", &[])
+        .await
+        .text()
+        .await
+        .unwrap();
+    let retention = b"<Retention><Mode>COMPLIANCE</Mode><RetainUntilDate>2099-01-01T00:00:00Z</RetainUntilDate></Retention>";
+    for subresource in ["retention", "legal-hold", "object-lock"] {
+        let path = format!("/contract/object?{subresource}&versionId={version}");
+        let response = request(&base, Method::PUT, &path, retention, &[]).await;
+        // Check data first: the old dispatch silently writes retention XML as a new object.
+        assert_eq!(
+            request(&base, Method::GET, "/contract/object", b"", &[])
+                .await
+                .bytes()
+                .await
+                .unwrap(),
+            &b"original"[..],
+            "unsupported {subresource} replaced object bytes"
+        );
+        assert_retention_unsupported(response, subresource).await;
+        for method in [Method::GET, Method::DELETE] {
+            assert_retention_unsupported(
+                request(&base, method, &path, b"", &[]).await,
+                subresource,
+            )
+            .await;
+        }
+        assert_eq!(
+            request(&base, Method::HEAD, &path, b"", &[]).await.status(),
+            StatusCode::NOT_IMPLEMENTED
+        );
+    }
+    assert_retention_unsupported(
+        request(
+            &base,
+            Method::DELETE,
+            &format!("/contract/object?versionId={version}"),
+            b"",
+            &[("x-amz-bypass-governance-retention", "true")],
+        )
+        .await,
+        "version-specific retention bypass",
+    )
+    .await;
+    assert_eq!(
+        request(
+            &base,
+            Method::GET,
+            &format!("/contract/object?versionId={version}"),
+            b"",
+            &[]
+        )
+        .await
+        .bytes()
+        .await
+        .unwrap(),
+        &b"original"[..]
+    );
+    assert_eq!(
+        request(&base, Method::GET, "/contract?versions", b"", &[])
+            .await
+            .text()
+            .await
+            .unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn unsupported_retention_headers_cannot_put_copy_or_delete_objects() {
+    let (base, _tmp) = server().await;
+    assert_eq!(
+        request(&base, Method::PUT, "/contract/object", b"original", &[])
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let delete = b"<Delete><Object><Key>object</Key></Object></Delete>";
+    assert_retention_unsupported(
+        request(
+            &base,
+            Method::POST,
+            "/contract?delete&retention",
+            delete,
+            &[],
+        )
+        .await,
+        "batch delete retention query",
+    )
+    .await;
+    for protection in [
+        ("x-amz-object-lock-mode", "COMPLIANCE"),
+        (
+            "x-amz-object-lock-retain-until-date",
+            "2099-01-01T00:00:00Z",
+        ),
+        ("x-amz-object-lock-legal-hold", "ON"),
+        ("x-amz-object-lock-event-hold", "ON"),
+        ("X-Amz-Object-Lock-Future-Setting", "enabled"),
+        ("x-amz-bucket-object-lock-enabled", "true"),
+        ("x-amz-bypass-governance-retention", "true"),
+    ] {
+        for (method, path, body) in [
+            (Method::PUT, "/contract/object", &b"replacement"[..]),
+            (Method::DELETE, "/contract/object", &b""[..]),
+            (Method::POST, "/contract?delete", &delete[..]),
+        ] {
+            assert_retention_unsupported(
+                request(&base, method, path, body, &[protection]).await,
+                protection.0,
+            )
+            .await;
+        }
+        assert_retention_unsupported(
+            request(
+                &base,
+                Method::PUT,
+                "/contract/copied",
+                b"",
+                &[("x-amz-copy-source", "/contract/object"), protection],
+            )
+            .await,
+            protection.0,
+        )
+        .await;
+    }
+    assert_eq!(
+        request(&base, Method::GET, "/contract/object", b"", &[])
+            .await
+            .bytes()
+            .await
+            .unwrap(),
+        &b"original"[..]
+    );
+    assert_eq!(
+        request(&base, Method::HEAD, "/contract/copied", b"", &[])
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+}
+
+#[tokio::test]
+async fn unsupported_retention_bucket_requests_cannot_create_change_or_delete_buckets() {
+    let (base, _tmp) = server().await;
+    let before = request(&base, Method::GET, "/contract?versioning", b"", &[])
+        .await
+        .text()
+        .await
+        .unwrap();
+    for subresource in ["object-lock", "retention", "legal-hold"] {
+        assert_retention_unsupported(
+            request(
+                &base,
+                Method::PUT,
+                &format!("/uncreated?{subresource}"),
+                b"<ObjectLockConfiguration><ObjectLockEnabled>Enabled</ObjectLockEnabled></ObjectLockConfiguration>",
+                &[],
+            )
+            .await,
+            subresource,
+        )
+        .await;
+        for method in [Method::GET, Method::DELETE] {
+            assert_retention_unsupported(
+                request(&base, method, &format!("/contract?{subresource}"), b"", &[]).await,
+                subresource,
+            )
+            .await;
+        }
+        assert_retention_unsupported(
+            request(
+                &base,
+                Method::PUT,
+                &format!("/contract?versioning&{subresource}"),
+                b"<VersioningConfiguration><Status>Enabled</Status></VersioningConfiguration>",
+                &[],
+            )
+            .await,
+            subresource,
+        )
+        .await;
+    }
+    assert_retention_unsupported(
+        request(
+            &base,
+            Method::PUT,
+            "/uncreated",
+            b"",
+            &[("x-amz-bucket-object-lock-enabled", "true")],
+        )
+        .await,
+        "CreateBucket Object Lock header",
+    )
+    .await;
+    assert_eq!(
+        request(&base, Method::HEAD, "/uncreated", b"", &[])
+            .await
+            .status(),
+        StatusCode::NOT_FOUND
+    );
+    assert_eq!(
+        request(&base, Method::HEAD, "/contract", b"", &[])
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&base, Method::GET, "/contract?versioning", b"", &[])
+            .await
+            .text()
+            .await
+            .unwrap(),
+        before
+    );
+}
+
+#[tokio::test]
+async fn unsupported_retention_multipart_requests_preserve_upload_and_previous_object() {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct InitiatedUpload {
+        upload_id: String,
+    }
+    let (base, _tmp) = server().await;
+    assert_eq!(
+        request(&base, Method::PUT, "/contract/object", b"original", &[])
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    let initiated = request(&base, Method::POST, "/contract/object?uploads", b"", &[]).await;
+    assert_eq!(initiated.status(), StatusCode::OK);
+    let initiated: InitiatedUpload =
+        quick_xml::de::from_str(&initiated.text().await.unwrap()).unwrap();
+    let upload_path = format!("/contract/object?uploadId={}", initiated.upload_id);
+    let part_path = format!("{upload_path}&partNumber=1");
+    let part = request(&base, Method::PUT, &part_path, b"complete part", &[]).await;
+    assert_eq!(part.status(), StatusCode::OK);
+    let etag = part.headers()["etag"].to_str().unwrap().to_owned();
+    let complete = format!(
+        "<CompleteMultipartUpload><Part><PartNumber>1</PartNumber><ETag>{etag}</ETag></Part></CompleteMultipartUpload>"
+    );
+    let uploads_before = request(&base, Method::GET, "/contract?uploads", b"", &[])
+        .await
+        .text()
+        .await
+        .unwrap();
+    let parts_before = request(&base, Method::GET, &upload_path, b"", &[])
+        .await
+        .text()
+        .await
+        .unwrap();
+    for (query, headers) in [
+        ("&retention", vec![]),
+        ("&legal-hold", vec![]),
+        ("&object-lock", vec![]),
+        ("", vec![("x-amz-object-lock-mode", "COMPLIANCE")]),
+        ("", vec![("x-amz-bypass-governance-retention", "true")]),
+    ] {
+        for (method, path, body) in [
+            (Method::POST, "/contract/object?uploads", &b""[..]),
+            (Method::PUT, part_path.as_str(), &b"wrong part"[..]),
+            (Method::POST, upload_path.as_str(), complete.as_bytes()),
+            (Method::DELETE, upload_path.as_str(), &b""[..]),
+        ] {
+            assert_retention_unsupported(
+                request(&base, method, &format!("{path}{query}"), body, &headers).await,
+                "multipart retention dispatch",
+            )
+            .await;
+        }
+    }
+    assert_eq!(
+        request(&base, Method::GET, "/contract?uploads", b"", &[])
+            .await
+            .text()
+            .await
+            .unwrap(),
+        uploads_before
+    );
+    assert_eq!(
+        request(&base, Method::GET, &upload_path, b"", &[])
+            .await
+            .text()
+            .await
+            .unwrap(),
+        parts_before
+    );
+    assert_eq!(
+        request(&base, Method::GET, "/contract/object", b"", &[])
+            .await
+            .bytes()
+            .await
+            .unwrap(),
+        &b"original"[..]
+    );
+    assert_eq!(
+        request(&base, Method::POST, &upload_path, complete.as_bytes(), &[])
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(&base, Method::GET, "/contract/object", b"", &[])
+            .await
+            .bytes()
+            .await
+            .unwrap(),
+        &b"complete part"[..]
+    );
+}
+
 #[tokio::test]
 async fn distributed_conditional_write_fails_explicitly() {
     let tmp = tempfile::TempDir::new().unwrap();

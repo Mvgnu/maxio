@@ -34,16 +34,20 @@ class ContractTests(unittest.TestCase):
             "workspace_catalog": "src/workspace/remote.rs",
             "workspace_cache": "src/workspace/local.rs",
             "agent_execution": "src/execution/runner.rs",
+            "fabric_authority": "src/fabric/authority/jobs.rs",
+            "fabric_transport": "src/fabric/client.rs",
+            "worker_execution": "src/fabric/cache.rs",
         }
         for owner, path in paths.items():
             self.assertEqual([name for name, spec in self.specs.items() if gate.allowed(path, spec)], [owner])
-            for contract in ("src/files.rs", "src/workspace/contract.rs", "src/workspace/mod.rs", "src/execution/contract.rs"):
+            for contract in ("src/files.rs", "src/workspace/contract.rs", "src/workspace/mod.rs", "src/execution/contract.rs", "src/fabric/contract.rs", "src/fabric/mod.rs"):
                 self.assertFalse(gate.allowed(contract, self.specs[owner]))
 
     def test_server_cannot_acquire_optional_startup_dependencies(self):
-        for path in ("src/main.rs", "src/server.rs", "src/config.rs", "src/storage/", "src/api/"):
+        for path in ("src/main.rs", "src/server.rs", "src/server/", "src/config.rs", "src/storage/", "src/api/"):
             self.assertIn("workspace", gate.FORBIDDEN_DEPS[path])
             self.assertIn("execution", gate.FORBIDDEN_DEPS[path])
+            self.assertIn("fabric", gate.FORBIDDEN_DEPS[path])
 
     def test_bar_needs_reference_and_property(self):
         import json

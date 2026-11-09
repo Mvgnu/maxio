@@ -1,0 +1,175 @@
+{
+  "description": "Inventory of completed review records and reproduction sources; builder and critic evidence remain separately labelled.",
+  "files": [
+    {
+      "file": "README.md",
+      "bytes": 2087,
+      "sha256": "92ab8ceae678d4f282864a54d1b882d6e76f713c760a7274d9086e4f1fe19733"
+    },
+    {
+      "file": "artifact-log-followup.json",
+      "bytes": 663,
+      "sha256": "0779fd2d15b172df8945e67a5ac21c619cf480f4a8ef09c651e646d0fa8d374f"
+    },
+    {
+      "file": "artifact-reviewed.json",
+      "bytes": 663,
+      "sha256": "8cd4f39a9a9ea59d92532ff432c115de9504f19be917a3586ed63fe320db2292"
+    },
+    {
+      "file": "authority-checks.json",
+      "bytes": 6168,
+      "sha256": "7170cb7b7e4dde18d301cf1e5a4efd4d19355f0cd5bff23b2acbac677e699f17"
+    },
+    {
+      "file": "authority-durable-audit.json",
+      "bytes": 4303,
+      "sha256": "d8f78820066ed3397ea6a4a056b43de7593f309ae743d0292b7abcf419e71cc2"
+    },
+    {
+      "file": "authority-review.md",
+      "bytes": 10297,
+      "sha256": "f61918923705fcc061250918a7870d39e7cef50f920d45c3915721dc20dda648"
+    },
+    {
+      "file": "builder-journeys.json",
+      "bytes": 138401,
+      "sha256": "0781c1a149c4f300cb0c8a99e18a02346b7c026f211012f121dd4ea5da7a7b00"
+    },
+    {
+      "file": "builder-metrics.json",
+      "bytes": 9116,
+      "sha256": "aca9680c2640d44df881d2a2c220a82b55cb6529acfa13c4e7d921dd0ae764c6"
+    },
+    {
+      "file": "cache-checks.json",
+      "bytes": 27439,
+      "sha256": "875370b6395658ec642901ce8b8c7638544f10780ebd8aecadcd7b48694341ec"
+    },
+    {
+      "file": "cache-review.md",
+      "bytes": 12916,
+      "sha256": "8bcf48ad8a5e6ff54afeee12f806d2d825d242abbefa291d4a676ee9a039095f"
+    },
+    {
+      "file": "cache-runtime.json",
+      "bytes": 353,
+      "sha256": "f3a4f1e4e9012a83cd8dc1ff6f5b1b30805c534ba4282581633f02b65ea0faf1"
+    },
+    {
+      "file": "claude-worker-fixture.json",
+      "bytes": 8072,
+      "sha256": "111af6a801407f9a542ad6e0bc85fb5b56d5ad54b1b28b8c01436d2dca7d4068"
+    },
+    {
+      "file": "codex-worker-fixture.json",
+      "bytes": 8052,
+      "sha256": "534ae903723892dd106374cd23142479c001502854d1fa857c0486f5e0745065"
+    },
+    {
+      "file": "critic.py",
+      "bytes": 33833,
+      "sha256": "5230706b9ca2ae6098d086fcc58eaa1f3efba9fe2d24362dcc2565f0fa07da8f"
+    },
+    {
+      "file": "eviction-cycle1.json",
+      "bytes": 179741,
+      "sha256": "5b797264e33ad66b12455dab27fdd227168788831ac974b5dd3d3278d1097854"
+    },
+    {
+      "file": "eviction-cycle2.json",
+      "bytes": 179741,
+      "sha256": "15142df32ed7d8f0a6a0ce37ccf249989890f38726d1f97a798fce2f7707396c"
+    },
+    {
+      "file": "eviction-interruption-checks.json",
+      "bytes": 4452,
+      "sha256": "2a0ade596a8b252fbabb61deb4466720fedad52554bf4f681ec8403532d4781c"
+    },
+    {
+      "file": "eviction-interruption-review.md",
+      "bytes": 8514,
+      "sha256": "c8902c695ccc5b93c3eaaea99178c6fcd885ca93b3abe3e82be5a13196967329"
+    },
+    {
+      "file": "execution-baseline.json",
+      "bytes": 8472,
+      "sha256": "ed99521bdc4b92a2a307e84b47983d4ccfcbfeaf35efa735d74d11340ef2f387"
+    },
+    {
+      "file": "execution-cleanup.json",
+      "bytes": 515,
+      "sha256": "9de9a52253f1f766996689ac08213e2ae48a11da12e285fc9150be680eea50ca"
+    },
+    {
+      "file": "execution-placement.json",
+      "bytes": 945,
+      "sha256": "ef915549e6aa3dfba207e782e2c0c6edbb043ab90f2dca40b0f49d199687d0df"
+    },
+    {
+      "file": "execution-review.md",
+      "bytes": 18238,
+      "sha256": "0d8d510a37c4cba08d556b010c9e17bd1716cc6ee2d4b4df4d30f9a9b3e30216"
+    },
+    {
+      "file": "execution-summary.json",
+      "bytes": 34042,
+      "sha256": "c374a0c0ddabc7f52bf1a8e891428b29407c45acabfbe7c7ba0bd3633fab621b"
+    },
+    {
+      "file": "interrupted_eviction.py",
+      "bytes": 15392,
+      "sha256": "27bac68f206fe6ee8ff6fa5cc1e29d263bfca656e51a2eb96bf1c86d55ebd622"
+    },
+    {
+      "file": "local-verification.json",
+      "bytes": 4870,
+      "sha256": "8ab0c76600ede0681a9f51ed8e61ba13952258adb31b601ba58f90306ef8b172"
+    },
+    {
+      "file": "log-text-green.log",
+      "bytes": 668,
+      "sha256": "eb3af89dbdbfdda7aef6ecd759a8fd5cb477af10aae18301cfdf7dbd935e91f9"
+    },
+    {
+      "file": "log-text-red.log",
+      "bytes": 958,
+      "sha256": "bbb5c7b8fb62a20819d403fc2087838b919f30215641f98cf8e55e10e18189ce"
+    },
+    {
+      "file": "onboarding-round1.md",
+      "bytes": 13060,
+      "sha256": "d95dfcd7f8ddd6ee326dcd960f201b88ac1294613c69ca7e341ba2913cae60a8"
+    },
+    {
+      "file": "onboarding-round2.json",
+      "bytes": 6166,
+      "sha256": "61abd47f3dfa097c5631a7b5439a519e150863f025b85152fae81b3ab2687e2d"
+    },
+    {
+      "file": "onboarding-round2.md",
+      "bytes": 8534,
+      "sha256": "0c781ac9ace399bd4d761fac249fc116197e8fc23b14fc51780ff54464b81525"
+    },
+    {
+      "file": "ordinary_s3_aws.json",
+      "bytes": 2405,
+      "sha256": "f25db17551f9192792d15e9813d8d8e4b7327866612676458ff6d790bf5d0010"
+    },
+    {
+      "file": "ordinary_s3_aws.py",
+      "bytes": 5045,
+      "sha256": "58d6ae0e13003a260ba5772f2338b97da7f07d57dd2893d938d26f3e962db5d5"
+    },
+    {
+      "file": "s3-retention-checks.json",
+      "bytes": 51787,
+      "sha256": "c675ed2a16e4406f70d7203713cb9cfef251d01e8cc55f3ce85a0e014e6d1ed9"
+    },
+    {
+      "file": "s3-retention-review.md",
+      "bytes": 8254,
+      "sha256": "7b1bf95c44ba49a5c54af888b18f0c5f93a47121d24d8ec993241f923cd06f08"
+    }
+  ]
+}

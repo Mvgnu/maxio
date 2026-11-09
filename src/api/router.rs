@@ -1,9 +1,13 @@
 use axum::{
     Router,
+    extract::{Query, Request},
+    middleware::{self, Next},
+    response::Response,
     routing::{delete, get, head, post, put},
 };
+use std::collections::HashMap;
 
-use crate::server::AppState;
+use crate::{error::S3Error, server::AppState};
 
 use super::{bucket, list, object};
 
@@ -28,4 +32,31 @@ pub fn s3_router() -> Router<AppState> {
         .route("/{bucket}/{*key}", get(object::get_object))
         .route("/{bucket}/{*key}", head(object::head_object))
         .route("/{bucket}/{*key}", delete(object::delete_object))
+        .route_layer(middleware::from_fn(reject_unsupported_retention))
+}
+
+/// A protection request must never fall through to an ordinary object operation.
+/// Keep this on the S3 router so multipart, copy and batch dispatch cannot bypass
+/// it. The runtime applies signed-request authentication outside this layer.
+async fn reject_unsupported_retention(
+    Query(params): Query<HashMap<String, String>>,
+    request: Request,
+    next: Next,
+) -> Result<Response, S3Error> {
+    let subresource = ["retention", "legal-hold", "object-lock"]
+        .iter()
+        .any(|name| params.contains_key(*name));
+    let header = request.headers().keys().any(|name| {
+        name.as_str().starts_with("x-amz-object-lock-")
+            || matches!(
+                name.as_str(),
+                "x-amz-bucket-object-lock-enabled" | "x-amz-bypass-governance-retention"
+            )
+    });
+    if subresource || header {
+        return Err(S3Error::not_implemented(
+            "S3 Object Lock, retention periods and legal holds are not supported",
+        ));
+    }
+    Ok(next.run(request).await)
 }
