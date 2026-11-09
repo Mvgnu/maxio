@@ -23,6 +23,16 @@ production-grade distributed durability.
 
 ## Build
 
+### Agent management through MCP
+
+The optional local MCP adapter lets compatible agents inspect and manage MaxIO
+through its existing authenticated interfaces. It runs separately from the Rust
+server. See [MCP setup and tool coverage](mcp/README.md) for installation, private
+configuration, supported operations and verification. An MCP connection provides
+tools to an active agent; it does not itself schedule a monitoring service.
+
+### Server and companion binaries
+
 Use Rust **1.94.0**, Bun **1.3.10**, and Python 3 for verification. On Debian/Ubuntu,
 install `build-essential`, `pkg-config`, `libssl-dev` and `openssl`. Rustup reads the pinned
 `rust-toolchain.toml`. The Linux executables use the system OpenSSL libraries.

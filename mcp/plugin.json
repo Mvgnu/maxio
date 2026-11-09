@@ -1,0 +1,19 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "maxio-management",
+  "version": "0.1.0",
+  "description": "Manage and inspect your own MaxIO storage and configured managed workspaces through local MCP tools.",
+  "author": { "name": "Magnus Ohle" },
+  "repository": "https://github.com/Mvgnu/maxio",
+  "license": "Apache-2.0",
+  "extensions": {
+    "com.openai": {
+      "requires_local_executor": true,
+      "interface": {
+        "displayName": "MaxIO Management",
+        "shortDescription": "Operate MaxIO storage and workspaces with agents.",
+        "capabilities": []
+      }
+    }
+  }
+}
