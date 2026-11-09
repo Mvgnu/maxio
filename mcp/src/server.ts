@@ -1,0 +1,49 @@
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { z } from 'zod';
+import { ConsoleClient, MAX_BYTES, objectPath, segment } from './console';
+import { FabricClient } from './fabric';
+import { Service } from './service';
+import type { Config } from './config';
+const text=z.string().min(1).max(2048),uuid=z.uuid(),integer=z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),bucket=z.string().min(1).max(255),key=text;
+const query=(v:Record<string,unknown>)=>'?'+new URLSearchParams(Object.entries(v).filter(([,v])=>v!==undefined).map(([k,v])=>[k,String(v)])).toString();
+const scope=z.discriminatedUnion('kind',[z.strictObject({kind:z.literal('workspace')}),z.strictObject({kind:z.literal('exact'),path:text}),z.strictObject({kind:z.literal('tree'),path:text})]);
+const revision=z.strictObject({revision:uuid,sha256:z.string().regex(/^[a-f0-9]{64}$/)}),version=z.strictObject({sha256:z.string().regex(/^[a-f0-9]{64}$/),size:integer,blob:text});
+const head=z.strictObject({authority_id:uuid,workspace_id:uuid,generation:integer,revision});
+const job=z.strictObject({request_id:uuid,workspace_id:uuid,base:head,profile:text,inputs:z.array(z.strictObject({path:text,revision,version})).max(1024),output_selectors:z.array(scope).max(128),resources:z.strictObject({cpu_millis:integer,memory_bytes:integer}),timeout_seconds:integer,required_worker:uuid.nullable(),output_policy:z.enum(['retain','publish']),prompt:z.string().max(65536).nullable()});
+export function createServer(config:Config){
+ const server=new McpServer({name:'maxio',version:'0.1.0'}),api=new ConsoleClient(config.console),fabric=new FabricClient(config.fabric),service=new Service(config.service,config.console);
+ function tool(name:string,description:string,shape:z.ZodRawShape,readOnly:boolean,destructive:boolean,fn:(args:any)=>Promise<unknown>){server.registerTool(name,{description,inputSchema:z.strictObject(shape),annotations:{readOnlyHint:readOnly,destructiveHint:destructive,idempotentHint:readOnly,openWorldHint:false}},async args=>{try{const data=await fn(args),encoded=JSON.stringify(data);if(Buffer.byteLength(encoded)>MAX_BYTES*2)throw new Error('Result exceeds limit');return {content:[{type:'text' as const,text:encoded}],structuredContent:{data}};}catch(error){return {isError:true,content:[{type:'text' as const,text:error instanceof Error?error.message:'Operation failed'}]};}});}
+ const root=(b:string)=>`/api/buckets/${segment(b)}`;
+ for(const op of ['health','metrics','topology','membership','placement','rebalance','summary'])tool(`maxio_${op}`,`Inspect authoritative MaxIO ${op}`,{},true,false,()=>api.json('GET',`/api/system/${op}`));
+ tool('maxio_observe','Bounded health observations; does not install continuous monitoring',{seconds:z.number().int().min(1).max(30),interval_seconds:z.number().int().min(1).max(10).default(5)},true,false,async a=>{const end=Date.now()+a.seconds*1000,observations=[];do{try{observations.push({at:new Date().toISOString(),health:await Promise.race([api.json('GET','/api/system/health'),Bun.sleep(Math.max(1,end-Date.now())).then(()=>{throw new Error('Observation deadline');})])});}catch{observations.push({at:new Date().toISOString(),error:'Health unavailable'});}const left=end-Date.now();if(left<=0)break;await Bun.sleep(Math.min(left,a.interval_seconds*1000));}while(Date.now()<end);return {observations,continuous:false};});
+ tool('maxio_buckets_list','List buckets and coverage',{},true,false,()=>api.json('GET','/api/buckets'));
+ tool('maxio_bucket_create','Create a bucket',{bucket},false,false,a=>api.json('POST','/api/buckets',{name:a.bucket}));
+ tool('maxio_bucket_delete','Delete an empty bucket; backend rejects nonempty buckets',{bucket},false,true,a=>api.json('DELETE',root(a.bucket)));
+ tool('maxio_objects_list','List objects and coverage; oversized results fail explicitly',{bucket,prefix:z.string().max(2048).optional(),delimiter:z.string().min(1).max(32).optional()},true,false,a=>api.json('GET',root(a.bucket)+'/objects'+query({prefix:a.prefix,delimiter:a.delimiter})));
+ tool('maxio_object_write','Write or overwrite up to 1 MiB inline bytes',{bucket,key,encoding:z.enum(['utf8','base64']),data:z.string().max(1400000),content_type:z.string().max(256).default('application/octet-stream')},false,true,async a=>{if(a.encoding==='base64'&&!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(a.data))throw new Error('Invalid base64');const bytes=Buffer.from(a.data,a.encoding==='utf8'?'utf8':'base64');if(bytes.length>MAX_BYTES)throw new Error('Upload exceeds 1 MiB');return JSON.parse(new TextDecoder().decode(await api.request('PUT',objectPath(a.bucket,'upload',a.key),bytes,a.content_type)));});
+ async function read(path:string){const bytes=await api.request('GET',path);return {encoding:'base64',data:Buffer.from(bytes).toString('base64'),size:bytes.length};}
+ tool('maxio_object_read','Read complete object as base64, up to 1 MiB',{bucket,key},true,false,a=>read(objectPath(a.bucket,'download',a.key)));
+ tool('maxio_object_delete','Delete object; may create a version delete marker',{bucket,key},false,true,a=>api.json('DELETE',objectPath(a.bucket,'objects',a.key)));
+ tool('maxio_folder_create','Create logical folder marker',{bucket,name:text},false,false,a=>api.json('POST',root(a.bucket)+'/folders',{name:a.name}));
+ tool('maxio_object_presign','Create bearer download URL for intended recipients',{bucket,key,expires:z.number().int().min(1).max(604800).default(3600)},true,false,a=>api.json('GET',objectPath(a.bucket,'presign',a.key)+query({expires:a.expires})));
+ for(const op of ['versioning','lifecycle'])tool(`maxio_bucket_${op}_get`,`Inspect bucket ${op}`,{bucket},true,false,a=>api.json('GET',root(a.bucket)+'/'+op));
+ tool('maxio_bucket_versioning_set','Enable or suspend versioning',{bucket,enabled:z.boolean()},false,true,a=>api.json('PUT',root(a.bucket)+'/versioning',{enabled:a.enabled}));
+ tool('maxio_bucket_lifecycle_set','Replace lifecycle rules; enabled expiration rules may delete data',{bucket,rules:z.array(z.strictObject({id:text,prefix:z.string().max(2048),expirationDays:z.number().int().min(1).max(4294967295),enabled:z.boolean()})).max(100)},false,true,a=>api.json('PUT',root(a.bucket)+'/lifecycle',{rules:a.rules}));
+ tool('maxio_versions_list','List exact object versions',{bucket,key},true,false,a=>api.json('GET',root(a.bucket)+'/versions'+query({key:a.key})));
+ const vp=(a:any,action:string)=>root(a.bucket)+`/versions/${segment(a.version_id)}/${action}/`+objectPath(a.bucket,'objects',a.key).slice((root(a.bucket)+'/objects/').length);
+ tool('maxio_version_read','Read exact version as base64, up to 1 MiB',{bucket,key,version_id:text},true,false,a=>read(vp(a,'download')));
+ tool('maxio_version_delete','Permanently delete exact version or marker',{bucket,key,version_id:text},false,true,a=>api.json('DELETE',vp(a,'objects')));
+ function managed(name:string,op:string,shape:z.ZodRawShape={},mutation=false,destructive=false,build?:(a:any)=>Record<string,unknown>){tool(`maxio_fabric_${name}`,`${mutation?'Perform':'Inspect'} managed ${name.replaceAll('_',' ')} using configured authenticated RPC${mutation?'; retain request_id for identical-request recovery':''}`,shape,!mutation,destructive,async a=>{const req=build?build(a):{op,...a},request_id=a.request_id??a.job?.request_id;try{return {request_id,response:await fabric.control(req)};}catch(e){throw new Error(`${e instanceof Error?e.message:'RPC failed'}${request_id?`; request_id=${request_id}`:''}`);}});}
+ managed('info','info');managed('devices_list','list_devices');managed('workspaces_list','list_workspaces');managed('workers_list','list_workers');
+ managed('workspace_create','create_workspace',{request_id:uuid,name:text},true,false,a=>({op:'create_workspace',...a,import_source:null}));managed('workspace_current','current',{workspace_id:uuid});
+ managed('device_enroll','enroll_device',{request_id:uuid,display_name:text,public_key:z.string().max(128),role:z.enum(['owner','device','worker'])},true);
+ managed('device_revoke','revoke_device',{request_id:uuid,device_id:uuid},true,true);managed('device_rotate','rotate_device_key',{request_id:uuid,device_id:uuid,expected_generation:integer,public_key:z.string().max(128)},true,true);
+ managed('grants_list','list_grants',{device_id:uuid.nullable().default(null),workspace_id:uuid.nullable().default(null)});
+ managed('grant_set','set_grant',{request_id:uuid,grant:z.strictObject({device_id:uuid,workspace_id:uuid,catalog_read:z.boolean(),read:z.array(scope).max(128),write:z.array(scope).max(128),submit_jobs:z.boolean()})},true,true);
+ managed('grant_remove','remove_grant',{request_id:uuid,device_id:uuid,workspace_id:uuid},true,true);managed('leases_list','list_leases',{workspace_id:uuid});managed('jobs_list','list_jobs',{workspace_id:uuid.nullable().default(null)});
+ managed('job_status','job_status',{job_id:uuid});managed('job_explain','explain_placement',{job_id:uuid});managed('job_submit','submit_job',{job},true,true);managed('job_cancel','cancel_job',{request_id:uuid,job_id:uuid},true,true);managed('job_retry','retry_job',{request_id:uuid,job_id:uuid,expected_attempt_id:uuid},true,true);
+ managed('job_logs','read_log',{job_id:uuid,attempt_id:uuid,stream:z.enum(['stdout','stderr']),offset:integer.default(0),max_bytes:z.number().int().min(1).max(65536).default(16384)});
+ tool('maxio_service_status','Inspect session-owned service child; external servers never owned',{},true,false,async()=>service.status());tool('maxio_service_logs','Tail last 16 KiB of session-owned child output; may contain application data',{},true,false,async()=>service.tail());
+ for(const action of ['start','stop','restart'] as const)tool(`maxio_service_${action}`,`${action} only owner-configured child of this MCP session`,{},false,action!=='start',()=>service[action]());
+ return {server,service};
+}
