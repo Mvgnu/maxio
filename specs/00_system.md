@@ -5,6 +5,29 @@ description: PM-owned product, ownership, and shared-contract decisions for MaxI
 
 # MaxIO system contract
 
+## Source ownership after monorepo consolidation
+
+Current product decisions and implementation live in the
+[MCP-Host monorepo](https://github.com/Mvgnu/MCP-Host), governed by its
+[product contract](https://github.com/Mvgnu/MCP-Host/blob/main/specs/00_product.md)
+and [monorepo ruling](https://github.com/Mvgnu/MCP-Host/blob/main/specs/02_monorepo.md).
+MaxIO storage/workspace domains live under `components/maxio/`; the actual
+execution runtime, managed worker and portable file primitives live under
+`crates/agent-execution/`, `crates/worker/` and `crates/portable-files/`.
+
+This repository retains the pre-consolidation implementation and evidence.
+The material below describes that historical source; it does not authorize a
+second active implementation or release line. [MIGRATION.md](../MIGRATION.md)
+defines the cutover and requires the Host consolidation to merge first.
+
+The consolidation preserves the existing managed authority as the single
+job/lease/publication transaction during extraction. It introduces no data
+migration, new device identity, automatic job retry or storage-format change.
+Standalone S3 remains independent. Future authority changes belong to the
+monorepo's explicit contracts and acceptance process.
+
+## Historical system contract
+
 MaxIO stores and moves data on machines the operator chooses. Standalone storage,
 optional workspaces and optional execution have independent entry points. The
 simplest one must remain simple.

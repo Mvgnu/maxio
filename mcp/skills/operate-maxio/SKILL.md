@@ -5,6 +5,15 @@ description: "Operate and explain MaxIO storage, MCP management, device sync, se
 
 # Operate MaxIO
 
+## Historical source notice
+
+This file documents the retained pre-consolidation source. Use the current
+[operate-maxio skill in MCP-Host](https://github.com/Mvgnu/MCP-Host/blob/main/components/maxio/mcp/skills/operate-maxio/SKILL.md)
+and its repository rules for current operation and development. The
+[source cutover](../../../MIGRATION.md) preserves this snapshot; do not develop
+a second implementation here. Live discovered tool schemas remain authoritative
+for an existing connection.
+
 Operate the requested workflow end to end through `maxio-management` MCP tools.
 Use the authorized CLI when a feature is not wrapped by MCP. Perform routine
 inspection, setup and verification yourself when tools and access permit; do not

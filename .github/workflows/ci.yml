@@ -1,9 +1,9 @@
-name: CI
+name: Historical source verification
 
 on:
-  push:
-    branches: [main, master]
-  pull_request:
+  # Current development and automated gates live in Mvgnu/MCP-Host.
+  # This explicit dispatch only verifies the retained source snapshot.
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,7 +14,7 @@ env:
 
 jobs:
   verify:
-    name: Contracts, Rust, console, and real-process journeys
+    name: Historical contracts, Rust, console, and real-process journeys
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4

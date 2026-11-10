@@ -1,5 +1,28 @@
 # MaxIO
 
+## Current source and contributions
+
+MaxIO development belongs in the [MCP-Host monorepo](https://github.com/Mvgnu/MCP-Host):
+[storage and workspaces](https://github.com/Mvgnu/MCP-Host/tree/main/components/maxio),
+[execution runtime](https://github.com/Mvgnu/MCP-Host/tree/main/crates/agent-execution),
+and [managed workers](https://github.com/Mvgnu/MCP-Host/tree/main/crates/worker).
+Use its current documentation, domain specs and contribution workflow.
+
+This repository retains the historical source snapshot imported from
+`4acb17fb10f177a4e1e071247da376dcbe960fc7`, its history, tests and attribution.
+It is no longer a second development or release location. Standalone MaxIO S3
+continues as an independent executable in the monorepo.
+
+**Merge order:** land the Host consolidation first, then this companion cutover.
+See [MIGRATION.md](MIGRATION.md) for source ownership, compatibility, workflow
+changes and the [consolidation review branch](https://github.com/Mvgnu/MCP-Host/tree/refactor/agent-infra-monorepo).
+This repository change performs no deployment or data migration.
+
+## Historical product and build documentation
+
+The remainder describes the retained revision. Use it to inspect or reproduce
+that snapshot; follow the monorepo documentation for current development.
+
 **S3 storage, selective workspaces and optional storage-aware workers on your own infrastructure.**
 
 MaxIO is a Rust S3 server with an embedded Svelte console. Start with one process
@@ -16,10 +39,10 @@ executables; none is required to start the S3 server.
 | Enroll devices, reclaim a private cache, run work near its data | [Managed workspace and workers](#managed-workspace-and-workers) | Experimental single authority, individual keys, fenced publication and separately running workers |
 | Run a command, Codex or Claude on selected files | [Local agents](#local-agents) | Independent local runner; the managed worker reuses these adapters |
 
-This is an actively developed fork. Its supported behavior and limits are recorded
-in [the system contract](specs/00_system.md), with independent evidence in
-[dated reviews](specs/reviews/). It does not claim full AWS compatibility or
-production-grade distributed durability.
+The retained revision's behavior and limits are recorded in
+[its historical system contract](specs/00_system.md), with evidence for the
+original artifacts in [dated reviews](specs/reviews/). Those records do not
+establish acceptance for later monorepo builds.
 
 ## Build
 
@@ -488,7 +511,9 @@ The Docker image and release archives include `maxio`, `maxio-sync`,
 libraries and starts only the standalone `maxio` server by default. Select an
 optional command with `--entrypoint`; agent provider CLIs and their runtimes are
 separately provisioned by the owner.
-The release workflow targets this fork's `ghcr.io/<owner>/<repo>` namespace.
+The former release workflow targeted this fork's `ghcr.io/<owner>/<repo>`
+namespace. It has been removed as part of the source cutover; current release
+configuration belongs to the MCP-Host monorepo.
 No upstream container image is presented as containing this fork's changes.
 
 ## Development and verification

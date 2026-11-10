@@ -1,4 +1,23 @@
-# Working on MaxIO
+# MaxIO source ownership and agent routing
+
+Current implementation, specs and contributions belong in the
+[MCP-Host monorepo](https://github.com/Mvgnu/MCP-Host). Read
+[MIGRATION.md](MIGRATION.md), then that checkout's root `AGENTS.md`,
+`specs/00_product.md`, `specs/02_monorepo.md`, workflow rules and relevant
+component/crate spec before making current product changes.
+
+This repository retains the historical MaxIO source imported at
+`4acb17fb10f177a4e1e071247da376dcbe960fc7`. Do not develop a parallel runtime,
+coordinator, storage implementation or provider adapter here. Do not restore
+automatic CI or a release publisher here as a shortcut for current development.
+The Host consolidation must land before this companion cutover is merged.
+
+This source-ownership ruling takes precedence over the historical development
+instructions, specs, skill text and roadmap retained below and elsewhere in
+this repository. An explicitly requested historical reproduction uses the
+retained rules against its named revision and reports that limited scope.
+
+## Historical development rules
 
 Read [the system contract](specs/00_system.md), [Lop](lop.md), and
 [Gauntlet](gauntlet.md) before changing code. Read your domain's spec in
